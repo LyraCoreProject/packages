@@ -27,6 +27,11 @@ To run the same check locally against a clean LyraCore checkout:
 
 The check refuses a core checkout whose `packages/` directory is not empty.
 
+## Contributing
+
+Changes land through pull requests after the core-tip compatibility check passes. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
 ## License
 
 Package source in this repository is available under the [MIT License](LICENSE).
