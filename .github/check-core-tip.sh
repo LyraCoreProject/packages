@@ -5,9 +5,11 @@ collection_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 core_root=${1:-}
 
 if [[ -z "$core_root" || ! -f "$core_root/module/Cargo.toml" ]]; then
-    echo "usage: $0 /path/to/LyraCore" >&2
+    echo "usage: $0 /path/to/LyraCore [CHECK-COMMAND [ARG...]]" >&2
+    echo "  With no CHECK-COMMAND, compiles the union under 'cargo test -p lyracore-module'." >&2
     exit 2
 fi
+shift
 
 core_root=$(cd "$core_root" && pwd)
 package_root="$core_root/packages"
@@ -52,8 +54,8 @@ fi
 # exit. Every other in-tree Package is left alone, so the check compiles the union.
 for package_dir in "${package_dirs[@]}"; do
     package_name=$(basename "$package_dir")
-    if [[ ! -d "$package_dir/src" && ! -d "$package_dir/client" ]]; then
-        echo "$package_name has neither src/ nor client/" >&2
+    if [[ ! -d "$package_dir/src" && ! -d "$package_dir/client" && ! -d "$package_dir/data" ]]; then
+        echo "$package_name has none of src/, client/ or data/" >&2
         exit 1
     fi
     if [[ -d "$package_dir/src" && ! -f "$package_dir/src/mod.rs" ]]; then
@@ -81,4 +83,11 @@ for package_dir in "${package_dirs[@]}"; do
     installed_links+=("$link")
 done
 
-cargo +1.93.0 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --lib
+# The default check: every collection Package compiles into the module. A caller that needs the
+# same linked tree for something else (e.g. the datascripts job's typegen/typecheck chain) passes
+# its own command instead — the link/displace/cleanup dance above is identical either way.
+if [[ $# -gt 0 ]]; then
+    "$@"
+else
+    cargo +1.93.0 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --lib
+fi

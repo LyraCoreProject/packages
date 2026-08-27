@@ -35,3 +35,54 @@ jobs:
 
       - name: Compile every Package against core tip
         run: ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore"
+
+  datascripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out Packages
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: collection
+
+      - name: Check out LyraCore main
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: main
+          path: lyracore
+
+      # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
+      # job needs the same toolchain + target the `module` job's compile check needs, plus the
+      # wasm target neither that job nor `check-core-tip.sh` requires.
+      - name: Install Rust 1.93.0
+        run: |
+          rustup toolchain install 1.93.0 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+
+      # Pinned to the version LyraCore's module/Cargo.toml and gateway/Cargo.toml pin today
+      # (LyraCore's own `lyracore preflight` reads its pin from that checkout at run time; this
+      # workflow cannot, so the version here has to be kept in step with core's by hand — the same
+      # maintenance the "Install Rust 1.93.0" step above already carries).
+      - name: Install the pinned SpacetimeDB CLI
+        run: |
+          curl -sSf https://install.spacetimedb.com | sh -s -- --version 2.7.1
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned Bun
+        run: |
+          curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.7"
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      # `./lyracore` is a pinned shim: it installs the exact CLI revision LyraCore's own
+      # `.lyracore-cli-rev` names, the first time anything runs it (docs/agents/cross-repo-cli.md
+      # in LyraCore). Running it once here, on its own, keeps that install's own log separate from
+      # the check that follows.
+      - name: Install the pinned lyracore CLI
+        run: (cd lyracore && ./lyracore --help >/dev/null)
+
+      - name: Verify committed Package Delta artifacts against core tip
+        run: |
+          ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
+            "$GITHUB_WORKSPACE/collection/.github/check-datascripts.sh" "$GITHUB_WORKSPACE/lyracore"
