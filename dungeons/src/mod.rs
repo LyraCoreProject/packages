@@ -21,3 +21,37 @@ pub(crate) use shadowfang_keep::*;
 pub(crate) use sunken_temple::*;
 pub(crate) use wailing_caverns::*;
 pub(crate) use zulgurub::*;
+
+// This assertion lives in the Package, not in core, because only an installed `dungeons` can
+// promise full coverage: a bare core ships the `EncounterBinding` enum with no authorities at all.
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn every_encounter_binding_has_exactly_one_installed_authority() {
+        let mut from_enum: Vec<String> = crate::encounter::EncounterBinding::ALL
+            .iter()
+            .map(|binding| format!("{binding:?}"))
+            .collect();
+        from_enum.sort();
+        assert_eq!(crate::GAME_ENCOUNTER_PACKAGE_BINDING_NAMES, from_enum);
+        assert_eq!(
+            crate::GAME_ENCOUNTER_PACKAGE_BINDING_NAMES,
+            [
+                "BlackfathomDeepsKelris",
+                "BlackrockDepthsTombOfSeven",
+                "DireMaulAlzzin",
+                "RazorfenKraulWardKeepers",
+                "ShadowfangKeepFenrus",
+                "ShadowfangKeepNandos",
+                "ShadowfangKeepRethilgore",
+                "SunkenTempleAvatar",
+                "WailingCavernsAnacondra",
+                "WailingCavernsCobrahn",
+                "WailingCavernsMutanus",
+                "WailingCavernsPythas",
+                "WailingCavernsSerpentis",
+                "ZulGurubOhgan",
+            ]
+        );
+    }
+}
