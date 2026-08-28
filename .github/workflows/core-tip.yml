@@ -67,8 +67,12 @@ jobs:
       # maintenance the "Install Rust 1.93.0" step above already carries).
       - name: Install the pinned SpacetimeDB CLI
         run: |
-          curl -sSf https://install.spacetimedb.com | sh -s -- --version 2.7.1
+          # The install script no longer takes a version flag; the CLI's own version manager
+          # does the pinning now.
+          curl -sSf https://install.spacetimedb.com | sh -s -- --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/spacetime" version install 2.7.1
+          "$HOME/.local/bin/spacetime" version use 2.7.1
 
       - name: Install the pinned Bun
         run: |
