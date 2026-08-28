@@ -8,8 +8,8 @@ matching tags for compatible Package revisions.
 
 ## Packages
 
-- [`dungeons`](dungeons/) holds the encounter choreography for every scripted dungeon, one
-  submodule per dungeon.
+- [`dungeons`](dungeons/) holds scripted dungeon choreography, one submodule per dungeon.
+  Deadmines is its first dungeon.
 - [`example`](example/) demonstrates the smallest compiled Package and a notify-only gameplay hook.
 
 Packages compile into LyraCore's Module and run as trusted code. Review a Package as you would a
