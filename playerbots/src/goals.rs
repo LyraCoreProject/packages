@@ -9,16 +9,23 @@
 //! WHAT IT DOES NOT DO. Every action goes out through a core operation the player path also uses:
 //! the actor verbs for attack, stop, cast and invite-accept, and the shared creature leg writer for
 //! movement. The Package decides WHAT to do; the core decides whether it is allowed.
+//!
+//! CROSSING A SHARD BOUNDARY. A bot follows its party wherever the party goes, and on a realm of
+//! several Shards that means a Transfer. The tick decides it and the Gateway drives it: the tick
+//! writes one Transfer Intent, marks the bot in transit, and stops. The bot arrives with no live
+//! entity and no goal, and the first tick there rebuilds it and falls it back in. Both halves are
+//! this file; there is no arrival reducer.
 
 use spacetimedb::{ReducerContext, Table};
 
 use super::{
-    cond, pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
-    PlayerbotsPersonality, PlayerbotsRotation, ROLE_HEALER, ROLE_TANK,
+    cond, goal, pkg_playerbots_bot, pkg_playerbots_goal, pkg_playerbots_personality,
+    pkg_playerbots_rotation, PlayerbotsBot, PlayerbotsGoal, PlayerbotsPersonality,
+    PlayerbotsRotation, ROLE_HEALER, ROLE_TANK,
 };
 use crate::{
-    game_character, game_creature_spline, game_group, game_group_member, game_melee_attack,
-    game_threat, game_world_entity,
+    game_areatrigger_teleport, game_character, game_creature_spline, game_group, game_group_member,
+    game_instance, game_melee_attack, game_threat, game_world_entity,
 };
 
 /// How long a bot waits between decisions. The tick pass fires every half second; a bot that
@@ -41,11 +48,33 @@ const ASSIST_RADIUS_YD: f32 = 30.0;
 /// Melee reach. A bot closes to this before its swings can land.
 const MELEE_RANGE_YD: f32 = 4.0;
 
+/// How long a bot stands somewhere that is not its home ground, with no party to follow on this
+/// Shard, before it crosses home.
+///
+/// It is a wait rather than an immediate decision because arriving on a Shard and being abandoned
+/// on one look identical for a moment: a bot lands in a dungeon a heartbeat before the leader whose
+/// crossing was driven first. A live crossing settles in milliseconds, so ten seconds separates the
+/// two with room to spare.
+const STRANDED_WAIT_MICROS: i64 = 10_000_000;
+
+/// How long a bot stays bodiless after its Transfer Intent is written before the tick gives up on
+/// the crossing and rebuilds it where it stands.
+///
+/// The Intent is a request, not a record. If nothing drives it — the Gateway is down, or a
+/// republish landed in the middle — no Refusal comes back and no retry happens, so the only way out
+/// is this deadline. On a realm of one Shard nothing ever drives it either, because the placement
+/// WAS the whole crossing, and this is what puts the bot back in the world there.
+const IN_TRANSIT_WAIT_MICROS: i64 = 3_000_000;
+
 /// The party a bot is in: who leads it and who else is in it.
 struct Party {
+    group_id: u64,
     leader_guid: u64,
     members: Vec<u64>,
 }
+
+/// The pair a Shard Map routes on: which map, and which instance of it (`0` is the open world).
+type Partition = (u32, u64);
 
 crate::game_tick_pass!(fn playerbots_brain_pass(ctx) {
     // The Package's own ensure path. A Shard that has just published, or a second Shard that has
@@ -58,7 +87,7 @@ crate::game_tick_pass!(fn playerbots_brain_pass(ctx) {
         .filter(|bot| bot.next_think_micros <= now)
         .collect();
     for mut bot in due {
-        think(ctx, &bot);
+        think(ctx, &bot, now);
         bot.next_think_micros = now + THINK_INTERVAL_MICROS;
         bots.id().update(bot);
     }
@@ -132,8 +161,8 @@ fn is_bot(ctx: &ReducerContext, guid: u64) -> bool {
 
 // ---- the decision ----------------------------------------------------------------------------
 
-fn think(ctx: &ReducerContext, bot: &PlayerbotsBot) {
-    let Ok(me) = crate::helpers::live_entity(ctx, bot.character_guid) else {
+fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
+    let Some(me) = body(ctx, bot, now) else {
         return;
     };
     if me.dead {
@@ -143,27 +172,149 @@ fn think(ctx: &ReducerContext, bot: &PlayerbotsBot) {
     if should_flee(me.health, me.max_health, personality.flee_at_pct) {
         let _ = crate::actor::stop_attack(ctx, me.guid);
         walk_toward(ctx, &me, (bot.home_x, bot.home_y, bot.home_z), 0.0, true);
+        record_goal(ctx, bot.character_guid, goal::FLEE, now);
         return;
     }
 
     let party = party_of(ctx, bot.character_guid);
-    if let Some(party) = &party {
-        // A leader who has crossed into an instance is followed before anything else: a bot left
-        // outside is a bot fighting nothing, next to nobody.
-        if follow_across_partitions(ctx, &me, party.leader_guid) {
-            return;
+    let leader = party
+        .as_ref()
+        .and_then(|party| crate::helpers::live_entity(ctx, party.leader_guid).ok());
+    match &leader {
+        // A leader who has crossed into an instance on THIS Shard is followed before anything
+        // else: a bot left outside is a bot fighting nothing, next to nobody.
+        Some(leader) => {
+            if follow_across_partitions(ctx, &me, leader) {
+                record_goal(ctx, bot.character_guid, goal::FOLLOW, now);
+                return;
+            }
+        }
+        // Nobody to follow on this Shard: the party crossed a boundary, this bot was left behind
+        // by one, or its party is gone. All three are answered by a crossing of its own.
+        None => {
+            if cross_shards(ctx, &me, bot, party.as_ref(), now) {
+                return;
+            }
         }
     }
 
     if let Some(target) = combat_target(ctx, &me, party.as_ref()) {
         fight(ctx, &me, bot, party.as_ref(), &personality, target);
+        record_goal(ctx, bot.character_guid, goal::FIGHT, now);
         return;
     }
 
     match &party {
-        Some(party) => follow_leader(ctx, &me, party.leader_guid),
-        None => wander(ctx, &me, bot),
+        Some(party) => {
+            follow_leader(ctx, &me, party.leader_guid);
+            record_goal(ctx, bot.character_guid, goal::FOLLOW, now);
+        }
+        None => {
+            wander(ctx, &me, bot);
+            record_goal(ctx, bot.character_guid, goal::WANDER, now);
+        }
     }
+}
+
+// ---- the goal row ------------------------------------------------------------------------------
+
+fn goal_of(ctx: &ReducerContext, character_guid: u64) -> Option<PlayerbotsGoal> {
+    ctx.db
+        .pkg_playerbots_goal()
+        .by_character()
+        .filter(&character_guid)
+        .next()
+}
+
+/// Write down what this bot is doing. Re-deciding the SAME goal leaves `since_micros` alone, so it
+/// keeps measuring how long the bot has held the goal — which is what both crossing waits read.
+fn record_goal(ctx: &ReducerContext, character_guid: u64, kind: u8, now: i64) {
+    let goals = ctx.db.pkg_playerbots_goal();
+    match goal_of(ctx, character_guid) {
+        Some(row) if row.kind == kind => {}
+        Some(mut row) => {
+            row.kind = kind;
+            row.since_micros = now;
+            goals.id().update(row);
+        }
+        None => {
+            goals.insert(PlayerbotsGoal {
+                id: 0,
+                character_guid,
+                kind,
+                since_micros: now,
+            });
+        }
+    }
+}
+
+/// How long this bot has held `kind`, or `0` when it is holding something else.
+fn held_for(ctx: &ReducerContext, character_guid: u64, kind: u8, now: i64) -> i64 {
+    goal_of(ctx, character_guid)
+        .filter(|row| row.kind == kind)
+        .map_or(0, |row| now.saturating_sub(row.since_micros))
+}
+
+// ---- arrival adoption --------------------------------------------------------------------------
+
+/// May the tick put a body back on a bodiless bot whose durable Character row is on this Shard?
+///
+/// Not while a Transfer Intent this Shard wrote is still young enough to be driven. The Gateway
+/// reads the Character row to decide where the crossing goes, so a body put back before then would
+/// move the bot out from under its own Intent.
+///
+/// Yes once the wait is over, whatever became of the crossing. An Intent is a request, not a
+/// record: nothing refuses it and nothing retries it. So the wait is the only way back for a bot
+/// whose crossing was never driven — a republish in the middle of one, a Gateway that was down —
+/// and it is also the ordinary path on a realm of one Shard, where the placement WAS the whole
+/// crossing and there was never anything for the Gateway to do.
+///
+/// Pure, because "no stuck bot" is the property this decides and a property is worth an assertion.
+pub(crate) fn may_rebuild(goal_kind: Option<u8>, in_transit_for_micros: i64) -> bool {
+    goal_kind != Some(goal::IN_TRANSIT) || in_transit_for_micros >= IN_TRANSIT_WAIT_MICROS
+}
+
+/// This bot's live entity, rebuilt from its durable Character row when it has none.
+///
+/// That rebuild IS the arrival. A Transfer carries the Character row and every registered transfer
+/// arm across the Shard boundary; it does not carry a `game_world_entity`, and nothing on the far
+/// side re-spawns one. Until this runs the arriving bot is durable but not in the world.
+///
+/// Two states deliberately produce no body:
+///
+/// - The bot is escrowed mid-Transfer. [`crate::helpers::character_by_guid`] is the in-transit
+///   fence, so the durable row simply does not answer, and a bot half-way across a boundary is not
+///   rebuilt on the Shard it is leaving.
+/// - This Shard wrote a Transfer Intent for it inside [`IN_TRANSIT_WAIT_MICROS`]. The Gateway reads
+///   the Character row to decide where the crossing goes, so putting a body back before the crossing
+///   is driven would move the bot out from under its own Intent.
+fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::WorldEntity> {
+    if let Ok(me) = crate::helpers::live_entity(ctx, bot.character_guid) {
+        return Some(me);
+    }
+    let current = goal_of(ctx, bot.character_guid);
+    if !may_rebuild(
+        current.as_ref().map(|row| row.kind),
+        held_for(ctx, bot.character_guid, goal::IN_TRANSIT, now),
+    ) {
+        return None;
+    }
+    let character = crate::helpers::character_by_guid(ctx, bot.character_guid)?;
+    let entity = crate::build_player_entity(ctx, &character, spacetimedb::Identity::ZERO);
+    ctx.db.game_world_entity().insert(entity);
+    // A leg thrown before the crossing would interpolate the arrival straight back across the map
+    // it just left.
+    ctx.db
+        .game_creature_spline()
+        .guid()
+        .delete(bot.character_guid);
+    spacetimedb::log::info!(
+        "playerbots: bot {} is in the world on map {} instance {}",
+        bot.character_guid,
+        character.map_id,
+        character.pending_instance_id
+    );
+    crate::helpers::live_entity(ctx, bot.character_guid).ok()
 }
 
 /// Break off at or below `flee_at_pct` of maximum health. `0` never flees, which is what a tank
@@ -206,9 +357,177 @@ fn party_of(ctx: &ReducerContext, guid: u64) -> Option<Party> {
         .map(|row| row.character_guid)
         .collect();
     Some(Party {
+        group_id: group.group_id,
         leader_guid: group.leader_guid,
         members,
     })
+}
+
+// ---- crossing a Shard boundary -------------------------------------------------------------------
+
+/// What a bot does when there is nobody to follow on this Shard.
+///
+/// Pure over facts the tick reads off its own Shard's rows, because that is all a Package ever
+/// gets: the Module is Shard-agnostic, so "the party is somewhere else" is never a directory
+/// lookup, it is the absence of the leader plus whatever durable trace the party left behind.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum Crossing {
+    /// Nothing to cross. The bot goes on thinking about this Shard.
+    Stay,
+    /// Into the party's live instance. The leader walked through a portal and this Shard kept the
+    /// instance row that says which dungeon they went to.
+    Join(Partition),
+    /// Back to the bot's home point. Nothing is left here to follow.
+    GoHome,
+    /// Off its home ground with nobody to follow, and not for long enough to give up on them.
+    Wait,
+}
+
+/// `party_instance` is the party's live instance AS THIS SHARD RECORDS IT. The Shard a party sets
+/// out from keeps the row that resolved their portal, so a bot left behind can read where they
+/// went; the Shard that serves the dungeon holds a mirror of the same instance under no party at
+/// all, so a bot already inside reads `None` and falls through to the way home. That asymmetry is
+/// what makes one rule serve both directions.
+pub(crate) fn plan_crossing(
+    here: Partition,
+    party_instance: Option<Partition>,
+    home: Partition,
+    stranded_for_micros: i64,
+) -> Crossing {
+    if let Some(destination) = party_instance {
+        if destination != here {
+            return Crossing::Join(destination);
+        }
+    }
+    if here == home {
+        return Crossing::Stay;
+    }
+    if stranded_for_micros >= STRANDED_WAIT_MICROS {
+        Crossing::GoHome
+    } else {
+        Crossing::Wait
+    }
+}
+
+/// Act on [`plan_crossing`]. Returns `true` when it took the tick.
+///
+/// Waiting takes the tick too. A bot holding still for a few seconds while it finds out whether it
+/// has been left behind is honest about not knowing, and it keeps the wait on one clock: the goal
+/// row measures how long the bot has held ONE goal, so a bot that went back to fighting between
+/// ticks would restart its wait every time.
+fn cross_shards(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    bot: &PlayerbotsBot,
+    party: Option<&Party>,
+    now: i64,
+) -> bool {
+    let here = (me.map_id, me.instance_id);
+    let home = (bot.home_map, 0);
+    let destination = party_destination(ctx, party);
+    let plan = plan_crossing(
+        here,
+        destination.as_ref().map(|d| (d.map_id, d.instance_id)),
+        home,
+        held_for(ctx, bot.character_guid, goal::STRANDED, now),
+    );
+    match plan {
+        Crossing::Stay => false,
+        Crossing::Wait => {
+            record_goal(ctx, bot.character_guid, goal::STRANDED, now);
+            true
+        }
+        Crossing::Join(_) => {
+            let destination = destination.expect("Join is only planned from a known destination");
+            cross(
+                ctx,
+                bot.character_guid,
+                destination,
+                "following the party",
+                now,
+            );
+            true
+        }
+        Crossing::GoHome => {
+            cross(
+                ctx,
+                bot.character_guid,
+                crate::transfer::Destination {
+                    map_id: bot.home_map,
+                    instance_id: 0,
+                    x: bot.home_x,
+                    y: bot.home_y,
+                    z: bot.home_z,
+                    o: 0.0,
+                },
+                "the party is gone from this Shard",
+                now,
+            );
+            true
+        }
+    }
+}
+
+/// Ask for one crossing. The Character row is what the Gateway reads to decide where the bot is
+/// bound, and the core writer moves it and records the Intent in one transaction — so nothing here
+/// may touch the bot's position afterwards, or the Intent reads as stale and the crossing is
+/// refused.
+fn cross(
+    ctx: &ReducerContext,
+    bot_guid: u64,
+    destination: crate::transfer::Destination,
+    reason: &str,
+    now: i64,
+) {
+    let _ = crate::actor::stop_attack(ctx, bot_guid);
+    // A leg still playing would fight the placement for as long as the client interpolates it.
+    ctx.db.game_creature_spline().guid().delete(bot_guid);
+    spacetimedb::log::info!(
+        "playerbots: bot {bot_guid} crosses to map {} instance {} ({reason})",
+        destination.map_id,
+        destination.instance_id
+    );
+    crate::transfer::emit_bot_transfer_intent(ctx, bot_guid, destination, reason);
+    record_goal(ctx, bot_guid, goal::IN_TRANSIT, now);
+}
+
+/// Where this bot's party went, as a place a Transfer can be aimed at.
+///
+/// Both halves have to be known. The instance row says WHICH dungeon; the portal that targets that
+/// map says where inside it a party lands, which is the one point on a dungeon map the imported
+/// game data guarantees a follower can stand. An instance nothing can land in is not a destination,
+/// and a bot facing one is treated as having no party here at all — it waits, then goes home.
+fn party_destination(
+    ctx: &ReducerContext,
+    party: Option<&Party>,
+) -> Option<crate::transfer::Destination> {
+    let party = party?;
+    let instance = ctx
+        .db
+        .game_instance()
+        .by_party()
+        .filter(&party.group_id)
+        .find(|instance| !instance.reset_requested)?;
+    let (x, y, z, o) = portal_into(ctx, instance.map_id)?;
+    Some(crate::transfer::Destination {
+        map_id: instance.map_id,
+        instance_id: instance.instance_id,
+        x,
+        y,
+        z,
+        o,
+    })
+}
+
+/// Where the portal into `map_id` puts whoever walks through it. `game_areatrigger_teleport` records
+/// each portal by its TARGET, so the rows that name this map are exactly the ways in, and they all
+/// land in the same doorway.
+fn portal_into(ctx: &ReducerContext, map_id: u32) -> Option<(f32, f32, f32, f32)> {
+    ctx.db
+        .game_areatrigger_teleport()
+        .iter()
+        .find(|portal| portal.target_map == map_id)
+        .map(|portal| (portal.x, portal.y, portal.z, portal.o))
 }
 
 // ---- fighting --------------------------------------------------------------------------------
@@ -446,23 +765,21 @@ fn engaged_enemies(ctx: &ReducerContext, me: &crate::WorldEntity, party: Option<
 
 // ---- following and wandering -------------------------------------------------------------------
 
-/// A leader on another map or in another instance: rebuild the bot's position there directly. A
-/// real player crosses with a client handshake it has to answer; a bot has no client, so the
-/// server-side move IS the whole crossing.
+/// A leader on another map or in another instance OF THIS SHARD: rebuild the bot's position there
+/// directly. A real player crosses with a client handshake it has to answer; a bot has no client,
+/// so the server-side move IS the whole crossing.
 ///
 /// Returns `true` when it acted, so the caller stops thinking about this tick.
 ///
-/// SHARD BOUNDARY: this reads the leader out of THIS Shard's tables. A leader who has crossed to
-/// another Shard has no row here at all, so this sees nothing and the bot stays put.
+/// SHARD BOUNDARY: the caller resolved `leader` out of THIS Shard's tables. A leader who has crossed
+/// to another Shard has no row here at all, so this is never reached for one — [`cross_shards`]
+/// answers that case instead.
 fn follow_across_partitions(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
-    leader_guid: u64,
+    leader: &crate::WorldEntity,
 ) -> bool {
-    let Ok(leader) = crate::helpers::live_entity(ctx, leader_guid) else {
-        return false;
-    };
-    if crate::helpers::in_same_partition(&leader, me.map_id, me.instance_id) {
+    if crate::helpers::in_same_partition(leader, me.map_id, me.instance_id) {
         return false;
     }
     let _ = crate::actor::stop_attack(ctx, me.guid);
@@ -707,5 +1024,106 @@ mod tests {
     #[test]
     fn an_immobile_bot_travels_nothing() {
         assert_eq!(step_length(50.0, 0.0, 0.0, THINK_INTERVAL_MICROS), 0.0);
+    }
+
+    // ---- crossing a Shard boundary -----------------------------------------------------------
+
+    /// The open world of the Shard a party sets out from, and the Deadmines instance they walk
+    /// into. `HOME` is where a bot was spawned, which is where it goes when there is nothing left
+    /// to follow.
+    const HOME: Partition = (0, 0);
+    const DUNGEON: Partition = (36, 7);
+
+    #[test]
+    fn a_bot_whose_party_walked_into_a_dungeon_crosses_after_them() {
+        assert_eq!(
+            plan_crossing(HOME, Some(DUNGEON), HOME, 0),
+            Crossing::Join(DUNGEON)
+        );
+    }
+
+    /// The warning the crossing seam carries: an Intent for a bot that is already on the
+    /// destination Shard is refused, and costs a log line every tick it is written.
+    #[test]
+    fn a_bot_already_in_its_partys_instance_asks_for_no_crossing() {
+        assert_eq!(
+            plan_crossing(DUNGEON, Some(DUNGEON), HOME, 0),
+            Crossing::Wait
+        );
+    }
+
+    /// The return leg. The Shard that serves a dungeon holds the instance under no party, so a bot
+    /// inside one reads no party instance at all — and once the leader is gone from it too, home is
+    /// the only place left.
+    #[test]
+    fn a_bot_left_in_a_dungeon_goes_home_once_the_wait_is_over() {
+        assert_eq!(
+            plan_crossing(DUNGEON, None, HOME, STRANDED_WAIT_MICROS),
+            Crossing::GoHome
+        );
+    }
+
+    /// The arrival window: a bot is driven across on its own, so it can land a moment before the
+    /// leader whose crossing was driven first. Turning round immediately would be a loop.
+    #[test]
+    fn a_bot_that_has_just_arrived_waits_for_its_party_rather_than_turning_round() {
+        assert_eq!(
+            plan_crossing(DUNGEON, None, HOME, STRANDED_WAIT_MICROS - 1),
+            Crossing::Wait
+        );
+    }
+
+    #[test]
+    fn a_bot_standing_on_its_own_home_ground_never_crosses() {
+        assert_eq!(plan_crossing(HOME, None, HOME, 0), Crossing::Stay);
+        assert_eq!(
+            plan_crossing(HOME, None, HOME, STRANDED_WAIT_MICROS * 100),
+            Crossing::Stay
+        );
+    }
+
+    /// Two parties in two instances of one map are two destinations, so the instance has to be part
+    /// of the comparison — a bot in instance 7 whose party is in instance 8 has to cross.
+    #[test]
+    fn two_instances_of_one_map_are_two_destinations() {
+        assert_eq!(
+            plan_crossing(DUNGEON, Some((36, 8)), HOME, 0),
+            Crossing::Join((36, 8))
+        );
+    }
+
+    /// A crossing that was never driven — a republish in the middle of one, or a Gateway that was
+    /// down — leaves a bot durable, bodiless and marked in transit, with no Intent row left (the
+    /// core reaps those in a second). The wait is what puts it back in the world.
+    #[test]
+    fn a_bot_whose_crossing_was_never_driven_is_put_back_in_the_world() {
+        assert!(!may_rebuild(Some(goal::IN_TRANSIT), 0));
+        assert!(!may_rebuild(
+            Some(goal::IN_TRANSIT),
+            IN_TRANSIT_WAIT_MICROS - 1
+        ));
+        assert!(may_rebuild(Some(goal::IN_TRANSIT), IN_TRANSIT_WAIT_MICROS));
+    }
+
+    /// Arrival adoption: a Transfer does not carry the goal row, so an arriving bot holds no goal
+    /// at all — and that is the state the tick has to rebuild a body for, immediately.
+    #[test]
+    fn a_bot_that_arrives_with_no_goal_is_rebuilt_at_once() {
+        assert!(may_rebuild(None, 0));
+    }
+
+    /// A bodiless bot that is not crossing is a bot whose Shard despawned it — the same rebuild,
+    /// with no wait to serve.
+    #[test]
+    fn a_bodiless_bot_holding_any_other_goal_is_rebuilt_at_once() {
+        for kind in [
+            goal::FOLLOW,
+            goal::FIGHT,
+            goal::FLEE,
+            goal::WANDER,
+            goal::STRANDED,
+        ] {
+            assert!(may_rebuild(Some(kind), 0), "goal kind {kind}");
+        }
     }
 }

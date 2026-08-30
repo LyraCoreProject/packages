@@ -60,17 +60,63 @@ the flee threshold: two bots on one rotation at the same health break off at dif
 One `game_tick_pass!`, with each bot throttled to a decision a second. There is no Package-owned
 schedule row, so a republish cannot leave the bots pointing at a reducer the new wasm no longer has.
 
-Each decision, in order: break off if hurt past the personality threshold; follow a leader who has
-crossed into another map or instance; fight what is on the party; otherwise follow the leader, or
-wander near home when ungrouped.
+Each decision, in order: put a body back on if the bot has none; break off if hurt past the
+personality threshold; follow a leader who has crossed into another map or instance of this Shard;
+cross a Shard boundary when the party is not on this one at all; fight what is on the party;
+otherwise follow the leader, or wander near home when ungrouped.
+
+`pkg_playerbots_goal` holds what the bot settled on and when it settled on it. Read it to see what a
+party is doing:
+
+| kind | meaning |
+| --- | --- |
+| `0` | following the leader |
+| `1` | fighting |
+| `2` | broken off, running home |
+| `3` | wandering near home, ungrouped |
+| `4` | off its home ground with no party on this Shard, waiting |
+| `5` | a Transfer Intent is out; the bot is crossing |
 
 Every action leaves through a core operation the player path also uses — the actor verbs for attack,
 stop, cast and invite-accept, and the shared creature leg writer for movement. The Package decides
 what to do; the core decides whether it is allowed.
 
+## Crossing a Shard boundary
+
+A party that walks into a dungeon on a sharded realm crosses to the Shard that serves it. The bots
+follow, and they come home again afterwards, through the same Transfer a player uses.
+
+Both directions read one rule off this Shard's own rows, because a Package never gets a directory
+of where anybody is:
+
+- **In.** The leader has no entity here, and the party has a live instance here. That instance row
+  is what resolved the leader's portal, and the Shard they set out from keeps it. The bot is placed
+  at the portal's landing point and one Transfer Intent is written.
+- **Home.** The leader has no entity here, and there is no party instance here either — which is
+  what the Shard that serves the dungeon looks like from inside one. After ten seconds the bot
+  crosses back to its home point.
+
+The ten seconds are the difference between being abandoned and having simply arrived first: bots are
+driven across one at a time, so a bot can land a moment before the leader it followed.
+
+Arriving is not a special case. A Transfer carries the Character row, the roster row and the
+personality; it does not carry the goal row and it does not carry a live entity. So a bot arrives
+with no body and no goal, and the ordinary tick rebuilds one and decides afresh. That is the whole
+of arrival.
+
+On a realm of one Shard the same code runs and the crossing is already finished when the Intent is
+written, because the placement was the whole move. The Gateway says so and the bot is back in the
+world about three seconds later. The same three seconds are what recovers a bot whose crossing was
+never driven at all — a republish in the middle of one, or a Gateway that was down. An Intent is a
+request, not a record: nothing refuses it and nothing retries it, so the deadline is the way back.
+
 ## Limits
 
 - Bots do not send invites. A player invites them.
-- A bot follows its leader across maps and instances **inside one Shard**. A leader who crosses to
-  another Shard has no row where the bots are, so the bots stay put.
 - Movement is a straight line. Bots do not use navigation data.
+- A leader who logs out is a leader who is not on this Shard, so the bots go home after the wait.
+- A party the leader has LEFT is led by whichever bot inherited it, and a bot leader is on this
+  Shard by definition — so those bots hold where they are. Disband the party, or bring the leader
+  back, to send them home.
+- A crossing is aimed at a portal into the destination map. A dungeon map with no imported portal
+  row is a dungeon the bots cannot follow anybody into; they wait, then go home.
