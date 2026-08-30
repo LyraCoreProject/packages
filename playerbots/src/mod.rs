@@ -129,6 +129,67 @@ crate::character_owned!(transfer, fn sweep_transfer_pkg_playerbots_bot(ctx, char
     remint = id,
 });
 
+// ---- goals -----------------------------------------------------------------------------------
+
+/// What a bot is doing. The brain pass writes one of these every time its decision changes, so an
+/// Operator can read a party's intent out of the table rather than out of the log.
+pub(crate) mod goal {
+    /// Keeping station on the party leader.
+    pub(crate) const FOLLOW: u8 = 0;
+    /// Swinging at whatever the party is fighting.
+    pub(crate) const FIGHT: u8 = 1;
+    /// Broken off past the personality threshold, running for the home point.
+    pub(crate) const FLEE: u8 = 2;
+    /// Ungrouped and near home, milling about.
+    pub(crate) const WANDER: u8 = 3;
+    /// Off its home ground with no party to follow on this Shard. `since_micros` opens the wait
+    /// before the bot crosses home.
+    pub(crate) const STRANDED: u8 = 4;
+    /// A Transfer Intent is out for this bot. It has no live entity until the crossing settles.
+    pub(crate) const IN_TRANSIT: u8 = 5;
+}
+
+/// The bot's current goal, held between ticks. One row per bot that has decided anything at all.
+///
+/// The ABSENCE of a row is load-bearing: it is what a bot looks like the moment it arrives on a
+/// Shard, because this row does not cross a Shard boundary (see the transport arm below). The
+/// brain pass then rebuilds the bot's live entity and decides afresh, which is the whole of
+/// arrival adoption — there is no arrival reducer. [entity]
+#[table(
+    accessor = pkg_playerbots_goal,
+    public,
+    index(accessor = by_character, btree(columns = [character_guid]))
+)]
+pub struct PlayerbotsGoal {
+    #[primary_key]
+    #[auto_inc]
+    pub id: u64,
+    /// One row per bot, by the same construction as the roster's own key.
+    pub character_guid: u64,
+    /// One of [`goal`].
+    pub kind: u8,
+    /// When the bot took this goal, in wall-clock microseconds. Held across ticks that re-decide
+    /// the same goal, so it measures how long the bot has been doing this and not how long ago it
+    /// last thought. The two waits the crossing needs — the arrival grace and the in-transit
+    /// grace — are read off it.
+    pub since_micros: i64,
+}
+
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_goal(ctx, character_guid) {
+    let goals = ctx.db.pkg_playerbots_goal();
+    for row in goals.by_character().filter(&character_guid).collect::<Vec<_>>() {
+        goals.id().delete(row.id);
+    }
+});
+
+// A goal does NOT cross a Shard boundary, and that is the design rather than an omission. Every
+// goal this Package can hold names a place: a leader to keep station on, a creature to swing at, a
+// home point to run for. None of those exist on the destination Shard, so carrying the row would
+// hand an arriving bot a decision about a world it is no longer in. Leaving it behind is also the
+// arrival signal — a bot with no goal is a bot that has just landed, and the brain pass falls it
+// back in with the party it finds there.
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_goal());
+
 /// How one bot fights when the rotation leaves a choice. The minimal axis is the flee threshold:
 /// two bots on the same rotation at the same health diverge on it alone, which is what makes a
 /// party of bots read as a party of people rather than one mind in three bodies. [entity]
