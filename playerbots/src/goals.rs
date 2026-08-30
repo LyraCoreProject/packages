@@ -31,9 +31,11 @@ use super::{
     PlayerbotsRotation, ROLE_HEALER, ROLE_TANK,
 };
 use crate::{
-    game_areatrigger_teleport, game_character, game_character_quest, game_corpse_loot,
-    game_creature_quest, game_creature_spline, game_group, game_group_member, game_instance,
-    game_melee_attack, game_quest_objective, game_quest_template, game_threat, game_world_entity,
+    game_areatrigger_teleport, game_character, game_character_quest,
+    game_character_quest_event_credit, game_corpse_loot, game_creature_quest, game_creature_spline,
+    game_creature_template, game_group, game_group_member, game_instance, game_melee_attack,
+    game_quest_event_requirement, game_quest_objective, game_quest_reward_choice,
+    game_quest_reward_item, game_quest_template, game_threat, game_world_entity,
 };
 
 /// How long a bot waits between decisions. The tick pass fires every half second; a bot that
@@ -300,6 +302,9 @@ pub(crate) fn death_step(dead: bool, ghost: bool) -> DeathStep {
 /// bot that died mid-quest resumes the quest it was on rather than choosing again. Where it
 /// resumes from is the graveyard the death resolved to, which is why a quest area within the leash
 /// of one is a quest area a bot can die in and carry on.
+///
+/// Runs for every bot, grouped or not. A bot in a party used to lie dead for the rest of its life,
+/// which read as a wipe the party could not recover from.
 fn get_back_up(ctx: &ReducerContext, me: &crate::WorldEntity, bot: &PlayerbotsBot, now: i64) {
     use lyracore_shared::constants::player_flags;
     let step = death_step(me.dead, me.player_flags & player_flags::GHOST != 0);
@@ -310,10 +315,13 @@ fn get_back_up(ctx: &ReducerContext, me: &crate::WorldEntity, bot: &PlayerbotsBo
     };
     record_goal(ctx, bot.character_guid, goal::RESURRECTING, now);
     match outcome {
-        Ok(()) if step == DeathStep::Resurrect => spacetimedb::log::info!(
-            "playerbots: bot {} resurrected at the graveyard and resumes what it was doing",
-            me.guid
-        ),
+        Ok(()) if step == DeathStep::Resurrect => {
+            clear_pending_ghost(ctx, me.guid);
+            spacetimedb::log::info!(
+                "playerbots: bot {} resurrected at the graveyard and resumes what it was doing",
+                me.guid
+            );
+        }
         Ok(()) => {}
         Err(refusal) => {
             spacetimedb::log::warn!(
@@ -322,6 +330,22 @@ fn get_back_up(ctx: &ReducerContext, me: &crate::WorldEntity, bot: &PlayerbotsBo
             )
         }
     }
+}
+
+/// Forget that the bot was a ghost, now that it is not one.
+///
+/// The carry column is written by the core's own persist and read back by whoever rebuilds the
+/// entity. A real player clears it by logging in; a bot never logs in, so a stale `true` would make
+/// the next rebuild — an ordinary Shard arrival — put a living bot back in the world as a corpse.
+fn clear_pending_ghost(ctx: &ReducerContext, character_guid: u64) {
+    let Some(mut character) = crate::helpers::character_by_guid(ctx, character_guid) else {
+        return;
+    };
+    if !character.pending_ghost {
+        return;
+    }
+    character.pending_ghost = false;
+    ctx.db.game_character().guid().update(character);
 }
 
 // ---- the goal row ------------------------------------------------------------------------------
@@ -396,6 +420,14 @@ pub(crate) fn may_rebuild(goal_kind: Option<u8>, in_transit_for_micros: i64) -> 
 /// - This Shard wrote a Transfer Intent for it inside [`IN_TRANSIT_WAIT_MICROS`]. The Gateway reads
 ///   the Character row to decide where the crossing goes, so putting a body back before the crossing
 ///   is driven would move the bot out from under its own Intent.
+///
+/// A REBUILT GHOST STAYS A GHOST. `build_player_entity` always builds alive, and a released ghost
+/// loses its body whenever the graveyard it released to is on another map — a death in a dungeon
+/// resolves to a graveyard outside it, and the cross-map placement despawns the entity. Rebuilding
+/// that bot alive would hand it a free full-health resurrection on the spot, with its corpse left
+/// behind and its death never resolved. `pending_instance_id`'s sibling carry column,
+/// `pending_ghost`, is what the Character row remembers instead, and re-applying it here is the same
+/// thing `player_login` does at the same point of the same rebuild.
 fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::WorldEntity> {
     if let Ok(me) = crate::helpers::live_entity(ctx, bot.character_guid) {
         return Some(me);
@@ -408,7 +440,15 @@ fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::Wo
         return None;
     }
     let character = crate::helpers::character_by_guid(ctx, bot.character_guid)?;
-    let entity = crate::build_player_entity(ctx, &character, spacetimedb::Identity::ZERO);
+    let mut entity = crate::build_player_entity(ctx, &character, spacetimedb::Identity::ZERO);
+    if character.pending_ghost {
+        let (dead, health, player_flags, unit_bytes_1) =
+            crate::world::ghost_restored_fields(entity.player_flags, entity.unit_bytes_1);
+        entity.dead = dead;
+        entity.health = health;
+        entity.player_flags = player_flags;
+        entity.unit_bytes_1 = unit_bytes_1;
+    }
     ctx.db.game_world_entity().insert(entity);
     // A leg thrown before the crossing would interpolate the arrival straight back across the map
     // it just left.
@@ -897,6 +937,8 @@ pub(crate) struct Requirements {
     pub classes: u32,
     pub prev_quest: u32,
     pub repeatable: bool,
+    /// The quest hands the Character an item on accept, so accepting needs a free bag slot.
+    pub hands_over_an_item: bool,
 }
 
 impl Requirements {
@@ -907,6 +949,7 @@ impl Requirements {
             classes: tmpl.required_classes,
             prev_quest: tmpl.prev_quest_id,
             repeatable: tmpl.repeatable,
+            hands_over_an_item: tmpl.src_item != 0,
         }
     }
 }
@@ -939,6 +982,11 @@ pub(crate) enum QuestGate {
     WrongClass,
     PrerequisiteUnmet,
     AlreadyHeld,
+    /// The quest hands over an item on accept and the bag is full. Last, because the core reaches
+    /// it last: the accept EFFECTS grant the item, after every other Gate has passed. A bot never
+    /// sells and never destroys, so a full bag is a lasting state rather than a passing one, and a
+    /// gate that could not see it would walk to the giver and be refused there once a second.
+    NoRoom,
 }
 
 /// The accept gate, asked BEFORE the bot commits to a run rather than after it arrives.
@@ -955,6 +1003,7 @@ pub(crate) fn quest_gate(
     needs: &Requirements,
     prerequisite_rewarded: bool,
     logged: LogEntry,
+    bag_has_room: bool,
 ) -> QuestGate {
     if who.level < needs.min_level {
         return QuestGate::TooLow;
@@ -972,15 +1021,20 @@ pub(crate) fn quest_gate(
     // quest that was turned in, and a quest of any kind that ran out of time. Anything else that
     // already has a row is a duplicate.
     match logged {
-        LogEntry::Absent | LogEntry::Failed => QuestGate::Open,
-        LogEntry::Rewarded if needs.repeatable => QuestGate::Open,
-        _ => QuestGate::AlreadyHeld,
+        LogEntry::Absent | LogEntry::Failed => {}
+        LogEntry::Rewarded if needs.repeatable => {}
+        _ => return QuestGate::AlreadyHeld,
     }
+    if needs.hands_over_an_item && !bag_has_room {
+        return QuestGate::NoRoom;
+    }
+    QuestGate::Open
 }
 
-/// [`quest_gate`] over live rows. The prerequisite is `crate::quest::quest_is_rewarded` — the same
-/// predicate `apply_accept_quest` calls for the same question — and the race and class masks go
-/// through the same `lyracore_shared::quest` functions the core gate uses.
+/// [`quest_gate`] over live rows. Every input comes from the predicate the core gate itself uses:
+/// `crate::quest::quest_is_rewarded` for the chain, the `lyracore_shared::quest` mask functions for
+/// race and class, and `crate::items::has_free_slot` for bag space — the one answer the whole
+/// server gives to "is there room for one more item".
 fn gate_for(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -997,6 +1051,7 @@ fn gate_for(
         tmpl.prev_quest_id == 0
             || crate::quest::quest_is_rewarded(ctx, me.guid, tmpl.prev_quest_id),
         logged(log, tmpl.entry),
+        crate::items::has_free_slot(ctx, me.guid),
     )
 }
 
@@ -1114,8 +1169,69 @@ fn kill_target_entry(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> Option
         .map(|obj| obj.target_entry)
 }
 
+/// Would `apply_turn_in_quest` accept this quest right now, as far as the bot can tell?
+///
+/// A mirror of the core's private `quest_is_complete`, and the reason it exists is walking. A bot
+/// that set off for the ender on any quest it had stopped hunting would arrive, be refused, drift,
+/// and set off again once a second, writing a movement leg and a failed Durable Request each time.
+/// It asks the same two questions the core asks — a COLLECT objective out of the live bag, every
+/// other kind off the progress counts — plus the event-credit arm. `apply_turn_in_quest` remains
+/// the authority; this only decides whether the walk is worth taking, exactly like [`quest_gate`].
+fn turn_in_ready(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> bool {
+    let objectives_met = ctx
+        .db
+        .game_quest_objective()
+        .by_quest()
+        .filter(&cq.quest_entry)
+        .all(|obj| {
+            let have = if obj.kind == crate::quest::objective_kind::COLLECT_ITEM {
+                crate::items::item_count(ctx, cq.character_guid, obj.target_entry)
+            } else {
+                cq.counts.get(obj.obj_index as usize).copied().unwrap_or(0)
+            };
+            have >= obj.required_count
+        });
+    let needs_event_credit = ctx
+        .db
+        .game_quest_event_requirement()
+        .by_quest()
+        .filter(&cq.quest_entry)
+        .next()
+        .is_some();
+    let has_event_credit = ctx
+        .db
+        .game_character_quest_event_credit()
+        .by_character()
+        .filter(&cq.character_guid)
+        .any(|credit| credit.quest_entry == cq.quest_entry);
+    objectives_met && (!needs_event_credit || has_event_credit)
+}
+
+/// Does handing this quest back need a free bag slot? A quest that pays items grants them with the
+/// same `grant_item` an accept uses, so a full bag refuses the turn-in after the walk.
+fn turn_in_needs_room(ctx: &ReducerContext, quest_entry: u32) -> bool {
+    ctx.db
+        .game_quest_reward_item()
+        .by_quest()
+        .filter(&quest_entry)
+        .next()
+        .is_some()
+        || ctx
+            .db
+            .game_quest_reward_choice()
+            .by_quest()
+            .filter(&quest_entry)
+            .next()
+            .is_some()
+}
+
 /// One held quest's next step: hunt what it names, or carry it back to whoever ends it. `None`
 /// means this quest has nothing the bot can do right now, and the caller tries the next one.
+///
+/// Both walks are conditional on the walk being able to end in something. A quest with an
+/// objective this Package cannot work — one that wants a gameobject used or a place explored — is
+/// left where it is rather than carried back to a Refusal, and so is a completed quest whose
+/// reward has nowhere to land.
 fn work_quest(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1129,12 +1245,22 @@ fn work_quest(
         fight(ctx, me, bot, None, personality, target.guid);
         return Some(goal::QUEST_HUNT);
     }
+    if !turn_in_ready(ctx, cq) {
+        return None;
+    }
+    if turn_in_needs_room(ctx, cq.quest_entry) && !crate::items::has_free_slot(ctx, me.guid) {
+        return None;
+    }
     hand_it_back(ctx, me, bot, cq.quest_entry, sight)
 }
 
-/// Carry a worked quest back. The ender in sight is walked to and asked; no ender in sight means
-/// the bot has strayed from the hub it took the quest at, and walking home is what brings the hub
-/// back into view.
+/// Carry a ready quest back. The ender in sight is walked to and asked; no ender in sight means the
+/// bot has strayed from the hub it took the quest at, and walking home is what brings the hub back
+/// into view.
+///
+/// The walk home starts at [`QUEST_SIGHT_YD`] rather than at the doorstep. Inside that distance the
+/// hub is already in the bot's own sight list, so a shorter threshold would only pull against the
+/// grind that moves the bot in the first place, one leg each per second.
 fn hand_it_back(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1149,7 +1275,7 @@ fn hand_it_back(
     });
     let Some(ender) = ender else {
         let home = (bot.home_x, bot.home_y, bot.home_z);
-        if distance_2d(me.x, me.y, home.0, home.1) <= HOME_ARRIVAL_YD {
+        if distance_2d(me.x, me.y, home.0, home.1) <= QUEST_SIGHT_YD {
             return None;
         }
         walk_toward(ctx, me, home, HOME_ARRIVAL_YD, true);
@@ -1172,9 +1298,17 @@ fn hand_it_back(
             spacetimedb::log::info!("playerbots: bot {} turned in quest {quest_entry}", me.guid);
             Some(goal::QUEST_TRAVEL)
         }
-        // Not complete after all — a COLLECT objective the bot has not filled, most often. Nothing
-        // more to do for this quest; the caller moves on to the next one.
-        Err(_) => None,
+        // The bot only walks here once [`turn_in_ready`] and the bag-space check both say yes, so
+        // a Refusal means those two and the core have disagreed. Said out loud, for the same
+        // reason a refused accept is: it is a defect, not a gameplay outcome.
+        Err(refusal) => {
+            spacetimedb::log::warn!(
+                "playerbots: bot {} was refused the turn-in of quest {quest_entry}, which it had \
+                 read as ready: {refusal}",
+                me.guid
+            );
+            None
+        }
     }
 }
 
@@ -1246,11 +1380,40 @@ fn open_quests_of(
         .collect()
 }
 
+/// How far above its own level a bot will pick a fight it did not have to pick.
+const GRIND_LEVEL_REACH: u32 = 3;
+
+/// Is this creature worth a `bot_level` bot's time, and survivable by it?
+///
+/// The low end is `crate::xp::xp_for_kill`, the core's own grey clamp: a creature that pays no
+/// experience is a creature there is no reason to fight. The high end is [`GRIND_LEVEL_REACH`], and
+/// elites are out whatever their level — a bot whose personality never lets it flee will otherwise
+/// walk into the nearest elite, die, resurrect, walk back into it, and spend its life doing that.
+/// Pure.
+pub(crate) fn worth_grinding(bot_level: u32, victim_level: u32, elite: bool) -> bool {
+    !elite
+        && victim_level <= bot_level + GRIND_LEVEL_REACH
+        && crate::xp::xp_for_kill(victim_level, bot_level) > 0
+}
+
+/// Is this creature an elite? The one place the core spells the elite ranks out is the kill-XP
+/// multiplier, which doubles for exactly ranks 1 to 3.
+fn is_elite(ctx: &ReducerContext, entry: u32) -> bool {
+    ctx.db
+        .game_creature_template()
+        .entry()
+        .find(entry)
+        .is_some_and(|template| crate::xp::rank_xp_multiplier(template.rank) > 1)
+}
+
 /// Kill something for the experience. What a bot does when no quest it can take is on offer and
 /// nothing it holds can be worked — a bot standing still in a field reads as broken.
 ///
 /// `crate::faction::is_friendly` is the same predicate the attack core's own gate uses, so a bot
-/// picks exactly the targets a player could: hostile and neutral, never green.
+/// picks exactly the targets a player could: hostile and neutral, never green. [`worth_grinding`]
+/// narrows that to the ones it can actually beat. With nothing in the band in sight the bot goes
+/// back to wandering, which is the right answer — a bot that stands still reads as broken, but a
+/// bot that throws itself at a level 60 elite reads as broken faster.
 fn grind(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1264,6 +1427,7 @@ fn grind(
             && e.owner_guid == 0
             && !crate::faction::is_friendly(ctx, me.faction_template, e.faction_template)
             && offered_by(ctx, e.entry, crate::quest::quest_role::START).is_empty()
+            && worth_grinding(me.level, e.level, is_elite(ctx, e.entry))
     })?;
     fight(ctx, me, bot, None, personality, victim.guid);
     Some(goal::GRIND)
@@ -1272,6 +1436,12 @@ fn grind(
 /// Empty every corpse within reach: the coin first, then every slot the core will hand over. Costs
 /// no tick — a bot that just killed something is already standing on it — and self-limiting,
 /// because a looted corpse has no coin and no slots left to ask about.
+///
+/// Coin always; items only while there is somewhere for one to land. A bot never sells and never
+/// destroys, so its bag only ever fills, and the last free slot is worth more to it as room for a
+/// quest's own item than as one more grey drop. Accepting and handing back both check the same
+/// `has_free_slot` before they commit to a walk, so this is where the pressure that would refuse
+/// them comes from.
 fn take_what_the_kill_left(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1292,6 +1462,9 @@ fn take_what_the_kill_left(
             .map(|row| row.slot)
             .collect();
         for slot in slots {
+            if !crate::items::has_free_slot(ctx, me.guid) {
+                return;
+            }
             let _ = crate::actor::take_loot(ctx, me.guid, corpse.guid, slot);
         }
     }
@@ -1736,6 +1909,16 @@ mod tests {
         class: 1,
     };
 
+    /// [`quest_gate`] asked with room in the bag, which is every case but the two about room.
+    fn gate(
+        who: &Questor,
+        needs: &Requirements,
+        prerequisite_rewarded: bool,
+        logged: LogEntry,
+    ) -> QuestGate {
+        quest_gate(who, needs, prerequisite_rewarded, logged, true)
+    }
+
     /// A quest with no requirements at all — the shape most of the world's quests have.
     fn open_to_anyone() -> Requirements {
         Requirements {
@@ -1744,6 +1927,7 @@ mod tests {
             classes: 0,
             prev_quest: 0,
             repeatable: false,
+            hands_over_an_item: false,
         }
     }
 
@@ -1757,11 +1941,11 @@ mod tests {
             ..open_to_anyone()
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &chained, false, LogEntry::Absent),
+            gate(&HUMAN_WARRIOR, &chained, false, LogEntry::Absent),
             QuestGate::PrerequisiteUnmet
         );
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &chained, true, LogEntry::Absent),
+            gate(&HUMAN_WARRIOR, &chained, true, LogEntry::Absent),
             QuestGate::Open,
             "the chain opens the moment its previous step is rewarded"
         );
@@ -1774,7 +1958,7 @@ mod tests {
             ..open_to_anyone()
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &needs_ten, true, LogEntry::Absent),
+            gate(&HUMAN_WARRIOR, &needs_ten, true, LogEntry::Absent),
             QuestGate::TooLow
         );
         let at_level = Questor {
@@ -1782,7 +1966,7 @@ mod tests {
             ..HUMAN_WARRIOR
         };
         assert_eq!(
-            quest_gate(&at_level, &needs_ten, true, LogEntry::Absent),
+            gate(&at_level, &needs_ten, true, LogEntry::Absent),
             QuestGate::Open
         );
     }
@@ -1796,7 +1980,7 @@ mod tests {
             ..open_to_anyone()
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &alliance_only, true, LogEntry::Absent),
+            gate(&HUMAN_WARRIOR, &alliance_only, true, LogEntry::Absent),
             QuestGate::Open
         );
         let orc = Questor {
@@ -1804,7 +1988,7 @@ mod tests {
             ..HUMAN_WARRIOR
         };
         assert_eq!(
-            quest_gate(&orc, &alliance_only, true, LogEntry::Absent),
+            gate(&orc, &alliance_only, true, LogEntry::Absent),
             QuestGate::WrongRace
         );
     }
@@ -1816,7 +2000,7 @@ mod tests {
             ..open_to_anyone()
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &warrior_only, true, LogEntry::Absent),
+            gate(&HUMAN_WARRIOR, &warrior_only, true, LogEntry::Absent),
             QuestGate::Open
         );
         let mage = Questor {
@@ -1824,7 +2008,7 @@ mod tests {
             ..HUMAN_WARRIOR
         };
         assert_eq!(
-            quest_gate(&mage, &warrior_only, true, LogEntry::Absent),
+            gate(&mage, &warrior_only, true, LogEntry::Absent),
             QuestGate::WrongClass
         );
     }
@@ -1835,7 +2019,7 @@ mod tests {
     #[test]
     fn a_quest_the_bot_is_already_on_is_never_chosen_again() {
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &open_to_anyone(), true, LogEntry::Active),
+            gate(&HUMAN_WARRIOR, &open_to_anyone(), true, LogEntry::Active),
             QuestGate::AlreadyHeld
         );
     }
@@ -1850,15 +2034,15 @@ mod tests {
             ..open_to_anyone()
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &once, true, LogEntry::Rewarded),
+            gate(&HUMAN_WARRIOR, &once, true, LogEntry::Rewarded),
             QuestGate::AlreadyHeld
         );
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &again, true, LogEntry::Rewarded),
+            gate(&HUMAN_WARRIOR, &again, true, LogEntry::Rewarded),
             QuestGate::Open
         );
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &once, true, LogEntry::Failed),
+            gate(&HUMAN_WARRIOR, &once, true, LogEntry::Failed),
             QuestGate::Open,
             "a quest that ran out of time is re-takable whatever it says about repeating"
         );
@@ -1874,9 +2058,10 @@ mod tests {
             classes: 2,
             prev_quest: 26,
             repeatable: false,
+            hands_over_an_item: false,
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &shut, false, LogEntry::Active),
+            gate(&HUMAN_WARRIOR, &shut, false, LogEntry::Active),
             QuestGate::TooLow
         );
         let low_gone = Requirements {
@@ -1884,7 +2069,7 @@ mod tests {
             ..shut
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &low_gone, false, LogEntry::Active),
+            gate(&HUMAN_WARRIOR, &low_gone, false, LogEntry::Active),
             QuestGate::WrongRace
         );
         let race_gone = Requirements {
@@ -1892,7 +2077,7 @@ mod tests {
             ..low_gone
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &race_gone, false, LogEntry::Active),
+            gate(&HUMAN_WARRIOR, &race_gone, false, LogEntry::Active),
             QuestGate::WrongClass
         );
         let class_gone = Requirements {
@@ -1900,7 +2085,7 @@ mod tests {
             ..race_gone
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &class_gone, false, LogEntry::Active),
+            gate(&HUMAN_WARRIOR, &class_gone, false, LogEntry::Active),
             QuestGate::PrerequisiteUnmet
         );
         let chain_gone = Requirements {
@@ -1908,16 +2093,96 @@ mod tests {
             ..class_gone
         };
         assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &chain_gone, false, LogEntry::Active),
+            gate(&HUMAN_WARRIOR, &chain_gone, false, LogEntry::Active),
             QuestGate::AlreadyHeld
         );
+        let held_gone = Requirements {
+            hands_over_an_item: true,
+            ..chain_gone
+        };
+        assert_eq!(
+            quest_gate(&HUMAN_WARRIOR, &held_gone, false, LogEntry::Absent, false),
+            QuestGate::NoRoom,
+            "the core grants the quest's own item last of all, after every other gate has passed"
+        );
+    }
+
+    /// A bot loots every corpse it makes and never sells, so its bag fills and stays full. A quest
+    /// that hands an item over on accept is refused by the core on a full bag — from inside the
+    /// accept EFFECTS, past every gate the reducer's own body applies. A selection that could not
+    /// see that would walk to the giver, be refused, walk away, and walk back, once a second.
+    #[test]
+    fn a_quest_that_hands_over_an_item_is_never_chosen_with_a_full_bag() {
+        let hands_over = Requirements {
+            hands_over_an_item: true,
+            ..open_to_anyone()
+        };
+        assert_eq!(
+            quest_gate(&HUMAN_WARRIOR, &hands_over, true, LogEntry::Absent, false),
+            QuestGate::NoRoom
+        );
+        assert_eq!(
+            quest_gate(&HUMAN_WARRIOR, &hands_over, true, LogEntry::Absent, true),
+            QuestGate::Open
+        );
+    }
+
+    /// Most quests hand nothing over, and a full bag must not stop a bot taking one of those.
+    #[test]
+    fn a_full_bag_does_not_stop_a_quest_that_hands_nothing_over() {
+        assert_eq!(
+            quest_gate(
+                &HUMAN_WARRIOR,
+                &open_to_anyone(),
+                true,
+                LogEntry::Absent,
+                false
+            ),
+            QuestGate::Open
+        );
+    }
+
+    // ---- what a bot picks a fight with ---------------------------------------------------------
+
+    /// The scenario fixture pins the band: Test Wolf Elder is level 8 against a level 10 bot,
+    /// "inside the goals.rs GRIND ±3 band, non-grey".
+    #[test]
+    fn the_grind_band_takes_the_fixtures_own_worked_example() {
+        assert!(worth_grinding(10, 8, false));
+    }
+
+    /// Grey is the core's own kill-XP clamp: six levels down pays nothing, so there is no reason
+    /// to swing at it.
+    #[test]
+    fn a_grey_creature_is_not_worth_grinding() {
+        assert!(worth_grinding(10, 5, false));
+        assert!(!worth_grinding(10, 4, false));
+    }
+
+    #[test]
+    fn a_creature_more_than_three_levels_up_is_left_alone() {
+        assert!(worth_grinding(10, 13, false));
+        assert!(!worth_grinding(10, 14, false));
+    }
+
+    /// A tank opens with a flee threshold of 0, so it never breaks off. Left to pick its own
+    /// fights it would walk into the nearest elite, die, resurrect at the graveyard, walk back
+    /// into it, and spend its life doing that.
+    #[test]
+    fn an_elite_is_never_grind_bait_however_low_it_is() {
+        assert!(!worth_grinding(10, 10, true));
+        assert!(!worth_grinding(10, 8, true));
     }
 
     // ---- the gate mirror does not drift --------------------------------------------------------
 
-    /// Every Refusal `crate::quest::apply_accept_quest` can produce, and what answers it on this
-    /// side. Five are selection gates the bot asks in advance; four are answered by the bot's own
-    /// shape and are named here so the accounting is complete rather than partial.
+    /// Every Refusal `crate::quest::apply_accept_quest` writes IN ITS OWN BODY, and what answers it
+    /// on this side. Five are selection gates the bot asks in advance; four are answered by the
+    /// bot's own shape and are named here so the accounting is complete rather than partial.
+    ///
+    /// The reducer also refuses through two calls that produce their Refusals elsewhere. Those are
+    /// [`CORE_ACCEPT_DELEGATES`], and they are pinned separately, because a Gate written as a
+    /// helper is invisible to a scan of this body.
     const CORE_ACCEPT_REFUSALS: &[(&str, &str)] = &[
         (
             "player not in world",
@@ -1951,6 +2216,29 @@ mod tests {
     /// The forms `apply_accept_quest` produces a Refusal through. Counting them is what catches a
     /// gate this Package has never heard of.
     const REFUSAL_FORMS: &[&str] = &["Err(", "ok_or_else(", "map_err("];
+
+    /// The calls `apply_accept_quest` refuses THROUGH: their Refusals are written in another
+    /// function, so no scan of the reducer's own body can count them. Pinned by name and by the
+    /// number of `?` the body carries, because a new Gate added as a helper plus `?` is the
+    /// likeliest shape the next one takes, and it would move neither the Refusal count nor the
+    /// marker order.
+    const CORE_ACCEPT_DELEGATES: &[(&str, &str)] = &[
+        (
+            "validate_giver",
+            "answered by arriving: a bot only asks from inside INTERACT_RANGE_YD, well within the \
+             core's own 10-yard giver gate, and it picks the giver off the same relation rows",
+        ),
+        (
+            "apply_accept_effects",
+            "grants the quest's own `src_item` on a bag that may be full; QuestGate::NoRoom mirrors \
+             that Refusal, off the same `items::has_free_slot` the whole server answers with",
+        ),
+    ];
+
+    /// How many `?` the reducer's body carries: one per delegate, plus the two Refusal chains that
+    /// already have a row in [`CORE_ACCEPT_REFUSALS`] (`map_err` and `ok_or_else`). One delegate is
+    /// the tail expression rather than a `?`, so it contributes none.
+    const CORE_ACCEPT_QUESTION_MARKS: usize = 3;
 
     fn core_accept_body() -> String {
         let src = crate::test_scan::read_scanned("module/src/quest.rs")
@@ -1987,6 +2275,35 @@ mod tests {
              `quest_gate` and add its row to CORE_ACCEPT_REFUSALS, or add the row with a written \
              reason why selection cannot ask it in advance.",
             CORE_ACCEPT_REFUSALS.len()
+        );
+    }
+
+    /// The other half of the accounting. `apply_accept_quest` refuses through two calls as well as
+    /// in its own body, and a Gate added as a third would change nothing the test above looks at:
+    /// not the Refusal count, not the marker order. Both delegates are pinned by name, and the
+    /// number of `?` in the body is pinned with them, so a new `some_new_gate(ctx, ..)?` fails here
+    /// naming exactly what happened.
+    #[test]
+    fn the_mirror_accounts_for_every_call_the_core_accept_refuses_through() {
+        let body = core_accept_body();
+        for (delegate, answered_by) in CORE_ACCEPT_DELEGATES {
+            assert!(
+                body.contains(delegate),
+                "`apply_accept_quest` no longer refuses through `{delegate}` (mirrored here by \
+                 {answered_by}). Drop the row when the call is gone, or move it when the call was \
+                 renamed."
+            );
+        }
+        let question_marks = body.matches('?').count();
+        assert_eq!(
+            question_marks,
+            CORE_ACCEPT_QUESTION_MARKS,
+            "`apply_accept_quest` now propagates {question_marks} Refusals with `?`, not \
+             {CORE_ACCEPT_QUESTION_MARKS}. Every one is a Gate a bot can be refused at after it has \
+             already walked to the giver, and a Refusal written inside a helper is invisible to the \
+             body scan next to this one. Work out whether selection can ask the new Gate in advance: \
+             if it can, mirror it in `quest_gate`; if it cannot, add its row to \
+             CORE_ACCEPT_DELEGATES with the written reason."
         );
     }
 

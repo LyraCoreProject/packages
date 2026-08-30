@@ -60,7 +60,7 @@ the flee threshold: two bots on one rotation at the same health break off at dif
 One `game_tick_pass!`, with each bot throttled to a decision a second. There is no Package-owned
 schedule row, so a republish cannot leave the bots pointing at a reducer the new wasm no longer has.
 
-Each decision, in order: get back up if dead; put a body back on if the bot has none; break off if
+Each decision, in order: put a body back on if the bot has none; get back up if dead; break off if
 hurt past the personality threshold; follow a leader who has crossed into another map or instance of
 this Shard; cross a Shard boundary when the party is not on this one at all; quest, if the bot is
 ungrouped; fight what is on the party; otherwise follow the leader, or wander near home.
@@ -93,26 +93,47 @@ kill leaves, hand it back. A bot with nothing to take and nothing to work kills 
 instead. Both are visible in the goal table.
 
 One rule decides whether a quest is worth walking to, and it is the same rule the core applies when
-the bot arrives. The Package mirrors `apply_accept_quest`'s own Refusals, in that reducer's order —
-level, race, class, the previous step in the chain, and whether the bot already holds it — and the
-core accept is what answers for real. Picking any other way is how a bot ends up running to a giver,
-being refused for a prerequisite it has never done, and running there again the next second, which
-is what the July foundation did on an imported node.
+the bot arrives. The Package mirrors `apply_accept_quest`'s own Refusals, in that reducer's order:
+level, race, class, the previous step in the chain, whether the bot already holds it, and whether
+there is room in the bag for the item the quest hands over. The core accept is what answers for
+real. Picking any other way is how a bot ends up running to a giver, being refused for a
+prerequisite it has never done, and running there again the next second, which is what the July
+foundation did on an imported node.
 
-Two tests hold the mirror in place. One counts the Refusals `apply_accept_quest` can produce and
-fails when the core grows one this Package has not accounted for. The other pins the order the core
-asks them in, so the reason a bot names is the reason the core would have given. Both read the core
-source, so they fail at `cargo test`, not on a live node.
+Three tests hold the mirror in place, all reading the core source, so they fail at `cargo test` and
+not on a live realm.
+
+- One counts the Refusals `apply_accept_quest` writes in its own body, and fails when the core
+  grows one this Package has not accounted for.
+- One pins the order the core asks them in, so the reason a bot names is the reason the core would
+  have given.
+- One accounts for the two calls the reducer refuses THROUGH, whose Refusals are written elsewhere
+  and which no scan of the reducer's body can see. It pins both by name and pins how many Refusals
+  the body propagates with `?`, so a new Gate written as a helper fails here.
+
+What none of them catch is a Gate added INSIDE one of those two named calls. That is why each one
+carries a written answer for how the bot deals with it rather than a count.
 
 A bot never abandons a quest. The log row is the only memory it has that it already chose one, and
 dropping the row is what lets the loop back in — so a quest a bot cannot finish holds its slot for
 good. A bot works three at a time, which is what keeps one such quest from ending its career.
 
-Death is part of the loop. A dead bot releases to the graveyard and resurrects there, one step per
-tick. The quest log survives both, so the bot resumes the quest it died on rather than choosing
-again; a quest area within the leash of a graveyard is a quest area a bot can die in and carry on.
+A bot never sells and never destroys, so its backpack only ever fills. It stops taking loot items
+at its last free slot and keeps taking coin. It will not take a quest that hands an item over on
+accept, and will not carry a quest back whose reward has nowhere to land, until a slot frees. Both
+of those read the same "is there room" answer the rest of the server gives, so the bot is refused
+before it walks rather than after.
 
-## Limits
+## Death
+
+Death is part of the loop, for every bot, in a party or not. A dead bot releases to the graveyard
+and resurrects there, one step per tick. The quest log survives both, so the bot resumes the quest
+it died on rather than choosing again.
+
+Releasing can move the bot to another map, because the graveyard a death in a dungeon resolves to is
+outside it, and a cross-map placement takes the bot's live entity with it. The Character row
+remembers that the bot was a ghost, and the tick rebuilds it as one. Without that the bot would come
+back alive on the spot, with no resurrection, no sickness and its corpse left behind.
 
 ## Crossing a Shard boundary
 
@@ -157,5 +178,11 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
 - A bot quests within 150 yards of its home point and looks 60 yards ahead. Move the home point to
   move the patch.
 - The objectives a bot works are the ones it can kill, and the ones it fills by looting what it
-  kills. A quest that asks the bot to explore or to talk to somebody stays in the log unworked.
+  kills. A quest that asks the bot to explore or to use a gameobject stays in the log unworked and
+  holds one of its three slots for good. Three such quests stop the bot questing.
 - A bot takes the first reward choice, because it has no gear plan to pick against.
+- A bot picks its own fights only inside its own level band: no more than three levels up, nothing
+  so far down that the kill pays no experience, and never an elite. With nothing in the band in
+  sight it wanders instead.
+- A bot with a full backpack keeps grinding but stops taking and handing back quests that move an
+  item. Nothing frees a slot for it: there is no verb on the Package surface to sell or destroy.
