@@ -147,6 +147,15 @@ pub(crate) mod goal {
     pub(crate) const STRANDED: u8 = 4;
     /// A Transfer Intent is out for this bot. It has no live entity until the crossing settles.
     pub(crate) const IN_TRANSIT: u8 = 5;
+    /// Running to a quest giver to take a quest, back to the one that ends it, or back inside the
+    /// ground the bot quests on.
+    pub(crate) const QUEST_TRAVEL: u8 = 6;
+    /// Working a quest objective: killing what the quest names, and taking what it leaves.
+    pub(crate) const QUEST_HUNT: u8 = 7;
+    /// No quest work available, so killing for experience instead.
+    pub(crate) const GRIND: u8 = 8;
+    /// Dead: releasing to the graveyard and resurrecting there.
+    pub(crate) const RESURRECTING: u8 = 9;
 }
 
 /// The bot's current goal, held between ticks. One row per bot that has decided anything at all.

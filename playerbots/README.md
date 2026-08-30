@@ -60,10 +60,10 @@ the flee threshold: two bots on one rotation at the same health break off at dif
 One `game_tick_pass!`, with each bot throttled to a decision a second. There is no Package-owned
 schedule row, so a republish cannot leave the bots pointing at a reducer the new wasm no longer has.
 
-Each decision, in order: put a body back on if the bot has none; break off if hurt past the
-personality threshold; follow a leader who has crossed into another map or instance of this Shard;
-cross a Shard boundary when the party is not on this one at all; fight what is on the party;
-otherwise follow the leader, or wander near home when ungrouped.
+Each decision, in order: get back up if dead; put a body back on if the bot has none; break off if
+hurt past the personality threshold; follow a leader who has crossed into another map or instance of
+this Shard; cross a Shard boundary when the party is not on this one at all; quest, if the bot is
+ungrouped; fight what is on the party; otherwise follow the leader, or wander near home.
 
 `pkg_playerbots_goal` holds what the bot settled on and when it settled on it. Read it to see what a
 party is doing:
@@ -76,10 +76,43 @@ party is doing:
 | `3` | wandering near home, ungrouped |
 | `4` | off its home ground with no party on this Shard, waiting |
 | `5` | a Transfer Intent is out; the bot is crossing |
+| `6` | running to a quest giver, back to the one that ends a quest, or back to its home ground |
+| `7` | working a quest objective |
+| `8` | no quest work available; killing for experience |
+| `9` | dead; releasing to the graveyard and resurrecting there |
 
 Every action leaves through a core operation the player path also uses — the actor verbs for attack,
-stop, cast and invite-accept, and the shared creature leg writer for movement. The Package decides
-what to do; the core decides whether it is allowed.
+stop, cast, invite-accept, quest accept and turn-in, loot, release and resurrect, and the shared
+creature leg writer for movement. The Package decides what to do; the core decides whether it is
+allowed.
+
+## Questing
+
+An ungrouped bot works quests around its home point: take one, kill what it names, take what the
+kill leaves, hand it back. A bot with nothing to take and nothing to work kills for experience
+instead. Both are visible in the goal table.
+
+One rule decides whether a quest is worth walking to, and it is the same rule the core applies when
+the bot arrives. The Package mirrors `apply_accept_quest`'s own Refusals, in that reducer's order —
+level, race, class, the previous step in the chain, and whether the bot already holds it — and the
+core accept is what answers for real. Picking any other way is how a bot ends up running to a giver,
+being refused for a prerequisite it has never done, and running there again the next second, which
+is what the July foundation did on an imported node.
+
+Two tests hold the mirror in place. One counts the Refusals `apply_accept_quest` can produce and
+fails when the core grows one this Package has not accounted for. The other pins the order the core
+asks them in, so the reason a bot names is the reason the core would have given. Both read the core
+source, so they fail at `cargo test`, not on a live node.
+
+A bot never abandons a quest. The log row is the only memory it has that it already chose one, and
+dropping the row is what lets the loop back in — so a quest a bot cannot finish holds its slot for
+good. A bot works three at a time, which is what keeps one such quest from ending its career.
+
+Death is part of the loop. A dead bot releases to the graveyard and resurrects there, one step per
+tick. The quest log survives both, so the bot resumes the quest it died on rather than choosing
+again; a quest area within the leash of a graveyard is a quest area a bot can die in and carry on.
+
+## Limits
 
 ## Crossing a Shard boundary
 
@@ -120,3 +153,9 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
   back, to send them home.
 - A crossing is aimed at a portal into the destination map. A dungeon map with no imported portal
   row is a dungeon the bots cannot follow anybody into; they wait, then go home.
+- A bot in a party does not quest. It follows the leader, which is what a party is for.
+- A bot quests within 150 yards of its home point and looks 60 yards ahead. Move the home point to
+  move the patch.
+- The objectives a bot works are the ones it can kill, and the ones it fills by looting what it
+  kills. A quest that asks the bot to explore or to talk to somebody stays in the log unworked.
+- A bot takes the first reward choice, because it has no gear plan to pick against.
