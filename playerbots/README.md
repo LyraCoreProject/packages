@@ -81,6 +81,19 @@ party is doing:
 | `8` | no quest work available; killing for experience |
 | `9` | dead; releasing to the graveyard and resurrecting there |
 
+The same row carries `stalled_since_micros`. It is `0` while the bot is getting on with things and
+the wall-clock time it got stuck otherwise, and only real quest work clears it:
+
+```sql
+select character_guid, kind, stalled_since_micros from pkg_playerbots_goal
+where stalled_since_micros <> 0;
+```
+
+It is a separate column because `since_micros` cannot answer the question. That one restarts every
+time the goal CHANGES, so a bot flapping between walking back for a turn-in and grinding looks brand
+new on every tick you read it, however long it has been getting nowhere. A bot that has been stalled
+for a minute says so once in the log, with what to read next.
+
 Every action leaves through a core operation the player path also uses — the actor verbs for attack,
 stop, cast, invite-accept, quest accept and turn-in, loot, release and resurrect, and the shared
 creature leg writer for movement. The Package decides what to do; the core decides whether it is
@@ -121,6 +134,21 @@ A bot never abandons a quest. The log row is the only memory it has that it alre
 dropping the row is what lets the loop back in — so a quest a bot cannot finish holds its slot for
 good. A bot works three at a time, which is what keeps one such quest from ending its career.
 
+That is why selection asks a second question after the accept gate, and why that question may only
+ever be stricter. A quest whose objectives are all "use this gameobject" or "explore this place" can
+never be finished by a bot: both are credited from a message a client sends, and a bot has no
+client. It is not taken. A quest with no objectives at all IS taken, because that is the talk-to
+quest that opens most chains, complete the moment it is accepted. A quest that mixes something the
+bot can do with something it cannot is taken too: part of it is worth watching.
+
+Where a quest was taken is remembered on the goal row, because a bot ranges further than it can see
+and the giver is usually out of sight by the time the work is done. Without that bookmark a quest
+taken at the edge of a bot's patch could never be handed back.
+
+A bot that ends up holding quests it can make no progress on says so, in the log after a minute and
+in `pkg_playerbots_goal.stalled_since_micros` from the first tick. It also stops walking back on
+spec once the clock has run, so a stuck quest costs a slot rather than a leg a second.
+
 A bot takes coin from every corpse and items only when a quest it is holding asks for that item. It
 cannot sell and it cannot destroy, so anything else it picked up it would keep for the rest of its
 life, filling the bag that taking a quest needs room in, for copper it can never realise. Leaving
@@ -128,11 +156,11 @@ the trash on the corpse is what keeps the bag usable, and it is why the bot neve
 slot against its own looting.
 
 A quest that hands an item over on accept is not chosen when the bag is full, because the core
-refuses it there. Handing a quest BACK is not gated that way: the turn-in removes the quest's own
-collected items before it grants the reward, exactly so a full bag can still finish a collect quest,
-so a bot that would not set off without a free slot would shut the one path that gives it one back.
-A turn-in that does run out of room is refused quietly and retried, because that is a state the
-Operator can read off the bag, not a fault.
+refuses it there. Handing back is split. A quest with collected items to give back is always walked
+to, because the turn-in removes them before it grants the reward, exactly so a full bag can still
+finish a collect quest — and that is the only thing that ever gives a bot a slot back, so refusing
+to set off would shut it. A quest with nothing to give back has nothing to free, so on a full bag it
+is not walked to at all: that trip could only end in a Refusal.
 
 ## Death
 
@@ -188,8 +216,9 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
 - A bot quests within 150 yards of its home point and looks 60 yards ahead. Move the home point to
   move the patch.
 - The objectives a bot works are the ones it can kill, and the ones it fills by looting what it
-  kills. A quest that asks the bot to explore or to use a gameobject stays in the log unworked and
-  holds one of its three slots for good. Three such quests stop the bot questing.
+  kills. A quest made only of the two it cannot work is never taken. A quest that mixes the two IS
+  taken, and holds one of its three slots until the Operator does something about it; the stall
+  column is where that shows up.
 - A bot takes the first reward choice, because it has no gear plan to pick against.
 - A bot picks its own fights only inside its own level band: no more than three levels up, nothing
   so far down that the kill pays no experience, and never an elite. With nothing in the band in
@@ -201,5 +230,6 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
   stack of the same item before it needs a slot; the bot only asks whether a slot is free. It can
   therefore pass on a quest the core would have given it. That is deliberate: passing on a quest is
   harmless, taking one and being refused at the giver is the loop.
-- A quest whose ender does not stand near the bot's home point cannot be handed back. The bot walks
-  home, does not find it, and moves on.
+- A quest whose ender is neither in sight nor at the giver the bot took it from cannot be handed
+  back. The bot makes the trip to the giver once, finds nothing, and after that its stall column
+  says so.
