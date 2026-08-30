@@ -34,8 +34,8 @@ use crate::{
     game_areatrigger_teleport, game_character, game_character_quest,
     game_character_quest_event_credit, game_corpse_loot, game_creature_quest, game_creature_spline,
     game_creature_template, game_group, game_group_member, game_instance, game_melee_attack,
-    game_quest_event_requirement, game_quest_objective, game_quest_reward_choice,
-    game_quest_reward_item, game_quest_template, game_threat, game_world_entity,
+    game_quest_event_requirement, game_quest_objective, game_quest_template, game_threat,
+    game_world_entity,
 };
 
 /// How long a bot waits between decisions. The tick pass fires every half second; a bot that
@@ -247,7 +247,7 @@ fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
     // a quester label its own fights, so an Operator reading the goal table sees a bot hunting a
     // quest target rather than an unattributed FIGHT.
     if party.is_none() {
-        if let Some(kind) = quest(ctx, &me, bot, &personality, engaged) {
+        if let Some(kind) = quest(ctx, &me, bot, &personality, engaged, now) {
             record_goal(ctx, bot.character_guid, kind, now);
             return;
         }
@@ -1033,8 +1033,13 @@ pub(crate) fn quest_gate(
 
 /// [`quest_gate`] over live rows. Every input comes from the predicate the core gate itself uses:
 /// `crate::quest::quest_is_rewarded` for the chain, the `lyracore_shared::quest` mask functions for
-/// race and class, and `crate::items::has_free_slot` for bag space — the one answer the whole
-/// server gives to "is there room for one more item".
+/// race and class, and `crate::items::has_free_slot` for bag space.
+///
+/// `has_free_slot` is deliberately the stricter question. The store the accept actually goes
+/// through tops up a partial stack of the same item before it needs a slot at all, so a bot with a
+/// full bag and a half stack of the very item a quest hands over will pass on that quest when the
+/// core would have taken it. That is a quest not taken, never a quest taken and then refused, and
+/// the wrong direction here is the one that loops.
 fn gate_for(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1085,6 +1090,7 @@ fn quest(
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
     engaged: Option<u64>,
+    now: i64,
 ) -> Option<u8> {
     let home = (bot.home_x, bot.home_y, bot.home_z);
     if distance_2d(me.x, me.y, home.0, home.1) > QUEST_LEASH_YD {
@@ -1094,14 +1100,15 @@ fn quest(
     }
     let sight =
         crate::helpers::entities_near(ctx, me.map_id, me.instance_id, me.x, me.y, QUEST_SIGHT_YD);
-    // Before anything else: a corpse decays, and a COLLECT objective is satisfied out of the bag.
-    take_what_the_kill_left(ctx, me, &sight);
 
     let log = quest_log(ctx, me.guid);
     let active: Vec<&crate::CharacterQuest> = log
         .iter()
         .filter(|row| !row.rewarded && !row.failed)
         .collect();
+
+    // Before anything else: a corpse decays, and a COLLECT objective is satisfied out of the bag.
+    take_what_the_kill_left(ctx, me, &sight, &wanted_items(ctx, &active));
 
     // Already swinging at something. Whether that is quest work is the bot's to say; anything else
     // is self-defence or a party assist, which the plain fight branch answers.
@@ -1116,7 +1123,7 @@ fn quest(
     }
 
     for cq in &active {
-        if let Some(kind) = work_quest(ctx, me, bot, personality, cq, &sight) {
+        if let Some(kind) = work_quest(ctx, me, bot, personality, cq, &sight, now) {
             return Some(kind);
         }
     }
@@ -1177,7 +1184,13 @@ fn kill_target_entry(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> Option
 /// It asks the same two questions the core asks — a COLLECT objective out of the live bag, every
 /// other kind off the progress counts — plus the event-credit arm. `apply_turn_in_quest` remains
 /// the authority; this only decides whether the walk is worth taking, exactly like [`quest_gate`].
-fn turn_in_ready(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> bool {
+fn turn_in_ready(ctx: &ReducerContext, cq: &crate::CharacterQuest, now: i64) -> bool {
+    // A quest past its deadline is refused as expired. The sweep that flips the row runs on its own
+    // clock, so between the deadline and the sweep the row still reads active — and a bot that
+    // trusted `failed` alone would set off for a Refusal in that window.
+    if !expired_quest_can_wait(cq.deadline_micros, now) {
+        return false;
+    }
     let objectives_met = ctx
         .db
         .game_quest_objective()
@@ -1207,31 +1220,47 @@ fn turn_in_ready(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> bool {
     objectives_met && (!needs_event_credit || has_event_credit)
 }
 
-/// Does handing this quest back need a free bag slot? A quest that pays items grants them with the
-/// same `grant_item` an accept uses, so a full bag refuses the turn-in after the walk.
-fn turn_in_needs_room(ctx: &ReducerContext, quest_entry: u32) -> bool {
-    ctx.db
-        .game_quest_reward_item()
-        .by_quest()
-        .filter(&quest_entry)
-        .next()
-        .is_some()
-        || ctx
+/// Is this quest still inside its own time limit? `0` is untimed, which is nearly every quest.
+/// Pure, because the window it guards is a race against a sweep and not something a live run
+/// reproduces on demand.
+pub(crate) fn expired_quest_can_wait(deadline_micros: i64, now: i64) -> bool {
+    deadline_micros == 0 || now < deadline_micros
+}
+
+/// The item entries the bot's own quests still want off a corpse.
+///
+/// A bot cannot sell and cannot destroy, so every item it picks up it keeps for good. Vendor trash
+/// is therefore pure loss to it: it fills the bag that an accept and a turn-in both need room in,
+/// and nothing ever gives the room back. So a bot takes coin from everything and items only when a
+/// quest it is holding asks for that item. `apply_take_loot` still decides whether it may have it.
+fn wanted_items(ctx: &ReducerContext, active: &[&crate::CharacterQuest]) -> Vec<u32> {
+    let mut wanted = Vec::new();
+    for cq in active {
+        for obj in ctx
             .db
-            .game_quest_reward_choice()
+            .game_quest_objective()
             .by_quest()
-            .filter(&quest_entry)
-            .next()
-            .is_some()
+            .filter(&cq.quest_entry)
+            .filter(|obj| obj.kind == crate::quest::objective_kind::COLLECT_ITEM)
+        {
+            if !wanted.contains(&obj.target_entry) {
+                wanted.push(obj.target_entry);
+            }
+        }
+    }
+    wanted
 }
 
 /// One held quest's next step: hunt what it names, or carry it back to whoever ends it. `None`
 /// means this quest has nothing the bot can do right now, and the caller tries the next one.
 ///
-/// Both walks are conditional on the walk being able to end in something. A quest with an
+/// The walk back is conditional on the walk being able to end in something. A quest with an
 /// objective this Package cannot work — one that wants a gameobject used or a place explored — is
-/// left where it is rather than carried back to a Refusal, and so is a completed quest whose
-/// reward has nowhere to land.
+/// left where it is rather than carried to a Refusal once a second.
+///
+/// Bag space is deliberately NOT asked here. The turn-in removes the quest's COLLECT items BEFORE
+/// it grants the reward, exactly so a full bag can still finish a collect quest, so a bot that
+/// refused to set off without a free slot would shut the one path that gives it one back.
 fn work_quest(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1239,28 +1268,26 @@ fn work_quest(
     personality: &PlayerbotsPersonality,
     cq: &crate::CharacterQuest,
     sight: &[crate::WorldEntity],
+    now: i64,
 ) -> Option<u8> {
     if let Some(entry) = kill_target_entry(ctx, cq) {
         let target = nearest(me, sight, |e| !e.is_player() && !e.dead && e.entry == entry)?;
         fight(ctx, me, bot, None, personality, target.guid);
         return Some(goal::QUEST_HUNT);
     }
-    if !turn_in_ready(ctx, cq) {
-        return None;
-    }
-    if turn_in_needs_room(ctx, cq.quest_entry) && !crate::items::has_free_slot(ctx, me.guid) {
+    if !turn_in_ready(ctx, cq, now) {
         return None;
     }
     hand_it_back(ctx, me, bot, cq.quest_entry, sight)
 }
 
 /// Carry a ready quest back. The ender in sight is walked to and asked; no ender in sight means the
-/// bot has strayed from the hub it took the quest at, and walking home is what brings the hub back
-/// into view.
+/// bot cannot see the hub it took the quest at, and walking home is what brings the hub into view.
 ///
-/// The walk home starts at [`QUEST_SIGHT_YD`] rather than at the doorstep. Inside that distance the
-/// hub is already in the bot's own sight list, so a shorter threshold would only pull against the
-/// grind that moves the bot in the first place, one leg each per second.
+/// The walk home is decided by whether the ENDER is in sight, not by how near home the bot is: the
+/// sight list is centred on the bot, so standing fifty yards from home is no guarantee of seeing a
+/// giver on the far side of it. Once the bot is AT home and still cannot see the ender, the ender
+/// is not at this hub, and the bot gives the quest up for this tick and does something else.
 fn hand_it_back(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -1275,7 +1302,7 @@ fn hand_it_back(
     });
     let Some(ender) = ender else {
         let home = (bot.home_x, bot.home_y, bot.home_z);
-        if distance_2d(me.x, me.y, home.0, home.1) <= QUEST_SIGHT_YD {
+        if distance_2d(me.x, me.y, home.0, home.1) <= HOME_ARRIVAL_YD {
             return None;
         }
         walk_toward(ctx, me, home, HOME_ARRIVAL_YD, true);
@@ -1298,9 +1325,15 @@ fn hand_it_back(
             spacetimedb::log::info!("playerbots: bot {} turned in quest {quest_entry}", me.guid);
             Some(goal::QUEST_TRAVEL)
         }
-        // The bot only walks here once [`turn_in_ready`] and the bag-space check both say yes, so
-        // a Refusal means those two and the core have disagreed. Said out loud, for the same
-        // reason a refused accept is: it is a defect, not a gameplay outcome.
+        // A full bag is the one Refusal here that is neither a defect nor a surprise: the reward
+        // has nowhere to land, and nothing on this Package's verb surface can empty a bag. The bot
+        // keeps asking, quietly, and succeeds the moment a slot frees — which a collect quest's own
+        // turn-in is what usually provides. Warning once a second about a state the Operator can
+        // read off the bag would drown the log that carries the real drift below.
+        Err(refusal) if refusal == lyracore_shared::mail::INVENTORY_FULL => None,
+        // The bot only walks here once [`turn_in_ready`] says yes, so any other Refusal means that
+        // reading and the core have disagreed. Said out loud, for the same reason a refused accept
+        // is: it is a defect, not a gameplay outcome.
         Err(refusal) => {
             spacetimedb::log::warn!(
                 "playerbots: bot {} was refused the turn-in of quest {quest_entry}, which it had \
@@ -1433,19 +1466,19 @@ fn grind(
     Some(goal::GRIND)
 }
 
-/// Empty every corpse within reach: the coin first, then every slot the core will hand over. Costs
-/// no tick — a bot that just killed something is already standing on it — and self-limiting,
-/// because a looted corpse has no coin and no slots left to ask about.
+/// Take what the kill left. Costs no tick — a bot that just killed something is already standing on
+/// it — and self-limiting, because a looted corpse has no coin and no rows left to ask about.
 ///
-/// Coin always; items only while there is somewhere for one to land. A bot never sells and never
-/// destroys, so its bag only ever fills, and the last free slot is worth more to it as room for a
-/// quest's own item than as one more grey drop. Accepting and handing back both check the same
-/// `has_free_slot` before they commit to a walk, so this is where the pressure that would refuse
-/// them comes from.
+/// COIN ALWAYS, ITEMS ONLY IF A QUEST ASKED FOR THEM. A bot cannot sell and cannot destroy, so
+/// every item it takes it keeps for the rest of its life. Hoovering up vendor trash would fill the
+/// bag that an accept needs room in, permanently, in exchange for copper the bot can never realise.
+/// So it leaves what it cannot use on the corpse, which is also why it never needs to reserve a
+/// slot against its own looting.
 fn take_what_the_kill_left(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     sight: &[crate::WorldEntity],
+    wanted: &[u32],
 ) {
     for corpse in sight
         .iter()
@@ -1454,11 +1487,15 @@ fn take_what_the_kill_left(
         if corpse.money > 0 {
             let _ = crate::actor::loot_money(ctx, me.guid, corpse.guid);
         }
+        if wanted.is_empty() {
+            continue;
+        }
         let slots: Vec<u8> = ctx
             .db
             .game_corpse_loot()
             .by_corpse()
             .filter(&corpse.guid)
+            .filter(|row| wanted.contains(&row.item_entry))
             .map(|row| row.slot)
             .collect();
         for slot in slots {
@@ -2174,6 +2211,23 @@ mod tests {
         assert!(!worth_grinding(10, 8, true));
     }
 
+    // ---- timed quests --------------------------------------------------------------------------
+
+    #[test]
+    fn an_untimed_quest_never_runs_out() {
+        assert!(expired_quest_can_wait(0, i64::MAX));
+    }
+
+    /// The sweep that marks a timed quest failed runs on its own clock, so between the deadline
+    /// passing and the sweep firing the row still reads active. A bot that read only the flag would
+    /// set off across the hub for a Refusal in that window.
+    #[test]
+    fn a_timed_quest_is_not_carried_back_past_its_deadline() {
+        assert!(expired_quest_can_wait(1_000, 999));
+        assert!(!expired_quest_can_wait(1_000, 1_000));
+        assert!(!expired_quest_can_wait(1_000, 5_000));
+    }
+
     // ---- the gate mirror does not drift --------------------------------------------------------
 
     /// Every Refusal `crate::quest::apply_accept_quest` writes IN ITS OWN BODY, and what answers it
@@ -2334,6 +2388,46 @@ mod tests {
             );
             previous = at;
         }
+    }
+
+    /// `quest_is_complete`'s body, verbatim, whitespace collapsed. It is core's, it is private, and
+    /// [`turn_in_ready`] is a copy of it — the second mirror this Package carries, and the only one
+    /// with no Refusal text to count, because a private function produces none.
+    ///
+    /// Pinned by EQUALITY rather than by markers. The function is twenty lines and has not moved in
+    /// its lifetime, so equality costs nothing to keep and catches what markers cannot: an arm
+    /// added, an arm's sense flipped, a comparison loosened.
+    const CORE_QUEST_IS_COMPLETE: &str = "{ let has_event_credit = ctx .db \
+         .game_character_quest_event_credit() .by_character() .filter(&cq.character_guid) \
+         .any(|credit| credit.quest_entry == cq.quest_entry); let ordinary_objectives_complete = \
+         ctx .db .game_quest_objective() .by_quest() .filter(&cq.quest_entry) .all(|obj| { let \
+         have = match obj.kind { objective_kind::COLLECT_ITEM => { \
+         crate::items::item_count(ctx, cq.character_guid, obj.target_entry) } _ => \
+         cq.counts.get(obj.obj_index as usize).copied().unwrap_or(0), }; have >= \
+         obj.required_count }); let requires_event_credit = ctx .db \
+         .game_quest_event_requirement() .by_quest() .filter(&cq.quest_entry) .next() .is_some(); \
+         ordinary_objectives_complete && (!requires_event_credit || has_event_credit) }";
+
+    /// The completeness mirror gets the same treatment the accept gate does, for the same reason.
+    ///
+    /// A bot only sets off for the ender when [`turn_in_ready`] says the turn-in will be accepted.
+    /// Drift in the strict direction is silent: the bot stops carrying a finished quest back and
+    /// holds the slot for good. Drift in the loose direction is the walk-and-be-refused loop this
+    /// slice exists to close, with a warning every second on top.
+    #[test]
+    fn the_completeness_mirror_still_matches_the_core_it_copies() {
+        let src = crate::test_scan::read_scanned("module/src/quest.rs")
+            .expect("module/src/quest.rs is core, never an optional drop-in");
+        assert_eq!(
+            crate::test_scan::shape_of(&src, "fn quest_is_complete("),
+            CORE_QUEST_IS_COMPLETE,
+            "`quest_is_complete` has changed, and `turn_in_ready` is a copy of it that decides \
+             whether a bot walks to a quest giver. Re-read the two side by side: if the new body \
+             asks something the mirror does not, a bot either stops handing finished quests back \
+             (silent, and the slot is held for good) or walks to a Refusal once a second. Then \
+             update this pin. Better still, if `quest_is_complete` can be made `pub(crate)`, the \
+             mirror and this pin both delete."
+        );
     }
 
     /// Teardown leaves zero rows. A quester writes two kinds of durable row a wandering bot never

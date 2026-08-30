@@ -100,8 +100,8 @@ real. Picking any other way is how a bot ends up running to a giver, being refus
 prerequisite it has never done, and running there again the next second, which is what the July
 foundation did on an imported node.
 
-Three tests hold the mirror in place, all reading the core source, so they fail at `cargo test` and
-not on a live realm.
+Four tests hold the two mirrors in place, all reading the core source, so they fail at `cargo test`
+and not on a live realm.
 
 - One counts the Refusals `apply_accept_quest` writes in its own body, and fails when the core
   grows one this Package has not accounted for.
@@ -110,19 +110,29 @@ not on a live realm.
 - One accounts for the two calls the reducer refuses THROUGH, whose Refusals are written elsewhere
   and which no scan of the reducer's body can see. It pins both by name and pins how many Refusals
   the body propagates with `?`, so a new Gate written as a helper fails here.
+- One pins `quest_is_complete` verbatim. That function is private, so the Package carries a copy of
+  it to decide whether carrying a quest back is worth the walk, and a copy with no Refusal text to
+  count needs its original pinned by equality instead.
 
-What none of them catch is a Gate added INSIDE one of those two named calls. That is why each one
+What none of them catch is a Gate added INSIDE one of the two named calls. That is why each one
 carries a written answer for how the bot deals with it rather than a count.
 
 A bot never abandons a quest. The log row is the only memory it has that it already chose one, and
 dropping the row is what lets the loop back in — so a quest a bot cannot finish holds its slot for
 good. A bot works three at a time, which is what keeps one such quest from ending its career.
 
-A bot never sells and never destroys, so its backpack only ever fills. It stops taking loot items
-at its last free slot and keeps taking coin. It will not take a quest that hands an item over on
-accept, and will not carry a quest back whose reward has nowhere to land, until a slot frees. Both
-of those read the same "is there room" answer the rest of the server gives, so the bot is refused
-before it walks rather than after.
+A bot takes coin from every corpse and items only when a quest it is holding asks for that item. It
+cannot sell and it cannot destroy, so anything else it picked up it would keep for the rest of its
+life, filling the bag that taking a quest needs room in, for copper it can never realise. Leaving
+the trash on the corpse is what keeps the bag usable, and it is why the bot never has to reserve a
+slot against its own looting.
+
+A quest that hands an item over on accept is not chosen when the bag is full, because the core
+refuses it there. Handing a quest BACK is not gated that way: the turn-in removes the quest's own
+collected items before it grants the reward, exactly so a full bag can still finish a collect quest,
+so a bot that would not set off without a free slot would shut the one path that gives it one back.
+A turn-in that does run out of room is refused quietly and retried, because that is a state the
+Operator can read off the bag, not a fault.
 
 ## Death
 
@@ -184,5 +194,12 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
 - A bot picks its own fights only inside its own level band: no more than three levels up, nothing
   so far down that the kill pays no experience, and never an elite. With nothing in the band in
   sight it wanders instead.
-- A bot with a full backpack keeps grinding but stops taking and handing back quests that move an
-  item. Nothing frees a slot for it: there is no verb on the Package surface to sell or destroy.
+- A bot with a full backpack keeps grinding and keeps handing quests back, but stops taking quests
+  that hand an item over on accept. Nothing on the Package surface sells or destroys, so the only
+  thing that frees a slot is a collect quest's own turn-in.
+- The bot asks a stricter question about bag space than the core does. The core tops up a partial
+  stack of the same item before it needs a slot; the bot only asks whether a slot is free. It can
+  therefore pass on a quest the core would have given it. That is deliberate: passing on a quest is
+  harmless, taking one and being refused at the giver is the loop.
+- A quest whose ender does not stand near the bot's home point cannot be handed back. The bot walks
+  home, does not find it, and moves on.
