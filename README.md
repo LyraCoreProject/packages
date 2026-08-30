@@ -11,6 +11,8 @@ matching tags for compatible Package revisions.
 - [`dungeons`](dungeons/) holds scripted dungeon choreography, one submodule per dungeon.
   Deadmines is its first dungeon.
 - [`example`](example/) demonstrates the smallest compiled Package and a notify-only gameplay hook.
+- [`playerbots`](playerbots/) fields a population of session-less Characters a player can group
+  with, so a small realm still has a party to test content with.
 
 Packages compile into LyraCore's Module and run as trusted code. Review a Package as you would a
 core patch before installing it.
