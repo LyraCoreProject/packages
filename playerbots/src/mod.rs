@@ -147,6 +147,15 @@ pub(crate) mod goal {
     pub(crate) const STRANDED: u8 = 4;
     /// A Transfer Intent is out for this bot. It has no live entity until the crossing settles.
     pub(crate) const IN_TRANSIT: u8 = 5;
+    /// Running to a quest giver to take a quest, back to the one that ends it, or back inside the
+    /// ground the bot quests on.
+    pub(crate) const QUEST_TRAVEL: u8 = 6;
+    /// Working a quest objective: killing what the quest names, and taking what it leaves.
+    pub(crate) const QUEST_HUNT: u8 = 7;
+    /// No quest work available, so killing for experience instead.
+    pub(crate) const GRIND: u8 = 8;
+    /// Dead: releasing to the graveyard and resurrecting there.
+    pub(crate) const RESURRECTING: u8 = 9;
 }
 
 /// The bot's current goal, held between ticks. One row per bot that has decided anything at all.
@@ -173,6 +182,31 @@ pub struct PlayerbotsGoal {
     /// last thought. The two waits the crossing needs — the arrival grace and the in-transit
     /// grace — are read off it.
     pub since_micros: i64,
+    /// When the bot last held quests it could make no progress on, in wall-clock microseconds.
+    /// `0` means it is getting on with things.
+    ///
+    /// A separate column because [`Self::since_micros`] cannot answer this. That one restarts every
+    /// time the goal CHANGES, so a bot flapping between two kinds — walking back for a turn-in it
+    /// will be refused, then grinding, then walking back — looks brand new on every tick it is
+    /// read. This one is only cleared by real quest work, so it is the column an Operator sorts by
+    /// to find a stuck bot. End-appended with a default, so a published Shard migrates in place.
+    #[default(0i64)]
+    pub stalled_since_micros: i64,
+    /// Where this bot last accepted a quest, and whether it has accepted one at all.
+    ///
+    /// A bot ranges further than it can see, so the giver it took a quest from is often out of
+    /// sight by the time the quest is done. Without somewhere to walk back to, that quest could
+    /// never be handed in and would hold its slot for good. Not a place in the world so much as a
+    /// bookmark: it is dropped by a Shard crossing with the rest of this row, and the bot simply
+    /// takes its next quest somewhere else.
+    #[default(false)]
+    pub hub_known: bool,
+    #[default(0.0f32)]
+    pub hub_x: f32,
+    #[default(0.0f32)]
+    pub hub_y: f32,
+    #[default(0.0f32)]
+    pub hub_z: f32,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_goal(ctx, character_guid) {
