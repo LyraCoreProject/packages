@@ -1423,6 +1423,7 @@ fn hand_it_back(
     let ender = nearest(me, sight, |e| {
         !e.is_player()
             && !e.dead
+            && talkable(me, e)
             && offers(ctx, e.entry, quest_entry, crate::quest::quest_role::END)
     });
     let Some(ender) = ender else {
@@ -1496,7 +1497,10 @@ fn take_a_quest(
 ) -> Option<QuestStep> {
     let reach = entries_within_reach(ctx, me, bot);
     let giver = nearest(me, sight, |e| {
-        !e.is_player() && !e.dead && !open_quests_of(ctx, me, e.entry, &reach).is_empty()
+        !e.is_player()
+            && !e.dead
+            && talkable(me, e)
+            && !open_quests_of(ctx, me, e.entry, &reach).is_empty()
     })?;
     if distance_2d(me.x, me.y, giver.x, giver.y) > INTERACT_RANGE_YD {
         walk_toward(
@@ -1780,6 +1784,32 @@ fn nearest<'a>(
         .map(|(e, _)| e)
 }
 
+/// The z a bot stands at after a step to `(x, y)`: the terrain height, raised to a model floor that
+/// sits within reach of it (a bridge deck, an interior ground floor). The probe starts at the
+/// TERRAIN height, never at the bot's own z: `snap_z` reports the topmost model surface at or
+/// below its probe, so a probe from a bot standing under a tree finds the canopy, lifts the bot
+/// onto it, and the next tick's probe starts higher still — a ratchet that put Kharanos bots on
+/// the pines at z 452 while the ground was at 403. Off the terrain slice the leg keeps the
+/// straight interpolation toward `dest_z`, which is where the old behaviour lived entirely.
+fn ground_under(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    at: (f32, f32),
+    dest_z: f32,
+    fraction: f32,
+) -> f32 {
+    let interpolated = me.z + (dest_z - me.z) * fraction;
+    let ground = crate::terrain::ground_z(ctx, me.map_id, at.0, at.1).unwrap_or(interpolated);
+    crate::terrain::snap_z(ctx, me.map_id, at.0, at.1, ground)
+}
+
+/// A giver or ender a bot can talk to from the ground it walks on. The core's accept and turn-in
+/// gates measure the full 3D distance (10 yd), while the walk only closes the 2D gap, so a
+/// creature on an upper floor or a ledge would be walked to and then refused every tick.
+fn talkable(me: &crate::WorldEntity, e: &crate::WorldEntity) -> bool {
+    (e.z - me.z).abs() <= INTERACT_RANGE_YD
+}
+
 /// How many of the nearest candidates a bot chooses between. Three is enough that twenty-five
 /// bots on one pad do not all run at the one nearest wolf, and few enough that none of them sets
 /// off for a target another bot is nearer to by a long way.
@@ -1939,13 +1969,7 @@ fn walk_toward(
     let landing = (
         lx,
         ly,
-        crate::terrain::snap_z(
-            ctx,
-            me.map_id,
-            lx,
-            ly,
-            me.z + (dest.2 - me.z) * (travelled / full),
-        ),
+        ground_under(ctx, me, (lx, ly), dest.2, travelled / full),
     );
     let now_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
     // A non-increasing spline id is dropped by the client, so two legs inside one transaction need
