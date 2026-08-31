@@ -18,10 +18,11 @@
 //!
 //! QUESTING. An ungrouped bot works quests around its home point: take one, kill what it names,
 //! take what the kill leaves, hand it back. ONE rule decides whether a quest is worth walking to,
-//! and it is the same rule the core applies when the bot arrives — [`quest_gate`] mirrors
-//! `apply_accept_quest`'s own Refusals, in its order, and `crate::actor::accept_quest` is the
-//! authority that answers for real. A bot that walked to a giver and was refused would walk there
-//! again next second and forever; picking with the accept gate is what makes that impossible.
+//! and it is the core's own rule rather than a copy of it: [`worth_the_walk`] asks
+//! `crate::quest::accept_gates`, the same Gates `apply_accept_quest` applies, and
+//! `crate::actor::accept_quest` is still the authority that answers for real. A bot that walked to
+//! a giver and was refused would walk there again next second and forever; asking the core's own
+//! Gate before the walk is what makes that impossible.
 
 use spacetimedb::{ReducerContext, Table};
 
@@ -31,11 +32,10 @@ use super::{
     PlayerbotsRotation, ROLE_HEALER, ROLE_TANK,
 };
 use crate::{
-    game_areatrigger_teleport, game_character, game_character_quest,
-    game_character_quest_event_credit, game_corpse_loot, game_creature_quest, game_creature_spline,
-    game_creature_template, game_group, game_group_member, game_instance, game_melee_attack,
-    game_quest_event_requirement, game_quest_objective, game_quest_template, game_threat,
-    game_world_entity,
+    game_areatrigger_teleport, game_character, game_character_quest, game_corpse_loot,
+    game_creature_quest, game_creature_spline, game_creature_template, game_group,
+    game_group_member, game_instance, game_melee_attack, game_quest_event_requirement,
+    game_quest_objective, game_quest_template, game_threat, game_world_entity,
 };
 
 /// How long a bot waits between decisions. The tick pass fires every half second; a bot that
@@ -251,6 +251,11 @@ fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
             record_goal(ctx, bot.character_guid, kind, now);
             return;
         }
+    } else {
+        // A bot in a party does no quest work, so nothing here can ever stop its stall clock. A
+        // stall it carried into the party would still be reading hours old when the party broke up.
+        // Being invited IS the end of the stall: the bot has a leader to follow now.
+        keep_stall_clock(ctx, bot.character_guid, QuestWork::NoProgress, 0, now);
     }
 
     if let Some(target) = engaged {
@@ -376,6 +381,7 @@ fn record_goal(ctx: &ReducerContext, character_guid: u64, kind: u8, now: i64) {
                 kind,
                 since_micros: now,
                 stalled_since_micros: 0,
+                stall_warned: false,
                 hub_known: false,
                 hub_x: 0.0,
                 hub_y: 0.0,
@@ -404,14 +410,66 @@ fn held_for(ctx: &ReducerContext, character_guid: u64, kind: u8, now: i64) -> i6
 /// How long a bot may hold quests it makes no progress on before the log says so.
 const QUEST_STALL_PATIENCE_MICROS: i64 = 60_000_000;
 
-/// Has the stall just crossed the point where it is worth saying out loud?
+/// The stall clock on one bot, as the goal row carries it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Stall {
+    /// When the stall opened, in wall-clock microseconds. `0` while the bot is getting on.
+    since_micros: i64,
+    /// Whether this stall has already been said out loud.
+    warned: bool,
+}
+
+/// The clock after one tick, and whether this is the tick that says so.
+pub(crate) struct StallTick {
+    stall: Stall,
+    /// True on exactly one tick per stall.
+    warn: bool,
+}
+
+/// Advance the stall clock by one tick.
 ///
-/// True for exactly one tick, because the window it tests is one think interval wide. A stuck bot
-/// is a lasting state, so the alternative — saying it every tick, or on the first tick of a stall
-/// that clears a second later — is either a flooded log or a false alarm. Pure.
-pub(crate) fn stall_warning_due(stalled_for_micros: i64) -> bool {
-    stalled_for_micros >= QUEST_STALL_PATIENCE_MICROS
-        && stalled_for_micros - THINK_INTERVAL_MICROS < QUEST_STALL_PATIENCE_MICROS
+/// The clock is driven by the OUTCOME of the tick, never by the goal the bot recorded. That
+/// distinction is the whole of it: a walk back to the quest hub records QUEST_TRAVEL and gets
+/// nowhere, so a clock that cleared on the goal kind was reset by the very flapping it was added to
+/// measure — a twenty-second excursion against a minute of patience, forever.
+///
+/// The warning is latched on the row rather than tested against a window on the clock. A window one
+/// think interval wide is straddled by any gap in the think — scheduler jitter, a republish, a tick
+/// the bot spent walking back inside its leash — and the one warning the whole clock exists for
+/// would be skipped in silence while the clock ran on.
+///
+/// Pure, so "said once, and only once it meant something" is a property of a function rather than of
+/// a live run.
+pub(crate) fn tick_stall(
+    before: Stall,
+    work: QuestWork,
+    holds_quests: bool,
+    now: i64,
+) -> StallTick {
+    if work == QuestWork::Progress || !holds_quests {
+        return StallTick {
+            stall: Stall::default(),
+            warn: false,
+        };
+    }
+    if before.since_micros == 0 {
+        return StallTick {
+            stall: Stall {
+                since_micros: now,
+                warned: false,
+            },
+            warn: false,
+        };
+    }
+    let warn =
+        !before.warned && now.saturating_sub(before.since_micros) >= QUEST_STALL_PATIENCE_MICROS;
+    StallTick {
+        stall: Stall {
+            warned: before.warned || warn,
+            ..before
+        },
+        warn,
+    }
 }
 
 /// How long this bot has been holding quests it can do nothing with, `0` when it is getting on.
@@ -421,38 +479,42 @@ fn stalled_for(ctx: &ReducerContext, character_guid: u64, now: i64) -> i64 {
         .map_or(0, |row| now.saturating_sub(row.stalled_since_micros))
 }
 
-/// The bot held quests and could do nothing with any of them. Opens the stall clock if it was not
-/// already running, and says so once when it has run long enough to mean something.
-fn note_stall(ctx: &ReducerContext, character_guid: u64, held: usize, now: i64) {
+/// Run [`tick_stall`] against this bot's goal row: the only writer of the two stall columns, so the
+/// clock has one shape and one place it changes.
+///
+/// `held` is how many quests the loop had to work with this tick, which is zero for a bot in a
+/// party — a grouped bot's quest loop does not run at all, so nothing there could ever stop a clock
+/// left running, and one that only ever reads older is worse than none.
+fn keep_stall_clock(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    work: QuestWork,
+    held: usize,
+    now: i64,
+) {
     let Some(mut row) = goal_row(ctx, character_guid, now) else {
         return;
     };
-    if row.stalled_since_micros == 0 {
-        row.stalled_since_micros = now;
+    let before = Stall {
+        since_micros: row.stalled_since_micros,
+        warned: row.stall_warned,
+    };
+    let next = tick_stall(before, work, held > 0, now);
+    if next.stall != before {
+        row.stalled_since_micros = next.stall.since_micros;
+        row.stall_warned = next.stall.warned;
         ctx.db.pkg_playerbots_goal().id().update(row);
-        return;
     }
-    if stall_warning_due(now.saturating_sub(row.stalled_since_micros)) {
+    if next.warn {
         spacetimedb::log::warn!(
             "playerbots: bot {character_guid} has made no progress on {held} quest(s) it holds for \
              {}s. Read pkg_playerbots_goal.stalled_since_micros for the population, and its \
              game_character_quest rows for what it is carrying — the usual causes are an objective \
-             this Package cannot work, an ender it cannot reach, and a full bag.",
+             this Package cannot work, an ender it cannot reach, a full bag, and a quest creature \
+             on a long respawn.",
             QUEST_STALL_PATIENCE_MICROS / 1_000_000
         );
     }
-}
-
-/// The bot did quest work. Stops the stall clock, so the column only ever measures a real one.
-fn clear_stall(ctx: &ReducerContext, character_guid: u64) {
-    let Some(mut row) = goal_of(ctx, character_guid) else {
-        return;
-    };
-    if row.stalled_since_micros == 0 {
-        return;
-    }
-    row.stalled_since_micros = 0;
-    ctx.db.pkg_playerbots_goal().id().update(row);
 }
 
 /// Remember where a quest was taken, so the bot can come back to hand it in.
@@ -1011,156 +1073,58 @@ fn engaged_enemies(ctx: &ReducerContext, me: &crate::WorldEntity, party: Option<
 
 // ---- questing ----------------------------------------------------------------------------------
 
-/// The bot, as the accept gate sees it.
-pub(crate) struct Questor {
-    pub level: u32,
-    pub race: u8,
-    pub class: u8,
-}
-
-/// The `QuestTemplate` columns the accept gate reads, and no others. Built by [`Requirements::of`]
-/// so the column names live in one place: if the core gate ever grows a sixth column, this struct
-/// is where it lands and [`quest_gate`] is where it is answered.
-pub(crate) struct Requirements {
-    pub min_level: u32,
-    pub races: u32,
-    pub classes: u32,
-    pub prev_quest: u32,
-    pub repeatable: bool,
-    /// The quest hands the Character an item on accept, so accepting needs a free bag slot.
-    pub hands_over_an_item: bool,
-}
-
-impl Requirements {
-    fn of(tmpl: &crate::QuestTemplate) -> Self {
-        Self {
-            min_level: tmpl.min_level,
-            races: tmpl.required_races,
-            classes: tmpl.required_classes,
-            prev_quest: tmpl.prev_quest_id,
-            repeatable: tmpl.repeatable,
-            hands_over_an_item: tmpl.src_item != 0,
-        }
-    }
-}
-
-/// What the bot's quest log already says about a quest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LogEntry {
-    /// No row: the bot has never taken it.
-    Absent,
-    /// A row that is neither rewarded nor failed: the bot is on it now.
-    Active,
-    /// Turned in. Re-takable only when the quest is repeatable.
-    Rewarded,
-    /// Ran out of time. Re-takable whatever the quest says, exactly like the core's own reset.
-    Failed,
-}
-
-/// Why a bot may not take a quest.
-///
-/// Every variant below `Open` mirrors one Refusal of `crate::quest::apply_accept_quest`, in that
-/// reducer's own order, so the reason the bot names is the reason the core would have given. The
-/// gates a bot cannot answer in advance — is the giver in range, does the giver offer this quest —
-/// are not here: those are answered by walking there and asking.
-#[derive(Debug, PartialEq, Eq)]
-pub(crate) enum QuestGate {
-    /// The core would accept this. Worth walking to.
-    Open,
-    TooLow,
-    WrongRace,
-    WrongClass,
-    PrerequisiteUnmet,
-    AlreadyHeld,
-    /// The quest hands over an item on accept and the bag is full. Last, because the core reaches
-    /// it last: the accept EFFECTS grant the item, after every other Gate has passed. A bot never
-    /// sells and never destroys, so a full bag is a lasting state rather than a passing one, and a
-    /// gate that could not see it would walk to the giver and be refused there once a second.
-    NoRoom,
-}
-
-/// The accept gate, asked BEFORE the bot commits to a run rather than after it arrives.
+/// Would the core accept this quest for this bot, if it walked to the giver and asked? `Err`
+/// carries the Refusal the core itself would give.
 ///
 /// This is the one decision the quester slice exists for. Selecting a quest without it re-chose an
 /// un-acceptable chained quest every second: the bot ran to the giver, was refused for a
 /// prerequisite it had never done, and ran there again. Selection and acceptance therefore ask the
-/// same question, and `apply_accept_quest` stays the authority that answers it for real — this
-/// only decides whether the walk is worth taking.
+/// same question — literally the same function — and `crate::actor::accept_quest` stays the
+/// authority that answers it for real. This only decides whether the walk is worth taking.
 ///
-/// Pure, so every arm is a unit test rather than a live run.
-pub(crate) fn quest_gate(
-    who: &Questor,
-    needs: &Requirements,
-    prerequisite_rewarded: bool,
-    logged: LogEntry,
-    bag_has_room: bool,
-) -> QuestGate {
-    if who.level < needs.min_level {
-        return QuestGate::TooLow;
+/// `crate::quest::accept_gates` IS the core's Gate: level, race, class, the previous step in the
+/// chain, and whether the bot already holds the quest, in the order `apply_accept_quest` applies
+/// them. Nothing on this side re-states any of it, so there is nothing left to drift.
+///
+/// Bag room is the one accept Gate `accept_gates` deliberately leaves out, because the core reaches
+/// it last: `apply_accept_effects` grants the quest's `src_item` after every Gate has passed, and
+/// refuses with `INVENTORY_FULL` when the bag cannot hold it. Asking it here, last, keeps the bot's
+/// order the core's order.
+fn worth_the_walk(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    tmpl: &crate::QuestTemplate,
+) -> Result<(), String> {
+    // The `Ok` payload is the log row the accept would reset in place rather than duplicate.
+    // Selection only needs to know that no Gate refused.
+    let _resettable_row = crate::quest::accept_gates(ctx, me, tmpl)?;
+    if bag_can_take_the_quest_item(
+        tmpl.src_item != 0,
+        crate::items::has_free_slot(ctx, me.guid),
+    ) {
+        return Ok(());
     }
-    if !lyracore_shared::quest::race_allowed(needs.races, who.race) {
-        return QuestGate::WrongRace;
-    }
-    if !lyracore_shared::quest::class_allowed(needs.classes, who.class) {
-        return QuestGate::WrongClass;
-    }
-    if needs.prev_quest != 0 && !prerequisite_rewarded {
-        return QuestGate::PrerequisiteUnmet;
-    }
-    // The core resets a row in place rather than refusing it in exactly two cases: a repeatable
-    // quest that was turned in, and a quest of any kind that ran out of time. Anything else that
-    // already has a row is a duplicate.
-    match logged {
-        LogEntry::Absent | LogEntry::Failed => {}
-        LogEntry::Rewarded if needs.repeatable => {}
-        _ => return QuestGate::AlreadyHeld,
-    }
-    if needs.hands_over_an_item && !bag_has_room {
-        return QuestGate::NoRoom;
-    }
-    QuestGate::Open
+    Err(lyracore_shared::mail::INVENTORY_FULL.to_string())
 }
 
-/// [`quest_gate`] over live rows. Every input comes from the predicate the core gate itself uses:
-/// `crate::quest::quest_is_rewarded` for the chain, the `lyracore_shared::quest` mask functions for
-/// race and class, and `crate::items::has_free_slot` for bag space.
+/// The last accept Gate, and the only one this Package answers for itself: a quest that hands an
+/// item over on accept needs a bag slot to put it in.
+///
+/// A bot loots every corpse it makes and never sells, so a full bag is a lasting state rather than
+/// a passing one. A selection that could not see it would walk to the giver, be refused from inside
+/// the accept effects, walk away, and walk back, once a second.
 ///
 /// `has_free_slot` is deliberately the stricter question. The store the accept actually goes
 /// through tops up a partial stack of the same item before it needs a slot at all, so a bot with a
 /// full bag and a half stack of the very item a quest hands over will pass on that quest when the
 /// core would have taken it. That is a quest not taken, never a quest taken and then refused, and
-/// the wrong direction here is the one that loops.
-fn gate_for(
-    ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    tmpl: &crate::QuestTemplate,
-    log: &[crate::CharacterQuest],
-) -> QuestGate {
-    quest_gate(
-        &Questor {
-            level: me.level,
-            race: me.race(),
-            class: me.class(),
-        },
-        &Requirements::of(tmpl),
-        tmpl.prev_quest_id == 0
-            || crate::quest::quest_is_rewarded(ctx, me.guid, tmpl.prev_quest_id),
-        logged(log, tmpl.entry),
-        crate::items::has_free_slot(ctx, me.guid),
-    )
+/// the wrong direction here is the one that loops. Pure.
+pub(crate) fn bag_can_take_the_quest_item(hands_over_an_item: bool, bag_has_room: bool) -> bool {
+    !hands_over_an_item || bag_has_room
 }
 
-fn logged(log: &[crate::CharacterQuest], quest_entry: u32) -> LogEntry {
-    match log.iter().find(|row| row.quest_entry == quest_entry) {
-        None => LogEntry::Absent,
-        Some(row) if row.failed => LogEntry::Failed,
-        Some(row) if row.rewarded => LogEntry::Rewarded,
-        Some(_) => LogEntry::Active,
-    }
-}
-
-/// Every row in this bot's quest log, oldest first. Read once per tick: the gate, the work and the
-/// room-to-take-another decision all ask the same rows.
+/// Every row in this bot's quest log, oldest first. Read once per tick: the work to do and the
+/// room-to-take-another decision both ask the same rows.
 fn quest_log(ctx: &ReducerContext, character_guid: u64) -> Vec<crate::CharacterQuest> {
     let mut rows: Vec<crate::CharacterQuest> = ctx
         .db
@@ -1170,6 +1134,44 @@ fn quest_log(ctx: &ReducerContext, character_guid: u64) -> Vec<crate::CharacterQ
         .collect();
     rows.sort_by_key(|row| row.id);
     rows
+}
+
+/// What one tick of the quest loop got done, next to the goal it recorded.
+///
+/// The two are deliberately separate. A goal says what the bot is DOING, which is what an Operator
+/// reads out of `pkg_playerbots_goal`; the work says whether it got anywhere, which is what the
+/// stall clock reads. Conflating them is what hid the stall this instrumentation was added for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum QuestWork {
+    /// A quest accepted, a quest turned in, or a swing at something a held quest names.
+    Progress,
+    /// A walk, or the grind a bot falls back to. Both are hopes rather than outcomes: a bot walks
+    /// to a hub it will find nothing at just as readily as to one it will.
+    NoProgress,
+}
+
+/// One tick's quest decision: the goal to record, and what the tick got done.
+struct QuestStep {
+    goal: u8,
+    work: QuestWork,
+}
+
+impl QuestStep {
+    /// A tick that advanced a quest. Stops the stall clock.
+    fn progress(goal: u8) -> Self {
+        Self {
+            goal,
+            work: QuestWork::Progress,
+        }
+    }
+
+    /// A tick that did not.
+    fn no_progress(goal: u8) -> Self {
+        Self {
+            goal,
+            work: QuestWork::NoProgress,
+        }
+    }
 }
 
 /// What a bot does about quests this tick, or `None` when it found nothing to do and the caller
@@ -1188,6 +1190,10 @@ fn quest(
 ) -> Option<u8> {
     let home = (bot.home_x, bot.home_y, bot.home_z);
     if distance_2d(me.x, me.y, home.0, home.1) > QUEST_LEASH_YD {
+        // The walk back inside the leash is bounded and self-resolving, so it neither opens the
+        // clock nor stops it. The tick is simply not one the clock has an opinion about — and
+        // because the warning is latched rather than windowed, one owed on the way past is still
+        // owed when the bot is home.
         let _ = crate::actor::stop_attack(ctx, me.guid);
         walk_toward(ctx, me, home, HOME_ARRIVAL_YD, true);
         return Some(goal::QUEST_TRAVEL);
@@ -1204,23 +1210,12 @@ fn quest(
     // Before anything else: a corpse decays, and a COLLECT objective is satisfied out of the bag.
     take_what_the_kill_left(ctx, me, &sight, &wanted_items(ctx, &active));
 
-    let decided = decide_quest(
-        ctx,
-        me,
-        bot,
-        personality,
-        engaged,
-        &log,
-        &active,
-        &sight,
-        now,
-    );
-    match decided {
-        Some(goal::QUEST_TRAVEL) | Some(goal::QUEST_HUNT) => clear_stall(ctx, me.guid),
-        _ if !active.is_empty() => note_stall(ctx, me.guid, active.len(), now),
-        _ => clear_stall(ctx, me.guid),
-    }
-    decided
+    let decided = decide_quest(ctx, me, bot, personality, engaged, &active, &sight, now);
+    let work = decided
+        .as_ref()
+        .map_or(QuestWork::NoProgress, |step| step.work);
+    keep_stall_clock(ctx, me.guid, work, active.len(), now);
+    decided.map(|step| step.goal)
 }
 
 #[allow(clippy::too_many_arguments)] // one decision, and every argument is one of its inputs
@@ -1230,40 +1225,35 @@ fn decide_quest(
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
     engaged: Option<u64>,
-    log: &[crate::CharacterQuest],
     active: &[&crate::CharacterQuest],
     sight: &[crate::WorldEntity],
     now: i64,
-) -> Option<u8> {
+) -> Option<QuestStep> {
     // Already swinging at something. Whether that is quest work is the bot's to say; anything else
     // is self-defence or a party assist, which the plain fight branch answers.
     if let Some(target) = engaged {
-        return match engaged_reason(ctx, active, target, held_kind(ctx, me.guid)) {
-            Some(kind) => {
-                fight(ctx, me, bot, None, personality, target);
-                Some(kind)
-            }
-            None => None,
-        };
+        let step = engaged_reason(ctx, active, target, held_kind(ctx, me.guid))?;
+        fight(ctx, me, bot, None, personality, target);
+        return Some(step);
     }
 
     // A bot already known to be stuck stops walking back on spec. The walk to the hub is worth one
     // trip and no more: repeating it is the flap the stall clock exists to record, not to feed.
     let stuck = stalled_for(ctx, me.guid, now) >= QUEST_STALL_PATIENCE_MICROS;
     for cq in active {
-        if let Some(kind) = work_quest(ctx, me, bot, personality, cq, sight, now, stuck) {
-            return Some(kind);
+        if let Some(step) = work_quest(ctx, me, bot, personality, cq, sight, now, stuck) {
+            return Some(step);
         }
     }
     if active.len() < BOT_QUEST_LOG_LIMIT {
-        if let Some(kind) = take_a_quest(ctx, me, log, sight, now) {
-            return Some(kind);
+        if let Some(step) = take_a_quest(ctx, me, sight, now) {
+            return Some(step);
         }
     }
     grind(ctx, me, bot, personality, sight)
 }
 
-/// The goal a fight already in progress belongs to, or `None` when it is not the quest loop's
+/// The step a fight already in progress belongs to, or `None` when it is not the quest loop's
 /// fight at all. A creature one of the bot's quests names is quest work; a creature the bot picked
 /// itself while grinding stays grinding, which the goal row is what remembers.
 fn engaged_reason(
@@ -1271,15 +1261,15 @@ fn engaged_reason(
     active: &[&crate::CharacterQuest],
     target: u64,
     held: Option<u8>,
-) -> Option<u8> {
+) -> Option<QuestStep> {
     let entry = crate::helpers::live_entity(ctx, target).ok()?.entry;
     if active
         .iter()
         .any(|cq| kill_target_entry(ctx, cq) == Some(entry))
     {
-        return Some(goal::QUEST_HUNT);
+        return Some(QuestStep::progress(goal::QUEST_HUNT));
     }
-    (held == Some(goal::GRIND)).then_some(goal::GRIND)
+    (held == Some(goal::GRIND)).then(|| QuestStep::no_progress(goal::GRIND))
 }
 
 fn held_kind(ctx: &ReducerContext, character_guid: u64) -> Option<u8> {
@@ -1306,46 +1296,18 @@ fn kill_target_entry(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> Option
 
 /// Would `apply_turn_in_quest` accept this quest right now, as far as the bot can tell?
 ///
-/// A mirror of the core's private `quest_is_complete`, and the reason it exists is walking. A bot
-/// that set off for the ender on any quest it had stopped hunting would arrive, be refused, drift,
-/// and set off again once a second, writing a movement leg and a failed Durable Request each time.
-/// It asks the same two questions the core asks — a COLLECT objective out of the live bag, every
-/// other kind off the progress counts — plus the event-credit arm. `apply_turn_in_quest` remains
-/// the authority; this only decides whether the walk is worth taking, exactly like [`quest_gate`].
+/// The reason it is asked at all is walking. A bot that set off for the ender on any quest it had
+/// stopped hunting would arrive, be refused, drift, and set off again once a second, writing a
+/// movement leg and a failed Durable Request each time. `apply_turn_in_quest` remains the
+/// authority; this only decides whether the walk is worth taking, exactly like [`worth_the_walk`].
+///
+/// Two questions, and the core owns one of them. `crate::quest::quest_is_complete` answers the
+/// objectives — and it answers ONLY those, deliberately, so the deadline is this caller's to ask
+/// and is asked first. A quest past its deadline is refused as expired; the sweep that flips the
+/// row runs on its own clock, so between the deadline and the sweep the row still reads active, and
+/// a bot that trusted `failed` alone would set off for a Refusal in that window.
 fn turn_in_ready(ctx: &ReducerContext, cq: &crate::CharacterQuest, now: i64) -> bool {
-    // A quest past its deadline is refused as expired. The sweep that flips the row runs on its own
-    // clock, so between the deadline and the sweep the row still reads active — and a bot that
-    // trusted `failed` alone would set off for a Refusal in that window.
-    if !expired_quest_can_wait(cq.deadline_micros, now) {
-        return false;
-    }
-    let objectives_met = ctx
-        .db
-        .game_quest_objective()
-        .by_quest()
-        .filter(&cq.quest_entry)
-        .all(|obj| {
-            let have = if obj.kind == crate::quest::objective_kind::COLLECT_ITEM {
-                crate::items::item_count(ctx, cq.character_guid, obj.target_entry)
-            } else {
-                cq.counts.get(obj.obj_index as usize).copied().unwrap_or(0)
-            };
-            have >= obj.required_count
-        });
-    let needs_event_credit = ctx
-        .db
-        .game_quest_event_requirement()
-        .by_quest()
-        .filter(&cq.quest_entry)
-        .next()
-        .is_some();
-    let has_event_credit = ctx
-        .db
-        .game_character_quest_event_credit()
-        .by_character()
-        .filter(&cq.character_guid)
-        .any(|credit| credit.quest_entry == cq.quest_entry);
-    objectives_met && (!needs_event_credit || has_event_credit)
+    expired_quest_can_wait(cq.deadline_micros, now) && crate::quest::quest_is_complete(ctx, cq)
 }
 
 /// Is this quest still inside its own time limit? `0` is untimed, which is nearly every quest.
@@ -1407,11 +1369,11 @@ fn work_quest(
     sight: &[crate::WorldEntity],
     now: i64,
     stuck: bool,
-) -> Option<u8> {
+) -> Option<QuestStep> {
     if let Some(entry) = kill_target_entry(ctx, cq) {
         let target = nearest(me, sight, |e| !e.is_player() && !e.dead && e.entry == entry)?;
         fight(ctx, me, bot, None, personality, target.guid);
-        return Some(goal::QUEST_HUNT);
+        return Some(QuestStep::progress(goal::QUEST_HUNT));
     }
     if !turn_in_ready(ctx, cq, now) {
         return None;
@@ -1450,7 +1412,7 @@ fn hand_it_back(
     quest_entry: u32,
     sight: &[crate::WorldEntity],
     stuck: bool,
-) -> Option<u8> {
+) -> Option<QuestStep> {
     let ender = nearest(me, sight, |e| {
         !e.is_player()
             && !e.dead
@@ -1464,8 +1426,11 @@ fn hand_it_back(
         if distance_2d(me.x, me.y, hub.0, hub.1) <= HOME_ARRIVAL_YD {
             return None;
         }
+        // Speculative: the ender MIGHT be at the hub. The bot has no way to know until it arrives,
+        // so this walk is a hope and never progress — which is exactly the leg that used to clear
+        // the stall clock and hide the flap it was measuring.
         walk_toward(ctx, me, hub, HOME_ARRIVAL_YD, true);
-        return Some(goal::QUEST_TRAVEL);
+        return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
     };
     if distance_2d(me.x, me.y, ender.x, ender.y) > INTERACT_RANGE_YD {
         walk_toward(
@@ -1475,14 +1440,14 @@ fn hand_it_back(
             INTERACT_RANGE_YD,
             true,
         );
-        return Some(goal::QUEST_TRAVEL);
+        return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
     }
     // Reward index 0: this Package takes the quest's guaranteed rewards and the first of any
     // choice, because a bot has no gear plan to pick against.
     match crate::actor::turn_in_quest(ctx, me.guid, ender.guid, quest_entry, 0) {
         Ok(()) => {
             spacetimedb::log::info!("playerbots: bot {} turned in quest {quest_entry}", me.guid);
-            Some(goal::QUEST_TRAVEL)
+            Some(QuestStep::progress(goal::QUEST_TRAVEL))
         }
         // A full bag is the one Refusal here that is neither a defect nor a surprise. The bot only
         // reaches this on a collect quest — the caller turns the walk down for anything else with
@@ -1507,8 +1472,8 @@ fn hand_it_back(
 
 /// Take a quest from the nearest giver in sight that has one for this bot, walking to it first.
 ///
-/// [`gate_for`] is what picks the quest, so a quest the core would refuse is never walked to. When
-/// the core refuses one anyway the two have drifted apart, which is a defect rather than a
+/// [`worth_the_walk`] is what picks the quest, so a quest the core would refuse is never walked to.
+/// When the core refuses one anyway the two have drifted apart, which is a defect rather than a
 /// gameplay outcome, and the warning below is the only place it can show up.
 ///
 /// NEAREST, not first-found. The bot re-picks every second while it walks, and the sight list is
@@ -1518,12 +1483,11 @@ fn hand_it_back(
 fn take_a_quest(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
-    log: &[crate::CharacterQuest],
     sight: &[crate::WorldEntity],
     now: i64,
-) -> Option<u8> {
+) -> Option<QuestStep> {
     let giver = nearest(me, sight, |e| {
-        !e.is_player() && !e.dead && !open_quests_of(ctx, me, e.entry, log).is_empty()
+        !e.is_player() && !e.dead && !open_quests_of(ctx, me, e.entry).is_empty()
     })?;
     if distance_2d(me.x, me.y, giver.x, giver.y) > INTERACT_RANGE_YD {
         walk_toward(
@@ -1533,9 +1497,9 @@ fn take_a_quest(
             INTERACT_RANGE_YD,
             true,
         );
-        return Some(goal::QUEST_TRAVEL);
+        return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
     }
-    for quest_entry in open_quests_of(ctx, me, giver.entry, log) {
+    for quest_entry in open_quests_of(ctx, me, giver.entry) {
         match crate::actor::accept_quest(ctx, me.guid, giver.guid, quest_entry) {
             Ok(()) => {
                 // Bookmark the giver, not the bot: the bot is standing within interaction range of
@@ -1546,7 +1510,7 @@ fn take_a_quest(
                     me.guid,
                     giver.entry
                 );
-                return Some(goal::QUEST_TRAVEL);
+                return Some(QuestStep::progress(goal::QUEST_TRAVEL));
             }
             Err(refusal) => spacetimedb::log::warn!(
                 "playerbots: bot {} was refused quest {quest_entry}, which its own accept gate had \
@@ -1561,15 +1525,10 @@ fn take_a_quest(
 /// The quests creature template `entry` starts that this bot could take right now: the ones the
 /// core would accept, narrowed to the ones this Package can actually finish.
 ///
-/// Two separate questions, deliberately kept apart. [`gate_for`] is the core's answer mirrored, and
-/// nothing may loosen it. [`workable`] is this Package's own, and it may only ever tighten: a bot
-/// that takes fewer quests is a bot that quests less, while a bot that takes more is the loop.
-fn open_quests_of(
-    ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    entry: u32,
-    log: &[crate::CharacterQuest],
-) -> Vec<u32> {
+/// Two separate questions, deliberately kept apart. [`worth_the_walk`] is the core's own answer,
+/// and nothing may loosen it. [`workable`] is this Package's own, and it may only ever tighten: a
+/// bot that takes fewer quests is a bot that quests less, while a bot that takes more is the loop.
+fn open_quests_of(ctx: &ReducerContext, me: &crate::WorldEntity, entry: u32) -> Vec<u32> {
     offered_by(ctx, entry, crate::quest::quest_role::START)
         .into_iter()
         .filter(|quest_entry| workable(ctx, *quest_entry))
@@ -1578,7 +1537,7 @@ fn open_quests_of(
                 .game_quest_template()
                 .entry()
                 .find(quest_entry)
-                .is_some_and(|tmpl| gate_for(ctx, me, &tmpl, log) == QuestGate::Open)
+                .is_some_and(|tmpl| worth_the_walk(ctx, me, &tmpl).is_ok())
         })
         .collect()
 }
@@ -1595,6 +1554,13 @@ fn open_quests_of(
 /// opens most chains, complete the moment it is accepted. And a quest that mixes a workable
 /// objective with one of these is taken: the bot can do part of it, which is worth watching, and
 /// the stall clock is what records that it never finishes.
+///
+/// An event requirement closes the quest whatever its objectives say. `quest_is_complete` will not
+/// call such a quest complete without a `game_character_quest_event_credit` row, and that row is
+/// written by an EventAI action on some creature the objective rows never name — so the bot has
+/// nothing to aim at and could only ever earn the credit by accident. The visible shape is a quest
+/// with no objectives at all: without this the bot takes it, reads it as unfinished forever, and
+/// stalls holding a slot.
 fn workable(ctx: &ReducerContext, quest_entry: u32) -> bool {
     let kinds: Vec<u8> = ctx
         .db
@@ -1603,12 +1569,22 @@ fn workable(ctx: &ReducerContext, quest_entry: u32) -> bool {
         .filter(&quest_entry)
         .map(|obj| obj.kind)
         .collect();
-    objectives_are_workable(&kinds)
+    let needs_event_credit = ctx
+        .db
+        .game_quest_event_requirement()
+        .by_quest()
+        .filter(&quest_entry)
+        .next()
+        .is_some();
+    objectives_are_workable(&kinds, needs_event_credit)
 }
 
-/// [`workable`]'s decision, over the objective kinds alone. Pure, so the two kinds a session-less
-/// bot can never credit are a test rather than a claim.
-pub(crate) fn objectives_are_workable(kinds: &[u8]) -> bool {
+/// [`workable`]'s decision, over the objective kinds and the quest's event requirement. Pure, so
+/// what a session-less bot can never credit is a test rather than a claim.
+pub(crate) fn objectives_are_workable(kinds: &[u8], needs_event_credit: bool) -> bool {
+    if needs_event_credit {
+        return false;
+    }
     kinds.is_empty()
         || kinds.iter().any(|kind| {
             matches!(
@@ -1659,7 +1635,7 @@ fn grind(
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
     sight: &[crate::WorldEntity],
-) -> Option<u8> {
+) -> Option<QuestStep> {
     let victim = nearest(me, sight, |e| {
         !e.is_player()
             && !e.dead
@@ -1669,7 +1645,7 @@ fn grind(
             && worth_grinding(me.level, e.level, is_elite(ctx, e.entry))
     })?;
     fight(ctx, me, bot, None, personality, victim.guid);
-    Some(goal::GRIND)
+    Some(QuestStep::no_progress(goal::GRIND))
 }
 
 /// Take what the kill left. Costs no tick — a bot that just killed something is already standing on
@@ -2144,245 +2120,22 @@ mod tests {
         assert!(closes_to_melee(ROLE_HEALER, false));
     }
 
-    // ---- the accept gate -----------------------------------------------------------------------
-
-    const HUMAN_WARRIOR: Questor = Questor {
-        level: 5,
-        race: 1,
-        class: 1,
-    };
-
-    /// [`quest_gate`] asked with room in the bag, which is every case but the two about room.
-    fn gate(
-        who: &Questor,
-        needs: &Requirements,
-        prerequisite_rewarded: bool,
-        logged: LogEntry,
-    ) -> QuestGate {
-        quest_gate(who, needs, prerequisite_rewarded, logged, true)
-    }
-
-    /// A quest with no requirements at all — the shape most of the world's quests have.
-    fn open_to_anyone() -> Requirements {
-        Requirements {
-            min_level: 0,
-            races: 0,
-            classes: 0,
-            prev_quest: 0,
-            repeatable: false,
-            hands_over_an_item: false,
-        }
-    }
-
-    /// THE regression. A chained quest whose previous step the bot has never turned in was chosen
-    /// over and over on an imported node: selection did not ask about the chain, so the bot ran to
-    /// the giver, was refused, and ran there again the next second, forever. Selection asks now.
-    #[test]
-    fn a_chained_quest_is_never_chosen_before_its_previous_step_is_turned_in() {
-        let chained = Requirements {
-            prev_quest: 26,
-            ..open_to_anyone()
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &chained, false, LogEntry::Absent),
-            QuestGate::PrerequisiteUnmet
-        );
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &chained, true, LogEntry::Absent),
-            QuestGate::Open,
-            "the chain opens the moment its previous step is rewarded"
-        );
-    }
-
-    #[test]
-    fn a_quest_over_the_bots_level_is_never_chosen() {
-        let needs_ten = Requirements {
-            min_level: 10,
-            ..open_to_anyone()
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &needs_ten, true, LogEntry::Absent),
-            QuestGate::TooLow
-        );
-        let at_level = Questor {
-            level: 10,
-            ..HUMAN_WARRIOR
-        };
-        assert_eq!(
-            gate(&at_level, &needs_ten, true, LogEntry::Absent),
-            QuestGate::Open
-        );
-    }
-
-    /// The Northshire human chain carries `required_races` 77 — Human, Dwarf, Night Elf, Gnome. An
-    /// Orc bot standing at the same giver must not choose it.
-    #[test]
-    fn a_quest_closed_to_the_bots_race_is_never_chosen() {
-        let alliance_only = Requirements {
-            races: 77,
-            ..open_to_anyone()
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &alliance_only, true, LogEntry::Absent),
-            QuestGate::Open
-        );
-        let orc = Questor {
-            race: 2,
-            ..HUMAN_WARRIOR
-        };
-        assert_eq!(
-            gate(&orc, &alliance_only, true, LogEntry::Absent),
-            QuestGate::WrongRace
-        );
-    }
-
-    #[test]
-    fn a_quest_closed_to_the_bots_class_is_never_chosen() {
-        let warrior_only = Requirements {
-            classes: 1,
-            ..open_to_anyone()
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &warrior_only, true, LogEntry::Absent),
-            QuestGate::Open
-        );
-        let mage = Questor {
-            class: 8,
-            ..HUMAN_WARRIOR
-        };
-        assert_eq!(
-            gate(&mage, &warrior_only, true, LogEntry::Absent),
-            QuestGate::WrongClass
-        );
-    }
-
-    /// Holding a quest is the ONLY memory a bot has that it already chose one. A bot that could
-    /// choose a quest it is already on would walk to the giver forever, which is the same loop by
-    /// another route.
-    #[test]
-    fn a_quest_the_bot_is_already_on_is_never_chosen_again() {
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &open_to_anyone(), true, LogEntry::Active),
-            QuestGate::AlreadyHeld
-        );
-    }
-
-    /// The core resets a row in place for exactly two cases rather than refusing it, and a bot
-    /// that read those as duplicates would stop questing at a repeatable giver.
-    #[test]
-    fn only_a_repeatable_turn_in_and_a_run_out_timer_are_re_takable() {
-        let once = open_to_anyone();
-        let again = Requirements {
-            repeatable: true,
-            ..open_to_anyone()
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &once, true, LogEntry::Rewarded),
-            QuestGate::AlreadyHeld
-        );
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &again, true, LogEntry::Rewarded),
-            QuestGate::Open
-        );
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &once, true, LogEntry::Failed),
-            QuestGate::Open,
-            "a quest that ran out of time is re-takable whatever it says about repeating"
-        );
-    }
-
-    /// The gate names the FIRST reason the core would have named, not any reason: a bot that is
-    /// too low AND the wrong race hears "too low", exactly as the reducer would say it.
-    #[test]
-    fn the_gate_refuses_in_the_reducers_own_order() {
-        let shut = Requirements {
-            min_level: 60,
-            races: 2,
-            classes: 2,
-            prev_quest: 26,
-            repeatable: false,
-            hands_over_an_item: false,
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &shut, false, LogEntry::Active),
-            QuestGate::TooLow
-        );
-        let low_gone = Requirements {
-            min_level: 0,
-            ..shut
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &low_gone, false, LogEntry::Active),
-            QuestGate::WrongRace
-        );
-        let race_gone = Requirements {
-            races: 0,
-            ..low_gone
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &race_gone, false, LogEntry::Active),
-            QuestGate::WrongClass
-        );
-        let class_gone = Requirements {
-            classes: 0,
-            ..race_gone
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &class_gone, false, LogEntry::Active),
-            QuestGate::PrerequisiteUnmet
-        );
-        let chain_gone = Requirements {
-            prev_quest: 0,
-            ..class_gone
-        };
-        assert_eq!(
-            gate(&HUMAN_WARRIOR, &chain_gone, false, LogEntry::Active),
-            QuestGate::AlreadyHeld
-        );
-        let held_gone = Requirements {
-            hands_over_an_item: true,
-            ..chain_gone
-        };
-        assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &held_gone, false, LogEntry::Absent, false),
-            QuestGate::NoRoom,
-            "the core grants the quest's own item last of all, after every other gate has passed"
-        );
-    }
+    // ---- the one Gate the Package still answers itself -------------------------------------------
 
     /// A bot loots every corpse it makes and never sells, so its bag fills and stays full. A quest
     /// that hands an item over on accept is refused by the core on a full bag — from inside the
-    /// accept EFFECTS, past every gate the reducer's own body applies. A selection that could not
-    /// see that would walk to the giver, be refused, walk away, and walk back, once a second.
+    /// accept EFFECTS, past every Gate `accept_gates` applies. A selection that could not see that
+    /// would walk to the giver, be refused, walk away, and walk back, once a second.
     #[test]
     fn a_quest_that_hands_over_an_item_is_never_chosen_with_a_full_bag() {
-        let hands_over = Requirements {
-            hands_over_an_item: true,
-            ..open_to_anyone()
-        };
-        assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &hands_over, true, LogEntry::Absent, false),
-            QuestGate::NoRoom
-        );
-        assert_eq!(
-            quest_gate(&HUMAN_WARRIOR, &hands_over, true, LogEntry::Absent, true),
-            QuestGate::Open
-        );
+        assert!(!bag_can_take_the_quest_item(true, false));
+        assert!(bag_can_take_the_quest_item(true, true));
     }
 
     /// Most quests hand nothing over, and a full bag must not stop a bot taking one of those.
     #[test]
     fn a_full_bag_does_not_stop_a_quest_that_hands_nothing_over() {
-        assert_eq!(
-            quest_gate(
-                &HUMAN_WARRIOR,
-                &open_to_anyone(),
-                true,
-                LogEntry::Absent,
-                false
-            ),
-            QuestGate::Open
-        );
+        assert!(bag_can_take_the_quest_item(false, false));
     }
 
     // ---- what a bot picks a fight with ---------------------------------------------------------
@@ -2428,12 +2181,12 @@ mod tests {
     /// bot a third of its attention for the rest of its life.
     #[test]
     fn a_quest_a_session_less_bot_can_never_credit_is_never_taken() {
-        assert!(!objectives_are_workable(&[USE_GAMEOBJECT]));
-        assert!(!objectives_are_workable(&[EXPLORE_AREATRIGGER]));
-        assert!(!objectives_are_workable(&[
-            USE_GAMEOBJECT,
-            EXPLORE_AREATRIGGER
-        ]));
+        assert!(!objectives_are_workable(&[USE_GAMEOBJECT], false));
+        assert!(!objectives_are_workable(&[EXPLORE_AREATRIGGER], false));
+        assert!(!objectives_are_workable(
+            &[USE_GAMEOBJECT, EXPLORE_AREATRIGGER],
+            false
+        ));
     }
 
     /// The talk-to-somebody quest that opens most chains has no objectives at all and is complete
@@ -2441,13 +2194,13 @@ mod tests {
     /// the first step of every chain on the realm.
     #[test]
     fn a_quest_with_no_objectives_is_taken_and_handed_straight_back() {
-        assert!(objectives_are_workable(&[]));
+        assert!(objectives_are_workable(&[], false));
     }
 
     #[test]
     fn the_two_kinds_a_bot_works_are_taken() {
-        assert!(objectives_are_workable(&[KILL_CREATURE]));
-        assert!(objectives_are_workable(&[COLLECT_ITEM]));
+        assert!(objectives_are_workable(&[KILL_CREATURE], false));
+        assert!(objectives_are_workable(&[COLLECT_ITEM], false));
     }
 
     /// A quest that mixes something the bot can do with something it cannot is still taken. Part of
@@ -2455,33 +2208,152 @@ mod tests {
     /// above is for quests where there was never anything to watch.
     #[test]
     fn a_quest_the_bot_can_partly_do_is_still_taken() {
-        assert!(objectives_are_workable(&[
-            KILL_CREATURE,
-            EXPLORE_AREATRIGGER
-        ]));
+        assert!(objectives_are_workable(
+            &[KILL_CREATURE, EXPLORE_AREATRIGGER],
+            false
+        ));
+    }
+
+    /// An event requirement is credited by an EventAI action on a creature the objective rows never
+    /// name, so the bot has nothing to aim at. `quest_is_complete` refuses to call the quest
+    /// complete without that credit, and the zero-objective shape is the one that shows: the bot
+    /// takes a quest it reads as complete-on-accept and then holds it for good.
+    #[test]
+    fn a_quest_that_needs_an_event_credit_is_never_taken() {
+        assert!(!objectives_are_workable(&[], true));
+        assert!(!objectives_are_workable(&[KILL_CREATURE], true));
+        assert!(!objectives_are_workable(&[COLLECT_ITEM], true));
     }
 
     // ---- saying so when a bot is stuck ---------------------------------------------------------
 
-    /// The point of a separate clock. `since_micros` restarts on every change of goal, so a bot
-    /// flapping between walking back and grinding reads as brand new on every tick it is looked at,
-    /// however long it has been getting nowhere. The stall clock is only ever stopped by real quest
-    /// work, so it is the one an Operator can sort a stuck population by.
+    /// The clock opens on the first tick a bot with quests in its log gets nowhere.
     #[test]
-    fn the_stall_is_said_once_and_only_after_it_has_meant_something() {
-        assert!(!stall_warning_due(0));
-        assert!(!stall_warning_due(QUEST_STALL_PATIENCE_MICROS - 1));
-        assert!(stall_warning_due(QUEST_STALL_PATIENCE_MICROS));
+    fn the_clock_opens_when_a_bot_first_gets_nowhere() {
+        let opened = tick_stall(Stall::default(), QuestWork::NoProgress, true, 5_000);
+        assert_eq!(opened.stall.since_micros, 5_000);
+        assert!(!opened.warn, "one tick of nothing is not a stall yet");
+    }
+
+    /// Real quest work is the only thing that stops the clock. A bot holding no quests at all is
+    /// idle rather than stuck, and has nothing to be stuck on.
+    #[test]
+    fn quest_work_and_an_empty_log_both_stop_the_clock() {
+        let running = Stall {
+            since_micros: 1_000,
+            warned: true,
+        };
+        assert_eq!(
+            tick_stall(running, QuestWork::Progress, true, 90_000_000).stall,
+            Stall::default()
+        );
+        assert_eq!(
+            tick_stall(running, QuestWork::NoProgress, false, 90_000_000).stall,
+            Stall::default()
+        );
+    }
+
+    /// THE regression this issue was filed for. The speculative walk back to the quest hub records
+    /// QUEST_TRAVEL, and the clock used to clear on that goal kind — so a bot flapping between the
+    /// hub and its grinding ground reset its own evidence on every excursion, roughly twenty
+    /// seconds against a minute of patience, and the warning never fired in the case the hub
+    /// bookmark was added for. The clock reads the OUTCOME now, and a walk is not one.
+    #[test]
+    fn a_walk_that_gets_nowhere_leaves_the_clock_where_it_was() {
+        let running = Stall {
+            since_micros: 1_000,
+            warned: false,
+        };
+        assert_eq!(
+            tick_stall(running, QuestWork::NoProgress, true, 30_000_000).stall,
+            running
+        );
+    }
+
+    /// The whole motivating case as the sequence that produced it: five minutes of walking and
+    /// grinding, never a quest accepted, turned in, or hunted. One warning, and only one.
+    #[test]
+    fn a_bot_flapping_between_its_hub_and_its_grinding_ground_warns_once() {
+        let mut stall = Stall::default();
+        let mut warnings = 0;
+        for tick in 0..300_i64 {
+            let step = tick_stall(
+                stall,
+                QuestWork::NoProgress,
+                true,
+                tick * THINK_INTERVAL_MICROS,
+            );
+            stall = step.stall;
+            warnings += i32::from(step.warn);
+        }
+        assert_eq!(
+            warnings, 1,
+            "a bot that gets nowhere for five minutes says so exactly once"
+        );
+    }
+
+    /// The latch, against the think gap the window could not survive. A republish or scheduler
+    /// jitter can leave the bot un-thought-about across the patience mark; the warning is still
+    /// owed on the next tick, whenever it lands.
+    #[test]
+    fn a_think_gap_that_steps_over_the_patience_still_gets_its_warning() {
+        let opened_at = 1_000_i64;
+        let running = Stall {
+            since_micros: opened_at,
+            warned: false,
+        };
+        // The bot was last thought about a second short of the patience, then not again for forty.
+        assert!(
+            !tick_stall(
+                running,
+                QuestWork::NoProgress,
+                true,
+                opened_at + QUEST_STALL_PATIENCE_MICROS - THINK_INTERVAL_MICROS
+            )
+            .warn
+        );
+        let after_the_gap = opened_at + QUEST_STALL_PATIENCE_MICROS + THINK_INTERVAL_MICROS * 40;
+        assert!(tick_stall(running, QuestWork::NoProgress, true, after_the_gap).warn);
     }
 
     /// A stall that has been running for an hour was announced an hour ago. Saying it again every
     /// second would bury the drift warnings this loop's other refusals carry.
     #[test]
     fn a_stall_already_announced_is_not_announced_again() {
-        assert!(!stall_warning_due(
-            QUEST_STALL_PATIENCE_MICROS + THINK_INTERVAL_MICROS
-        ));
-        assert!(!stall_warning_due(QUEST_STALL_PATIENCE_MICROS * 60));
+        let announced = Stall {
+            since_micros: 1,
+            warned: true,
+        };
+        assert!(
+            !tick_stall(
+                announced,
+                QuestWork::NoProgress,
+                true,
+                QUEST_STALL_PATIENCE_MICROS * 60
+            )
+            .warn
+        );
+    }
+
+    /// The latch is per stall, not per bot. A bot that got going again and then stuck a second time
+    /// is a second stall, and it is worth saying so.
+    #[test]
+    fn a_second_stall_after_real_work_warns_again() {
+        let mut stall = Stall::default();
+        let mut warnings = 0;
+        for tick in 0..300_i64 {
+            let now = tick * THINK_INTERVAL_MICROS;
+            // One quest turned in half way through: the clock and the latch both reset.
+            let work = if tick == 150 {
+                QuestWork::Progress
+            } else {
+                QuestWork::NoProgress
+            };
+            let step = tick_stall(stall, work, true, now);
+            stall = step.stall;
+            warnings += i32::from(step.warn);
+        }
+        assert_eq!(warnings, 2, "two stalls, two warnings");
     }
 
     // ---- timed quests --------------------------------------------------------------------------
@@ -2501,207 +2373,7 @@ mod tests {
         assert!(!expired_quest_can_wait(1_000, 5_000));
     }
 
-    // ---- the gate mirror does not drift --------------------------------------------------------
-
-    /// Every Refusal `crate::quest::apply_accept_quest` writes IN ITS OWN BODY, and what answers it
-    /// on this side. Five are selection gates the bot asks in advance; four are answered by the
-    /// bot's own shape and are named here so the accounting is complete rather than partial.
-    ///
-    /// The reducer also refuses through two calls that produce their Refusals elsewhere. Those are
-    /// [`CORE_ACCEPT_DELEGATES`], and they are pinned separately, because a Gate written as a
-    /// helper is invisible to a scan of this body.
-    const CORE_ACCEPT_REFUSALS: &[(&str, &str)] = &[
-        (
-            "player not in world",
-            "not a selection gate: a bot with no body never reaches the quest loop",
-        ),
-        (
-            "dead players cannot accept quests",
-            "not a selection gate: `get_back_up` takes the tick while the bot is dead",
-        ),
-        (
-            "that quest giver does not offer this quest",
-            "not a selection gate: `offered_by` reads the same relation rows to find the giver",
-        ),
-        (
-            "no such quest",
-            "not a selection gate: the template IS what selection reads",
-        ),
-        ("requires level", "QuestGate::TooLow"),
-        ("quest not available to your race", "QuestGate::WrongRace"),
-        ("quest not available to your class", "QuestGate::WrongClass"),
-        (
-            "must complete the prerequisite quest first",
-            "QuestGate::PrerequisiteUnmet",
-        ),
-        (
-            "already on or completed that quest",
-            "QuestGate::AlreadyHeld",
-        ),
-    ];
-
-    /// The forms `apply_accept_quest` produces a Refusal through. Counting them is what catches a
-    /// gate this Package has never heard of.
-    const REFUSAL_FORMS: &[&str] = &["Err(", "ok_or_else(", "map_err("];
-
-    /// The calls `apply_accept_quest` refuses THROUGH: their Refusals are written in another
-    /// function, so no scan of the reducer's own body can count them. Pinned by name and by the
-    /// number of `?` the body carries, because a new Gate added as a helper plus `?` is the
-    /// likeliest shape the next one takes, and it would move neither the Refusal count nor the
-    /// marker order.
-    const CORE_ACCEPT_DELEGATES: &[(&str, &str)] = &[
-        (
-            "validate_giver",
-            "answered by arriving: a bot only asks from inside INTERACT_RANGE_YD, well within the \
-             core's own 10-yard giver gate, and it picks the giver off the same relation rows",
-        ),
-        (
-            "apply_accept_effects",
-            "grants the quest's own `src_item` on a bag that may be full; QuestGate::NoRoom mirrors \
-             that Refusal, off the same `items::has_free_slot` the whole server answers with",
-        ),
-    ];
-
-    /// How many `?` the reducer's body carries: one per delegate, plus the two Refusal chains that
-    /// already have a row in [`CORE_ACCEPT_REFUSALS`] (`map_err` and `ok_or_else`). One delegate is
-    /// the tail expression rather than a `?`, so it contributes none.
-    const CORE_ACCEPT_QUESTION_MARKS: usize = 3;
-
-    fn core_accept_body() -> String {
-        let src = crate::test_scan::read_scanned("module/src/quest.rs")
-            .expect("module/src/quest.rs is core, never an optional drop-in");
-        crate::test_scan::code_of(&src, "pub(crate) fn apply_accept_quest(")
-    }
-
-    /// The one thing this whole slice exists for, as a test rather than as a promise: a gate the
-    /// core applies and this Package does not is a gate the bot walks into, over and over.
-    ///
-    /// `crate::actor::accept_quest` stays the authority — nothing here can make a bot take a quest
-    /// the core refuses. What this catches is the other direction: a gate that grows in the core
-    /// and leaves selection choosing quests acceptance will not honour, which is exactly the shape
-    /// the July foundation shipped with.
-    #[test]
-    fn the_accept_gate_mirror_accounts_for_every_refusal_the_core_can_give() {
-        let body = core_accept_body();
-        for (refusal, answered_by) in CORE_ACCEPT_REFUSALS {
-            assert!(
-                body.contains(refusal),
-                "`apply_accept_quest` no longer refuses with \"{refusal}\" (mirrored here by \
-                 {answered_by}). Either the Refusal was reworded — move this row with it — or the \
-                 gate is gone, in which case drop the row and the `QuestGate` variant together."
-            );
-        }
-        let produced: usize = REFUSAL_FORMS.iter().map(|f| body.matches(f).count()).sum();
-        assert_eq!(
-            produced,
-            CORE_ACCEPT_REFUSALS.len(),
-            "`apply_accept_quest` produces {produced} Refusals but this Package accounts for {}. \
-             A bot picks a quest with `quest_gate` and then asks the core for it: a gate only the \
-             core knows about is one the bot walks to the giver for and is refused at, every \
-             second, forever — the defect this slice was written to close. Mirror the new gate in \
-             `quest_gate` and add its row to CORE_ACCEPT_REFUSALS, or add the row with a written \
-             reason why selection cannot ask it in advance.",
-            CORE_ACCEPT_REFUSALS.len()
-        );
-    }
-
-    /// The other half of the accounting. `apply_accept_quest` refuses through two calls as well as
-    /// in its own body, and a Gate added as a third would change nothing the test above looks at:
-    /// not the Refusal count, not the marker order. Both delegates are pinned by name, and the
-    /// number of `?` in the body is pinned with them, so a new `some_new_gate(ctx, ..)?` fails here
-    /// naming exactly what happened.
-    #[test]
-    fn the_mirror_accounts_for_every_call_the_core_accept_refuses_through() {
-        let body = core_accept_body();
-        for (delegate, answered_by) in CORE_ACCEPT_DELEGATES {
-            assert!(
-                body.contains(delegate),
-                "`apply_accept_quest` no longer refuses through `{delegate}` (mirrored here by \
-                 {answered_by}). Drop the row when the call is gone, or move it when the call was \
-                 renamed."
-            );
-        }
-        let question_marks = body.matches('?').count();
-        assert_eq!(
-            question_marks,
-            CORE_ACCEPT_QUESTION_MARKS,
-            "`apply_accept_quest` now propagates {question_marks} Refusals with `?`, not \
-             {CORE_ACCEPT_QUESTION_MARKS}. Every one is a Gate a bot can be refused at after it has \
-             already walked to the giver, and a Refusal written inside a helper is invisible to the \
-             body scan next to this one. Work out whether selection can ask the new Gate in advance: \
-             if it can, mirror it in `quest_gate`; if it cannot, add its row to \
-             CORE_ACCEPT_DELEGATES with the written reason."
-        );
-    }
-
-    /// The bot names the first reason the core would have named. That only holds while the two ask
-    /// in the same order, so the order is pinned on the core side too.
-    #[test]
-    fn the_core_asks_its_selection_gates_in_the_order_this_package_mirrors() {
-        let body = core_accept_body();
-        let order = [
-            "min_level",
-            "race_allowed",
-            "class_allowed",
-            "prev_quest_id",
-            "already on or completed that quest",
-        ];
-        let mut previous = 0;
-        for marker in order {
-            let at = body.find(marker).unwrap_or_else(|| {
-                panic!(
-                    "`apply_accept_quest` no longer names `{marker}` — the mirror in `quest_gate` \
-                        is asking about a gate the core has moved or dropped"
-                )
-            });
-            assert!(
-                at > previous,
-                "`apply_accept_quest` now asks `{marker}` out of the order `quest_gate` mirrors, \
-                 so a bot would name a different reason than the core does"
-            );
-            previous = at;
-        }
-    }
-
-    /// `quest_is_complete`'s body, verbatim, whitespace collapsed. It is core's, it is private, and
-    /// [`turn_in_ready`] is a copy of it — the second mirror this Package carries, and the only one
-    /// with no Refusal text to count, because a private function produces none.
-    ///
-    /// Pinned by EQUALITY rather than by markers. The function is twenty lines and has not moved in
-    /// its lifetime, so equality costs nothing to keep and catches what markers cannot: an arm
-    /// added, an arm's sense flipped, a comparison loosened.
-    const CORE_QUEST_IS_COMPLETE: &str = "{ let has_event_credit = ctx .db \
-         .game_character_quest_event_credit() .by_character() .filter(&cq.character_guid) \
-         .any(|credit| credit.quest_entry == cq.quest_entry); let ordinary_objectives_complete = \
-         ctx .db .game_quest_objective() .by_quest() .filter(&cq.quest_entry) .all(|obj| { let \
-         have = match obj.kind { objective_kind::COLLECT_ITEM => { \
-         crate::items::item_count(ctx, cq.character_guid, obj.target_entry) } _ => \
-         cq.counts.get(obj.obj_index as usize).copied().unwrap_or(0), }; have >= \
-         obj.required_count }); let requires_event_credit = ctx .db \
-         .game_quest_event_requirement() .by_quest() .filter(&cq.quest_entry) .next() .is_some(); \
-         ordinary_objectives_complete && (!requires_event_credit || has_event_credit) }";
-
-    /// The completeness mirror gets the same treatment the accept gate does, for the same reason.
-    ///
-    /// A bot only sets off for the ender when [`turn_in_ready`] says the turn-in will be accepted.
-    /// Drift in the strict direction is silent: the bot stops carrying a finished quest back and
-    /// holds the slot for good. Drift in the loose direction is the walk-and-be-refused loop this
-    /// slice exists to close, with a warning every second on top.
-    #[test]
-    fn the_completeness_mirror_still_matches_the_core_it_copies() {
-        let src = crate::test_scan::read_scanned("module/src/quest.rs")
-            .expect("module/src/quest.rs is core, never an optional drop-in");
-        assert_eq!(
-            crate::test_scan::shape_of(&src, "fn quest_is_complete("),
-            CORE_QUEST_IS_COMPLETE,
-            "`quest_is_complete` has changed, and `turn_in_ready` is a copy of it that decides \
-             whether a bot walks to a quest giver. Re-read the two side by side: if the new body \
-             asks something the mirror does not, a bot either stops handing finished quests back \
-             (silent, and the slot is held for good) or walks to a Refusal once a second. Then \
-             update this pin. Better still, if `quest_is_complete` can be made `pub(crate)`, the \
-             mirror and this pin both delete."
-        );
-    }
+    // ---- teardown --------------------------------------------------------------------------------
 
     /// Teardown leaves zero rows. A quester writes two kinds of durable row a wandering bot never
     /// did — its quest log, and the corpse a death leaves — and both have to go when the Operator
