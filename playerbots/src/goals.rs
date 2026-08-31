@@ -1809,25 +1809,6 @@ fn nearest<'a>(
         .map(|(e, _)| e)
 }
 
-/// The z a bot stands at after a step to `(x, y)`: the terrain height, raised to a model floor that
-/// sits within reach of it (a bridge deck, an interior ground floor). The probe starts at the
-/// TERRAIN height, never at the bot's own z: `snap_z` reports the topmost model surface at or
-/// below its probe, so a probe from a bot standing under a tree finds the canopy, lifts the bot
-/// onto it, and the next tick's probe starts higher still — a ratchet that put Kharanos bots on
-/// the pines at z 452 while the ground was at 403. Off the terrain slice the leg keeps the
-/// straight interpolation toward `dest_z`, which is where the old behaviour lived entirely.
-fn ground_under(
-    ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    at: (f32, f32),
-    dest_z: f32,
-    fraction: f32,
-) -> f32 {
-    let interpolated = me.z + (dest_z - me.z) * fraction;
-    let ground = crate::terrain::ground_z(ctx, me.map_id, at.0, at.1).unwrap_or(interpolated);
-    crate::terrain::snap_z(ctx, me.map_id, at.0, at.1, ground)
-}
-
 /// A giver or ender a bot can talk to from the ground it walks on. The core's accept and turn-in
 /// gates measure the full 3D distance (10 yd), while the walk only closes the 2D gap, so a
 /// creature on an upper floor or a ledge would be walked to and then refused every tick.
@@ -1975,8 +1956,8 @@ fn walk_toward(
         return;
     }
     // The same leg a creature walks: one nav-grid A* step toward `dest`, held off walls by the
-    // collision gate, then stood on the ground (terrain, raised to a WMO floor when indoors). A
-    // step the gate refuses leaves the bot where it is, with no spline, and the stall clock says so.
+    // collision gate. A step the gate refuses leaves the bot where it is, with no spline, and the
+    // stall clock says so.
     let (lx, ly) = crate::nav::nav_step(
         ctx,
         me.map_id,
@@ -1990,40 +1971,23 @@ fn walk_toward(
     if travelled <= 0.0 {
         return;
     }
-    let (dx, dy) = ((lx - me.x) / travelled, (ly - me.y) / travelled);
-    let landing = (
-        lx,
-        ly,
-        ground_under(ctx, me, (lx, ly), dest.2, travelled / full),
-    );
-    let now_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
-    // A non-increasing spline id is dropped by the client, so two legs inside one transaction need
-    // the second to out-number the first.
-    let spline_id = ctx
-        .db
-        .game_creature_spline()
-        .guid()
-        .find(me.guid)
-        .map_or(now_ms, |last| now_ms.max(last.spline_id.wrapping_add(1)));
-    crate::creatures::tick::emit_move_spline(
-        ctx,
-        me.guid,
-        (me.x, me.y, me.z),
-        landing,
-        ((travelled / speed) * 1000.0) as u32,
-        run,
-        spline_id,
-        me.map_id,
-        me.instance_id,
-        (me.grid_x, me.grid_y),
-    );
-    let Ok(mut moved) = crate::helpers::live_entity(ctx, me.guid) else {
+    // The creature leg, verbatim: the core snaps the landing to the ground, relays the spline, and
+    // its advance pass glides the row along it tick by tick. The bot does not jump to the leg end.
+    let Ok(mut mover) = crate::helpers::live_entity(ctx, me.guid) else {
         return;
     };
-    place(&mut moved, landing.0, landing.1, landing.2);
-    moved.orientation = dy.atan2(dx);
-    moved.last_move_ms = now_ms;
-    ctx.db.game_world_entity().guid().update(moved);
+    mover.orientation = (ly - me.y).atan2(lx - me.x);
+    let now_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
+    crate::creatures::tick::emit_creature_leg(
+        ctx,
+        mover,
+        (lx, ly),
+        me.z + (dest.2 - me.z) * (travelled / full),
+        ((travelled / speed) * 1000.0) as u32,
+        run,
+        now_ms,
+        false,
+    );
 }
 
 /// How far this leg travels: the distance left after the stand-off, capped by what `speed` covers
