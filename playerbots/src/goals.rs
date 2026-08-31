@@ -1251,7 +1251,7 @@ fn decide_quest(
         }
     }
     if active.len() < BOT_QUEST_LOG_LIMIT {
-        if let Some(step) = take_a_quest(ctx, me, sight, now) {
+        if let Some(step) = take_a_quest(ctx, me, bot, sight, now) {
             return Some(step);
         }
     }
@@ -1376,7 +1376,9 @@ fn work_quest(
     stuck: bool,
 ) -> Option<QuestStep> {
     if let Some(entry) = kill_target_entry(ctx, cq) {
-        let target = nearest(me, sight, |e| !e.is_player() && !e.dead && e.entry == entry)?;
+        let target = pick_near(me, sight, pick_salt(ctx, me.guid), |e| {
+            !e.is_player() && !e.dead && e.entry == entry
+        })?;
         fight(ctx, me, bot, None, personality, target.guid);
         return Some(QuestStep::progress(goal::QUEST_HUNT));
     }
@@ -1488,11 +1490,13 @@ fn hand_it_back(
 fn take_a_quest(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
+    bot: &PlayerbotsBot,
     sight: &[crate::WorldEntity],
     now: i64,
 ) -> Option<QuestStep> {
+    let reach = entries_within_reach(ctx, me, bot);
     let giver = nearest(me, sight, |e| {
-        !e.is_player() && !e.dead && !open_quests_of(ctx, me, e.entry).is_empty()
+        !e.is_player() && !e.dead && !open_quests_of(ctx, me, e.entry, &reach).is_empty()
     })?;
     if distance_2d(me.x, me.y, giver.x, giver.y) > INTERACT_RANGE_YD {
         walk_toward(
@@ -1504,7 +1508,7 @@ fn take_a_quest(
         );
         return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
     }
-    for quest_entry in open_quests_of(ctx, me, giver.entry) {
+    for quest_entry in open_quests_of(ctx, me, giver.entry, &reach) {
         match crate::actor::accept_quest(ctx, me.guid, giver.guid, quest_entry) {
             Ok(()) => {
                 // Bookmark the giver, not the bot: the bot is standing within interaction range of
@@ -1533,10 +1537,16 @@ fn take_a_quest(
 /// Two separate questions, deliberately kept apart. [`worth_the_walk`] is the core's own answer,
 /// and nothing may loosen it. [`workable`] is this Package's own, and it may only ever tighten: a
 /// bot that takes fewer quests is a bot that quests less, while a bot that takes more is the loop.
-fn open_quests_of(ctx: &ReducerContext, me: &crate::WorldEntity, entry: u32) -> Vec<u32> {
-    offered_by(ctx, entry, crate::quest::quest_role::START)
+fn open_quests_of(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    entry: u32,
+    reach: &std::collections::BTreeSet<u32>,
+) -> Vec<u32> {
+    let mut open: Vec<u32> = offered_by(ctx, entry, crate::quest::quest_role::START)
         .into_iter()
         .filter(|quest_entry| workable(ctx, *quest_entry))
+        .filter(|quest_entry| within_reach(ctx, *quest_entry, reach))
         .filter(|quest_entry| {
             ctx.db
                 .game_quest_template()
@@ -1544,28 +1554,68 @@ fn open_quests_of(ctx: &ReducerContext, me: &crate::WorldEntity, entry: u32) -> 
                 .find(quest_entry)
                 .is_some_and(|tmpl| worth_the_walk(ctx, me, &tmpl).is_ok())
         })
-        .collect()
+        .collect();
+    // Twenty-five bots at one giver would otherwise fill their logs with the same three quests in
+    // the same order. Each bot starts the list somewhere else.
+    if !open.is_empty() {
+        let start = (me.guid % open.len() as u64) as usize;
+        open.rotate_left(start);
+    }
+    open
 }
 
-/// Can this Package finish this quest at all?
-///
-/// A session-less bot has no client, and two objective kinds are only ever credited from one: a
-/// gameobject used and a place explored both reach the quest log through a message a client sends,
-/// and the verb that would stand in for the first is a harness lever this Package cannot call. A
-/// bot that took such a quest would hold the slot for the rest of its life, and three of them end
-/// its questing.
-///
-/// A quest with NO objectives is workable and must stay so — it is the talk-to-somebody quest that
-/// opens most chains, complete the moment it is accepted. And a quest that mixes a workable
-/// objective with one of these is taken: the bot can do part of it, which is worth watching, and
-/// the stall clock is what records that it never finishes.
-///
-/// An event requirement closes the quest whatever its objectives say. `quest_is_complete` will not
-/// call such a quest complete without a `game_character_quest_event_credit` row, and that row is
-/// written by an EventAI action on some creature the objective rows never name — so the bot has
-/// nothing to aim at and could only ever earn the credit by accident. The visible shape is a quest
-/// with no objectives at all: without this the bot takes it, reads it as unfinished forever, and
-/// stalls holding a slot.
+/// The creature entries standing inside the quest leash around the bot's home — the ground it
+/// can work a quest on, as a set so `within_reach` is one lookup per entry.
+fn entries_within_reach(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    bot: &PlayerbotsBot,
+) -> std::collections::BTreeSet<u32> {
+    crate::helpers::entities_near(
+        ctx,
+        me.map_id,
+        me.instance_id,
+        bot.home_x,
+        bot.home_y,
+        QUEST_LEASH_YD,
+    )
+    .iter()
+    .filter(|e| !e.is_player())
+    .map(|e| e.entry)
+    .collect()
+}
+
+/// Can this quest be finished without leaving the leash? Its ender must stand inside it, and so
+/// must every creature a KILL objective names. A bot that takes a quest it cannot walk to keeps
+/// it — bots do not abandon — so the slot is lost until the log is swept.
+fn within_reach(
+    ctx: &ReducerContext,
+    quest_entry: u32,
+    reach: &std::collections::BTreeSet<u32>,
+) -> bool {
+    let kill_targets: Vec<u32> = ctx
+        .db
+        .game_quest_objective()
+        .by_quest()
+        .filter(&quest_entry)
+        .filter(|obj| obj.kind == crate::quest::objective_kind::KILL_CREATURE)
+        .map(|obj| obj.target_entry)
+        .collect();
+    let ender_in_reach = reach
+        .iter()
+        .any(|entry| offers(ctx, *entry, quest_entry, crate::quest::quest_role::END));
+    quest_in_reach(&kill_targets, ender_in_reach, reach)
+}
+
+/// The pure half of [`within_reach`].
+pub(crate) fn quest_in_reach(
+    kill_targets: &[u32],
+    ender_in_reach: bool,
+    reach: &std::collections::BTreeSet<u32>,
+) -> bool {
+    ender_in_reach && kill_targets.iter().all(|entry| reach.contains(entry))
+}
+
 fn workable(ctx: &ReducerContext, quest_entry: u32) -> bool {
     let kinds: Vec<u8> = ctx
         .db
@@ -1641,7 +1691,7 @@ fn grind(
     personality: &PlayerbotsPersonality,
     sight: &[crate::WorldEntity],
 ) -> Option<QuestStep> {
-    let victim = nearest(me, sight, |e| {
+    let victim = pick_near(me, sight, pick_salt(ctx, me.guid), |e| {
         !e.is_player()
             && !e.dead
             && e.owner_guid == 0
@@ -1728,6 +1778,42 @@ fn nearest<'a>(
             }
         })
         .map(|(e, _)| e)
+}
+
+/// How many of the nearest candidates a bot chooses between. Three is enough that twenty-five
+/// bots on one pad do not all run at the one nearest wolf, and few enough that none of them sets
+/// off for a target another bot is nearer to by a long way.
+const PICK_AMONG_NEAREST: usize = 3;
+
+/// One of the [`PICK_AMONG_NEAREST`] nearest entities `wanted` accepts, chosen by `salt` — the
+/// bot's guid mixed with the time window, so two bots on the same spot choose differently and one
+/// bot keeps its choice for a few seconds rather than flipping every tick.
+fn pick_near<'a>(
+    me: &crate::WorldEntity,
+    sight: &'a [crate::WorldEntity],
+    salt: u64,
+    mut wanted: impl FnMut(&crate::WorldEntity) -> bool,
+) -> Option<&'a crate::WorldEntity> {
+    let mut candidates: Vec<(&crate::WorldEntity, f32)> = sight
+        .iter()
+        .filter(|e| e.guid != me.guid && wanted(e))
+        .map(|e| (e, distance_2d(me.x, me.y, e.x, e.y)))
+        .collect();
+    candidates.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let n = candidates.len().min(PICK_AMONG_NEAREST);
+    candidates.get(pick_index(salt, n)?).map(|(e, _)| *e)
+}
+
+/// Which of `n` candidates `salt` picks; `None` when there are none. Pure, so "every bot on one
+/// pad does not choose the same target" is a property of arithmetic rather than of a live pad.
+pub(crate) fn pick_index(salt: u64, n: usize) -> Option<usize> {
+    (n > 0).then(|| (salt.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 33) as usize % n)
+}
+
+/// The salt [`pick_near`] takes: the bot and the current eight-second window.
+fn pick_salt(ctx: &ReducerContext, character_guid: u64) -> u64 {
+    let window = ctx.timestamp.to_micros_since_unix_epoch() / WANDER_LEG_MICROS;
+    character_guid ^ (window as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
 }
 
 // ---- following and wandering -------------------------------------------------------------------
@@ -1833,13 +1919,33 @@ fn walk_toward(
     if step <= 0.0 {
         return;
     }
-    let (dx, dy) = ((dest.0 - me.x) / full, (dest.1 - me.y) / full);
+    // The same leg a creature walks: one nav-grid A* step toward `dest`, held off walls by the
+    // collision gate, then stood on the ground (terrain, raised to a WMO floor when indoors). A
+    // step the gate refuses leaves the bot where it is, with no spline, and the stall clock says so.
+    let (lx, ly) = crate::nav::nav_step(
+        ctx,
+        me.map_id,
+        (me.x, me.y),
+        (dest.0, dest.1),
+        step,
+        stand_off,
+        me.z,
+    );
+    let travelled = distance_2d(me.x, me.y, lx, ly);
+    if travelled <= 0.0 {
+        return;
+    }
+    let (dx, dy) = ((lx - me.x) / travelled, (ly - me.y) / travelled);
     let landing = (
-        me.x + dx * step,
-        me.y + dy * step,
-        // Interpolate height along the leg. Off-navigation ground is the accepted ceiling here:
-        // a bot walks the straight line, exactly as a scripted creature leg does.
-        me.z + (dest.2 - me.z) * (step / full),
+        lx,
+        ly,
+        crate::terrain::snap_z(
+            ctx,
+            me.map_id,
+            lx,
+            ly,
+            me.z + (dest.2 - me.z) * (travelled / full),
+        ),
     );
     let now_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
     // A non-increasing spline id is dropped by the client, so two legs inside one transaction need
@@ -1855,7 +1961,7 @@ fn walk_toward(
         me.guid,
         (me.x, me.y, me.z),
         landing,
-        ((step / speed) * 1000.0) as u32,
+        ((travelled / speed) * 1000.0) as u32,
         run,
         spline_id,
         me.map_id,
@@ -1902,6 +2008,36 @@ fn distance_2d(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_pick_stays_within_the_nearest_few_and_differs_between_bots() {
+        assert_eq!(pick_index(7, 0), None);
+        for salt in 0..64u64 {
+            assert!(pick_index(salt, 3).unwrap() < 3);
+        }
+        let picks: std::collections::BTreeSet<usize> =
+            (0..64u64).filter_map(|salt| pick_index(salt, 3)).collect();
+        assert_eq!(
+            picks.len(),
+            3,
+            "sixty-four bots must not all choose the same one"
+        );
+    }
+
+    #[test]
+    fn a_quest_is_in_reach_only_with_its_ender_and_every_kill_target_inside_the_leash() {
+        let reach: std::collections::BTreeSet<u32> = [51000, 51003].into_iter().collect();
+        assert!(quest_in_reach(&[51000], true, &reach));
+        assert!(quest_in_reach(&[], true, &reach));
+        assert!(
+            !quest_in_reach(&[51000], false, &reach),
+            "the ender is elsewhere"
+        );
+        assert!(
+            !quest_in_reach(&[51000, 51002], true, &reach),
+            "one kill target is elsewhere"
+        );
+    }
+
     /// A bot parked a hair outside the interact range by f32 rounding must still take a step it can
     /// express — the stand-off leaves a full yard, so the step is never below world-coordinate
     /// resolution.
@@ -1914,7 +2050,10 @@ mod tests {
             lyracore_shared::constants::speeds::RUN,
             THINK_INTERVAL_MICROS,
         );
-        assert!(step >= 1.0, "step {step} is below what f32 resolves at |x| near 9000");
+        assert!(
+            step >= 1.0,
+            "step {step} is below what f32 resolves at |x| near 9000"
+        );
         assert!(INTERACT_STAND_OFF_YD < INTERACT_RANGE_YD);
     }
 
