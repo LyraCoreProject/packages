@@ -683,7 +683,10 @@ fn spawn_one(
         home_x: x,
         home_y: y,
         home_z: z,
-        next_think_micros: 0,
+        // Spread the first thoughts over a second, so a batch does not think, walk and swing in
+        // lock-step for the rest of its life.
+        next_think_micros: ctx.timestamp.to_micros_since_unix_epoch()
+            + (guid % 10) as i64 * 100_000,
     });
     Ok(guid)
 }
@@ -733,10 +736,32 @@ fn spawn_batch(
         return Err(cannot_fill_role_message(class, role));
     }
     let level = spawn_level(ctx);
-    for _ in 0..count {
-        spawn_one(ctx, class, role, name_stem, SPAWN_MAP_ID, at, level)?;
+    let roster = ctx.db.pkg_playerbots_bot().count() as usize;
+    for index in 0..count as usize {
+        let spot = spawn_spot(ctx, at, roster + index);
+        spawn_one(ctx, class, role, name_stem, SPAWN_MAP_ID, spot, level)?;
     }
     Ok(())
+}
+
+/// Where the `index`-th bot of a batch stands: scattered around the named point and stood on the
+/// ground, so a batch does not spawn as one stack that walks one line to one target.
+fn spawn_spot(ctx: &ReducerContext, at: (f32, f32, f32), index: usize) -> (f32, f32, f32) {
+    let (dx, dy) = scatter_offset(index);
+    let (x, y) = (at.0 + dx, at.1 + dy);
+    (x, y, crate::terrain::snap_z(ctx, SPAWN_MAP_ID, x, y, at.2))
+}
+
+/// The furthest a scattered bot stands from the named point.
+const SCATTER_RADIUS_YD: f32 = 15.0;
+
+/// A sunflower spread: the golden angle between neighbours, radius growing with the square root of
+/// the index, so any count of bots fills a disc evenly with no two on the same spot. Pure.
+pub(crate) fn scatter_offset(index: usize) -> (f32, f32) {
+    const GOLDEN_ANGLE: f32 = 2.399_963;
+    let angle = index as f32 * GOLDEN_ANGLE;
+    let reach = ((index + 1) as f32 / 26.0).sqrt().min(1.0) * SCATTER_RADIUS_YD;
+    (angle.cos() * reach, angle.sin() * reach)
 }
 
 /// The level a spawned bot is created at: the midpoint of the configured band, clamped so a
@@ -771,7 +796,8 @@ pub fn playerbots_spawn(
             return Err(cannot_fill_role_message(class, role));
         }
         let stem = stems[(roster + index) % stems.len()];
-        spawn_one(ctx, class, role, stem, SPAWN_MAP_ID, (x, y, z), level)?;
+        let at = spawn_spot(ctx, (x, y, z), roster + index);
+        spawn_one(ctx, class, role, stem, SPAWN_MAP_ID, at, level)?;
     }
     Ok(())
 }
@@ -865,6 +891,18 @@ pub(crate) fn home_point(ctx: &ReducerContext) -> (f32, f32, f32) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scattered_bots_stand_apart_and_inside_the_radius() {
+        let spots: Vec<(f32, f32)> = (0..25).map(scatter_offset).collect();
+        for (i, a) in spots.iter().enumerate() {
+            assert!((a.0 * a.0 + a.1 * a.1).sqrt() <= SCATTER_RADIUS_YD + 0.01);
+            for b in &spots[i + 1..] {
+                let d = ((a.0 - b.0).powi(2) + (a.1 - b.1).powi(2)).sqrt();
+                assert!(d > 1.5, "two bots {d:.2} yd apart");
+            }
+        }
+    }
+
     use super::*;
 
     #[test]
