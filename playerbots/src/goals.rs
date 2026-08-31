@@ -33,8 +33,8 @@ use super::{
 };
 use crate::{
     game_areatrigger_teleport, game_character, game_character_quest, game_corpse_loot,
-    game_creature_quest, game_creature_spline, game_creature_template, game_group,
-    game_group_member, game_instance, game_melee_attack, game_quest_event_requirement,
+    game_creature_loot, game_creature_quest, game_creature_spline, game_creature_template,
+    game_group, game_group_member, game_instance, game_melee_attack, game_quest_event_requirement,
     game_quest_objective, game_quest_template, game_threat, game_world_entity,
 };
 
@@ -1589,35 +1589,60 @@ fn entries_within_reach(
     .collect()
 }
 
-/// Can this quest be finished without leaving the leash? Its ender must stand inside it, and so
-/// must every creature a KILL objective names. A bot that takes a quest it cannot walk to keeps
+/// Can this quest be finished without leaving the leash? Its ender must stand inside it, every
+/// creature a KILL objective names must stand inside it, and every item a COLLECT objective asks
+/// for must drop from a creature standing inside it — an item that no creature drops (a vendor's,
+/// an object's) is a quest a bot can never finish. A bot that takes a quest it cannot work keeps
 /// it — bots do not abandon — so the slot is lost until the log is swept.
 fn within_reach(
     ctx: &ReducerContext,
     quest_entry: u32,
     reach: &std::collections::BTreeSet<u32>,
 ) -> bool {
-    let kill_targets: Vec<u32> = ctx
+    let (mut kill_targets, mut collect_items) = (Vec::new(), Vec::new());
+    for obj in ctx
         .db
         .game_quest_objective()
         .by_quest()
         .filter(&quest_entry)
-        .filter(|obj| obj.kind == crate::quest::objective_kind::KILL_CREATURE)
-        .map(|obj| obj.target_entry)
-        .collect();
+    {
+        match obj.kind {
+            crate::quest::objective_kind::KILL_CREATURE => kill_targets.push(obj.target_entry),
+            crate::quest::objective_kind::COLLECT_ITEM => collect_items.push(obj.target_entry),
+            _ => {}
+        }
+    }
     let ender_in_reach = reach
         .iter()
         .any(|entry| offers(ctx, *entry, quest_entry, crate::quest::quest_role::END));
-    quest_in_reach(&kill_targets, ender_in_reach, reach)
+    quest_in_reach(
+        &kill_targets,
+        &collect_items,
+        ender_in_reach,
+        reach,
+        |entry, item| {
+            ctx.db
+                .game_creature_loot()
+                .by_creature()
+                .filter(&entry)
+                .any(|row| row.item_entry == item)
+        },
+    )
 }
 
-/// The pure half of [`within_reach`].
+/// The pure half of [`within_reach`]; `drops(entry, item)` is the loot table.
 pub(crate) fn quest_in_reach(
     kill_targets: &[u32],
+    collect_items: &[u32],
     ender_in_reach: bool,
     reach: &std::collections::BTreeSet<u32>,
+    drops: impl Fn(u32, u32) -> bool,
 ) -> bool {
-    ender_in_reach && kill_targets.iter().all(|entry| reach.contains(entry))
+    ender_in_reach
+        && kill_targets.iter().all(|entry| reach.contains(entry))
+        && collect_items
+            .iter()
+            .all(|item| reach.iter().any(|entry| drops(*entry, *item)))
 }
 
 fn workable(ctx: &ReducerContext, quest_entry: u32) -> bool {
@@ -2048,23 +2073,28 @@ mod tests {
     }
 
     #[test]
-    fn a_quest_is_in_reach_only_with_its_ender_and_every_kill_target_inside_the_leash() {
+    fn a_quest_is_in_reach_only_when_its_ender_targets_and_droppers_stand_inside_the_leash() {
         let reach: std::collections::BTreeSet<u32> = [51000, 51003].into_iter().collect();
-        assert!(quest_in_reach(&[51000], true, &reach));
-        assert!(quest_in_reach(&[], true, &reach));
+        let drops = |entry: u32, item: u32| entry == 51000 && item == 750;
+        assert!(quest_in_reach(&[51000], &[], true, &reach, drops));
         assert!(
-            !quest_in_reach(&[51000], false, &reach),
+            quest_in_reach(&[], &[750], true, &reach, drops),
+            "a wolf here drops it"
+        );
+        assert!(
+            !quest_in_reach(&[51000], &[], false, &reach, drops),
             "the ender is elsewhere"
         );
         assert!(
-            !quest_in_reach(&[51000, 51002], true, &reach),
-            "one kill target is elsewhere"
+            !quest_in_reach(&[51000, 51002], &[], true, &reach, drops),
+            "a target is elsewhere"
+        );
+        assert!(
+            !quest_in_reach(&[], &[2999], true, &reach, drops),
+            "nothing here drops it"
         );
     }
 
-    /// A bot parked a hair outside the interact range by f32 rounding must still take a step it can
-    /// express — the stand-off leaves a full yard, so the step is never below world-coordinate
-    /// resolution.
     #[test]
     fn a_bot_at_the_interact_boundary_takes_a_real_step() {
         let at_boundary = 5.000_033_f32;
