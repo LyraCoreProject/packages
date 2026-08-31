@@ -207,6 +207,15 @@ pub struct PlayerbotsGoal {
     pub hub_y: f32,
     #[default(0.0f32)]
     pub hub_z: f32,
+    /// Has the stall on [`Self::stalled_since_micros`] already been said out loud? The latch that
+    /// makes the warning exactly one per stall.
+    ///
+    /// A window on the clock alone cannot manage that. The window was one think interval wide, and
+    /// any gap in the think — scheduler jitter, a republish, a tick the bot spent walking back
+    /// inside its leash — steps over it, leaving the clock running and the warning never said.
+    /// End-appended with a default, so a published Shard migrates in place.
+    #[default(false)]
+    pub stall_warned: bool,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_goal(ctx, character_guid) {

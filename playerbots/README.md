@@ -82,17 +82,28 @@ party is doing:
 | `9` | dead; releasing to the graveyard and resurrecting there |
 
 The same row carries `stalled_since_micros`. It is `0` while the bot is getting on with things and
-the wall-clock time it got stuck otherwise, and only real quest work clears it:
+the wall-clock time it got stuck otherwise:
 
 ```sql
-select character_guid, kind, stalled_since_micros from pkg_playerbots_goal
+select character_guid, kind, stalled_since_micros, stall_warned from pkg_playerbots_goal
 where stalled_since_micros <> 0;
 ```
 
 It is a separate column because `since_micros` cannot answer the question. That one restarts every
 time the goal CHANGES, so a bot flapping between walking back for a turn-in and grinding looks brand
-new on every tick you read it, however long it has been getting nowhere. A bot that has been stalled
-for a minute says so once in the log, with what to read next.
+new on every tick you read it, however long it has been getting nowhere.
+
+Three things stop the clock, and they are outcomes rather than goals: a quest accepted, a quest
+turned in, and a swing at something a held quest names. A walk is not one of them. Reading the goal
+kind instead was the first version of this and it under-reported the case the clock was added for —
+the speculative walk back to the quest hub records `6`, so a bot flapping between the hub and its
+grinding ground cleared its own evidence on every excursion. Joining a party stops the clock as
+well: a bot in a party does no quest work, so nothing there could ever clear it.
+
+A bot that has been stalled for a minute says so once in the log, with what to read next, and
+`stall_warned` is the latch that makes it once. A window on the clock cannot: any gap in the think —
+scheduler jitter, a republish, a tick spent walking back inside the leash — steps over the window
+and the warning is lost while the clock runs on.
 
 Every action leaves through a core operation the player path also uses — the actor verbs for attack,
 stop, cast, invite-accept, quest accept and turn-in, loot, release and resurrect, and the shared
@@ -105,41 +116,39 @@ An ungrouped bot works quests around its home point: take one, kill what it name
 kill leaves, hand it back. A bot with nothing to take and nothing to work kills for experience
 instead. Both are visible in the goal table.
 
-One rule decides whether a quest is worth walking to, and it is the same rule the core applies when
-the bot arrives. The Package mirrors `apply_accept_quest`'s own Refusals, in that reducer's order:
-level, race, class, the previous step in the chain, whether the bot already holds it, and whether
-there is room in the bag for the item the quest hands over. The core accept is what answers for
+One rule decides whether a quest is worth walking to, and it is the core's own rule rather than a
+copy of it. The Package calls `crate::quest::accept_gates`, the same function `apply_accept_quest`
+applies before it opens a quest-log row: level, race, class, the previous step in the chain, and
+whether the bot already holds the quest, in that order. The core accept is still what answers for
 real. Picking any other way is how a bot ends up running to a giver, being refused for a
 prerequisite it has never done, and running there again the next second, which is what the July
 foundation did on an imported node.
 
-Four tests hold the two mirrors in place, all reading the core source, so they fail at `cargo test`
-and not on a live realm.
+The Package used to carry a copy of those Gates plus a copy of the core's completeness test, and
+four source scanners to hold the copies in place. The core made both seams callable, so the copies
+and the scanners are gone. Two questions are all that is left:
 
-- One counts the Refusals `apply_accept_quest` writes in its own body, and fails when the core
-  grows one this Package has not accounted for.
-- One pins the order the core asks them in, so the reason a bot names is the reason the core would
-  have given.
-- One accounts for the two calls the reducer refuses THROUGH, whose Refusals are written elsewhere
-  and which no scan of the reducer's body can see. It pins both by name and pins how many Refusals
-  the body propagates with `?`, so a new Gate written as a helper fails here.
-- One pins `quest_is_complete` verbatim. That function is private, so the Package carries a copy of
-  it to decide whether carrying a quest back is worth the walk, and a copy with no Refusal text to
-  count needs its original pinned by equality instead.
-
-What none of them catch is a Gate added INSIDE one of the two named calls. That is why each one
-carries a written answer for how the bot deals with it rather than a count.
+- One Gate the core's own does not answer, because the core reaches it last: a quest that hands an
+  item over on accept needs a free bag slot, and the accept grants that item from inside its effects
+  after every Gate has passed. The Package asks it after `accept_gates`, so the order still matches.
+- Whether the turn-in would be accepted, which is `crate::quest::quest_is_complete` plus the
+  deadline. That function answers objectives only and never reads the deadline, so the deadline is
+  asked here, first — between a timed quest running out and the sweep that marks it failed, the row
+  still reads active.
 
 A bot never abandons a quest. The log row is the only memory it has that it already chose one, and
 dropping the row is what lets the loop back in — so a quest a bot cannot finish holds its slot for
 good. A bot works three at a time, which is what keeps one such quest from ending its career.
 
-That is why selection asks a second question after the accept gate, and why that question may only
-ever be stricter. A quest whose objectives are all "use this gameobject" or "explore this place" can
-never be finished by a bot: both are credited from a message a client sends, and a bot has no
-client. It is not taken. A quest with no objectives at all IS taken, because that is the talk-to
-quest that opens most chains, complete the moment it is accepted. A quest that mixes something the
-bot can do with something it cannot is taken too: part of it is worth watching.
+That is why selection asks a question of its own after the accept gate, and why that question may
+only ever be stricter. A quest whose objectives are all "use this gameobject" or "explore this
+place" can never be finished by a bot: both are credited from a message a client sends, and a bot
+has no client. It is not taken. Neither is a quest that carries an event requirement, whatever its
+objectives say: that credit is written by an EventAI action on a creature the objective rows never
+name, so the bot has nothing to aim at and the turn-in would refuse forever. A quest with no
+objectives at all IS taken, because that is the talk-to quest that opens most chains, complete the
+moment it is accepted. A quest that mixes something the bot can do with something it cannot is taken
+too: part of it is worth watching.
 
 Where a quest was taken is remembered on the goal row, because a bot ranges further than it can see
 and the giver is usually out of sight by the time the work is done. Without that bookmark a quest
@@ -233,3 +242,7 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
 - A quest whose ender is neither in sight nor at the giver the bot took it from cannot be handed
   back. The bot makes the trip to the giver once, finds nothing, and after that its stall column
   says so.
+- The stall clock cannot tell a quest creature on a long respawn from one that does not live near
+  the bot at all. Both leave the bot grinding with a kill objective it cannot serve, so a healthy
+  bot in a thin spawn area can warn at a minute. Read its `game_character_quest` rows before acting
+  on the warning; the fix would need a respawn timetable the Package has no read of.
