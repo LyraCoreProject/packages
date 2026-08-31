@@ -93,6 +93,11 @@ const HOME_ARRIVAL_YD: f32 = 10.0;
 /// giver gate, so arriving is never the reason an accept or a turn-in is refused.
 const INTERACT_RANGE_YD: f32 = 5.0;
 
+/// Where a walk to a giver or ender stops: a full yard inside the interact range. A walk that stops
+/// exactly at the range can land at 5.00003 yd in f32, and the next step is then smaller than what
+/// f32 can express at world coordinates, and the bot stands still at the boundary forever.
+const INTERACT_STAND_OFF_YD: f32 = INTERACT_RANGE_YD - 1.0;
+
 /// How close a corpse has to be for a bot to empty it. Inside the core's 10-yard loot gate, and
 /// inside melee reach — a bot that just killed something is already standing on it.
 const LOOT_RANGE_YD: f32 = 5.0;
@@ -1437,7 +1442,7 @@ fn hand_it_back(
             ctx,
             me,
             (ender.x, ender.y, ender.z),
-            INTERACT_RANGE_YD,
+            INTERACT_STAND_OFF_YD,
             true,
         );
         return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
@@ -1494,7 +1499,7 @@ fn take_a_quest(
             ctx,
             me,
             (giver.x, giver.y, giver.z),
-            INTERACT_RANGE_YD,
+            INTERACT_STAND_OFF_YD,
             true,
         );
         return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
@@ -1897,6 +1902,22 @@ fn distance_2d(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    /// A bot parked a hair outside the interact range by f32 rounding must still take a step it can
+    /// express — the stand-off leaves a full yard, so the step is never below world-coordinate
+    /// resolution.
+    #[test]
+    fn a_bot_at_the_interact_boundary_takes_a_real_step() {
+        let at_boundary = 5.000_033_f32;
+        let step = step_length(
+            at_boundary,
+            INTERACT_STAND_OFF_YD,
+            lyracore_shared::constants::speeds::RUN,
+            THINK_INTERVAL_MICROS,
+        );
+        assert!(step >= 1.0, "step {step} is below what f32 resolves at |x| near 9000");
+        assert!(INTERACT_STAND_OFF_YD < INTERACT_RANGE_YD);
+    }
+
     use super::*;
 
     #[test]
