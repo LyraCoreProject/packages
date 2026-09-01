@@ -870,18 +870,21 @@ fn live_target_is_available(
     )
 }
 
-#[derive(Debug, PartialEq, Eq)]
-enum CurrentMeleeTarget {
-    Keep(u64),
-    StopForeign,
-}
-
-fn current_melee_target(target_guid: u64, available: bool) -> CurrentMeleeTarget {
-    if available {
-        CurrentMeleeTarget::Keep(target_guid)
-    } else {
-        CurrentMeleeTarget::StopForeign
+/// Resolve an existing melee row through the live target policy. Preserve the old best-effort
+/// answer for a missing entity, but stop attacking a live target that has become foreign.
+fn current_melee_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target_guid: u64,
+) -> Option<u64> {
+    let Ok(target) = crate::helpers::live_entity(ctx, target_guid) else {
+        return Some(target_guid);
+    };
+    if live_target_is_available(ctx, character_guid, &target) {
+        return Some(target_guid);
     }
+    let _ = crate::actor::stop_attack(ctx, character_guid);
+    None
 }
 
 /// What this bot should be swinging at: whatever it already fights, or whatever has opened on it
@@ -893,17 +896,8 @@ fn combat_target(
 ) -> Option<u64> {
     let melee = ctx.db.game_melee_attack();
     if let Some(row) = melee.attacker_guid().find(me.guid) {
-        let Ok(target) = crate::helpers::live_entity(ctx, row.target_guid) else {
-            return Some(row.target_guid);
-        };
-        match current_melee_target(
-            row.target_guid,
-            live_target_is_available(ctx, me.guid, &target),
-        ) {
-            CurrentMeleeTarget::Keep(target_guid) => return Some(target_guid),
-            CurrentMeleeTarget::StopForeign => {
-                let _ = crate::actor::stop_attack(ctx, me.guid);
-            }
+        if let Some(target_guid) = current_melee_target(ctx, me.guid, row.target_guid) {
+            return Some(target_guid);
         }
     }
     let party_guids: &[u64] = party.map(|p| p.members.as_slice()).unwrap_or(&[]);
@@ -1879,7 +1873,7 @@ enum CorpseLootAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CorpseLootResult {
-    Finished,
+    NextCorpse,
     BagsFull,
 }
 
@@ -1894,7 +1888,7 @@ fn loot_eligible_corpse(
     if has_money {
         if let Err(refusal) = act(CorpseLootAction::Money) {
             if is_loot_tag_refusal(&refusal) {
-                return CorpseLootResult::Finished;
+                return CorpseLootResult::NextCorpse;
             }
         }
     }
@@ -1904,11 +1898,11 @@ fn loot_eligible_corpse(
         }
         if let Err(refusal) = act(CorpseLootAction::Item(slot)) {
             if is_loot_tag_refusal(&refusal) {
-                return CorpseLootResult::Finished;
+                return CorpseLootResult::NextCorpse;
             }
         }
     }
-    CorpseLootResult::Finished
+    CorpseLootResult::NextCorpse
 }
 
 fn is_loot_tag_refusal(reason: &str) -> bool {
@@ -2459,10 +2453,14 @@ mod tests {
 
     #[test]
     fn a_foreign_current_melee_target_is_stopped() {
-        assert_eq!(
-            current_melee_target(91, false),
-            CurrentMeleeTarget::StopForeign
-        );
+        // ReducerContext has no unit-test Fake. The pure tests above pin the decision; this narrow
+        // source check pins the actor chokepoint that applies it.
+        let shape =
+            crate::test_scan::shape_of(include_str!("goals.rs"), "fn current_melee_target(");
+        assert!(shape.ends_with(
+            "if live_target_is_available(ctx, character_guid, &target) { return Some(target_guid); \
+             } let _ = crate::actor::stop_attack(ctx, character_guid); None }"
+        ));
     }
 
     #[test]
@@ -2514,7 +2512,7 @@ mod tests {
             },
         );
 
-        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(result, CorpseLootResult::NextCorpse);
         assert_eq!(
             actions,
             vec![
@@ -2542,7 +2540,7 @@ mod tests {
             },
         );
 
-        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(result, CorpseLootResult::NextCorpse);
         assert_eq!(actions, vec![CorpseLootAction::Money]);
         assert!(!read_wanted_slots);
     }
@@ -2565,7 +2563,7 @@ mod tests {
             },
         );
 
-        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(result, CorpseLootResult::NextCorpse);
         assert_eq!(
             actions,
             vec![CorpseLootAction::Money, CorpseLootAction::Item(3)]
@@ -2598,7 +2596,7 @@ mod tests {
             },
         );
 
-        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(result, CorpseLootResult::NextCorpse);
         assert_eq!(
             actions,
             vec![CorpseLootAction::Money, CorpseLootAction::Item(3)]
