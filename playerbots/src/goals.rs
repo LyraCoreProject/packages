@@ -102,6 +102,8 @@ const INTERACT_STAND_OFF_YD: f32 = INTERACT_RANGE_YD - 1.0;
 /// inside melee reach — a bot that just killed something is already standing on it.
 const LOOT_RANGE_YD: f32 = 5.0;
 
+const LOOT_TAG_REFUSAL_PREFIX: &str = "loot_tag_ineligible:";
+
 /// How many quests a bot works at once, far under the core's twenty-slot log.
 ///
 /// A bot never abandons a quest, because abandoning deletes the log row and the log row is the
@@ -1836,27 +1838,81 @@ fn take_what_the_kill_left(
         .iter()
         .filter(|e| e.dead && !e.is_player() && distance_2d(me.x, me.y, e.x, e.y) <= LOOT_RANGE_YD)
     {
-        if corpse.money > 0 {
-            let _ = crate::actor::loot_money(ctx, me.guid, corpse.guid);
-        }
-        if wanted.is_empty() {
+        let recipients = crate::loot::corpse_eligible_recipients(ctx, corpse.guid);
+        if !crate::loot::corpse_eligible_for_access(&recipients, me.guid) {
             continue;
         }
-        let slots: Vec<u8> = ctx
-            .db
-            .game_corpse_loot()
-            .by_corpse()
-            .filter(&corpse.guid)
-            .filter(|row| wanted.contains(&row.item_entry))
-            .map(|row| row.slot)
-            .collect();
-        for slot in slots {
-            if !crate::items::has_free_slot(ctx, me.guid) {
-                return;
-            }
-            let _ = crate::actor::take_loot(ctx, me.guid, corpse.guid, slot);
+        let result = loot_eligible_corpse(
+            corpse.money > 0,
+            || {
+                if wanted.is_empty() {
+                    Vec::new()
+                } else {
+                    ctx.db
+                        .game_corpse_loot()
+                        .by_corpse()
+                        .filter(&corpse.guid)
+                        .filter(|row| wanted.contains(&row.item_entry))
+                        .map(|row| row.slot)
+                        .collect()
+                }
+            },
+            || crate::items::has_free_slot(ctx, me.guid),
+            |action| match action {
+                CorpseLootAction::Money => crate::actor::loot_money(ctx, me.guid, corpse.guid),
+                CorpseLootAction::Item(slot) => {
+                    crate::actor::take_loot(ctx, me.guid, corpse.guid, slot)
+                }
+            },
+        );
+        if result == CorpseLootResult::BagsFull {
+            return;
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorpseLootAction {
+    Money,
+    Item(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorpseLootResult {
+    Finished,
+    BagsFull,
+}
+
+/// Try the core loot operations for an eligible corpse. A Loot Tag Refusal closes the corpse for
+/// this tick; any other Refusal keeps the former best-effort behavior.
+fn loot_eligible_corpse(
+    has_money: bool,
+    wanted_slots: impl FnOnce() -> Vec<u8>,
+    mut has_free_slot: impl FnMut() -> bool,
+    mut act: impl FnMut(CorpseLootAction) -> Result<(), String>,
+) -> CorpseLootResult {
+    if has_money {
+        if let Err(refusal) = act(CorpseLootAction::Money) {
+            if is_loot_tag_refusal(&refusal) {
+                return CorpseLootResult::Finished;
+            }
+        }
+    }
+    for slot in wanted_slots() {
+        if !has_free_slot() {
+            return CorpseLootResult::BagsFull;
+        }
+        if let Err(refusal) = act(CorpseLootAction::Item(slot)) {
+            if is_loot_tag_refusal(&refusal) {
+                return CorpseLootResult::Finished;
+            }
+        }
+    }
+    CorpseLootResult::Finished
+}
+
+fn is_loot_tag_refusal(reason: &str) -> bool {
+    reason.starts_with(LOOT_TAG_REFUSAL_PREFIX)
 }
 
 /// The quests creature template `entry` offers in `role`. An indexed read off the relation table
@@ -2430,6 +2486,122 @@ mod tests {
         assert_eq!(
             available_rotation_target(RotationTarget::Hostile(91), |_| true),
             Some(91)
+        );
+    }
+
+    // ---- corpse loot -------------------------------------------------------------------------
+
+    #[test]
+    fn an_eligible_corpse_is_considered_for_loot() {
+        assert!(crate::loot::corpse_eligible_for_access(&[11, 17, 23], 17));
+    }
+
+    #[test]
+    fn a_foreign_corpse_is_skipped_before_loot_work() {
+        assert!(!crate::loot::corpse_eligible_for_access(&[11, 23], 17));
+    }
+
+    #[test]
+    fn an_eligible_corpse_yields_money_and_wanted_items() {
+        let mut actions = Vec::new();
+        let result = loot_eligible_corpse(
+            true,
+            || vec![3, 8],
+            || true,
+            |action| {
+                actions.push(action);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(
+            actions,
+            vec![
+                CorpseLootAction::Money,
+                CorpseLootAction::Item(3),
+                CorpseLootAction::Item(8),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_money_loot_tag_refusal_suppresses_item_work() {
+        let mut actions = Vec::new();
+        let mut read_wanted_slots = false;
+        let result = loot_eligible_corpse(
+            true,
+            || {
+                read_wanted_slots = true;
+                vec![3, 8]
+            },
+            || true,
+            |action| {
+                actions.push(action);
+                Err("loot_tag_ineligible: actor_guid=17 corpse_guid=91".to_owned())
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(actions, vec![CorpseLootAction::Money]);
+        assert!(!read_wanted_slots);
+    }
+
+    #[test]
+    fn an_item_loot_tag_refusal_suppresses_later_slots() {
+        let mut actions = Vec::new();
+        let result = loot_eligible_corpse(
+            true,
+            || vec![3, 8],
+            || true,
+            |action| {
+                actions.push(action);
+                match action {
+                    CorpseLootAction::Item(3) => {
+                        Err("loot_tag_ineligible: actor_guid=17 corpse_guid=91".to_owned())
+                    }
+                    _ => Ok(()),
+                }
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(
+            actions,
+            vec![CorpseLootAction::Money, CorpseLootAction::Item(3)]
+        );
+    }
+
+    #[test]
+    fn only_the_exact_loot_tag_refusal_prefix_matches() {
+        assert!(is_loot_tag_refusal(
+            "loot_tag_ineligible: actor_guid=17 corpse_guid=91"
+        ));
+        assert!(!is_loot_tag_refusal(
+            "action failed: loot_tag_ineligible: actor_guid=17 corpse_guid=91"
+        ));
+        assert!(!is_loot_tag_refusal(
+            "loot_tag_ineligibleish: actor_guid=17 corpse_guid=91"
+        ));
+    }
+
+    #[test]
+    fn another_loot_refusal_keeps_the_existing_best_effort_work() {
+        let mut actions = Vec::new();
+        let result = loot_eligible_corpse(
+            true,
+            || vec![3],
+            || true,
+            |action| {
+                actions.push(action);
+                Err("inventory_full".to_owned())
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::Finished);
+        assert_eq!(
+            actions,
+            vec![CorpseLootAction::Money, CorpseLootAction::Item(3)]
         );
     }
 
