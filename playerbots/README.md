@@ -158,11 +158,12 @@ A bot that ends up holding quests it can make no progress on says so, in the log
 in `pkg_playerbots_goal.stalled_since_micros` from the first tick. It also stops walking back on
 spec once the clock has run, so a stuck quest costs a slot rather than a leg a second.
 
-A bot takes coin from every corpse and items only when a quest it is holding asks for that item. It
-cannot sell and it cannot destroy, so anything else it picked up it would keep for the rest of its
-life, filling the bag that taking a quest needs room in, for copper it can never realise. Leaving
-the trash on the corpse is what keeps the bag usable, and it is why the bot never has to reserve a
-slot against its own looting.
+A bot takes coin and wanted quest items only from a creature corpse eligible to its Character. The
+Module's death entitlement gives quest credit to eligible Characters, regardless of which unit lands
+the lethal hit. It cannot sell and it cannot destroy, so anything else it picked up it would keep for
+the rest of its life, filling the bag that taking a quest needs room in, for copper it can never
+realise. Leaving the trash on the corpse is what keeps the bag usable, and it is why the bot never
+has to reserve a slot against its own looting.
 
 A quest that hands an item over on accept is not chosen when the bag is full, because the core
 refuses it there. Handing back is split. A quest with collected items to give back is always walked
