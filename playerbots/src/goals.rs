@@ -629,7 +629,8 @@ fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::Wo
         return None;
     }
     let character = crate::helpers::character_by_guid(ctx, bot.character_guid)?;
-    let mut entity = crate::build_player_entity(ctx, &character, spacetimedb::Identity::ZERO);
+    let mut entity =
+        crate::creatures::build_player_entity(ctx, &character, spacetimedb::Identity::ZERO);
     if character.pending_ghost {
         let (dead, health, player_flags, unit_bytes_1) =
             crate::world::ghost_restored_fields(entity.player_flags, entity.unit_bytes_1);
@@ -2462,6 +2463,11 @@ fn distance_2d(ax: f32, ay: f32, bx: f32, by: f32) -> f32 {
 
 #[cfg(test)]
 mod tests {
+    // Both reach past the Package API surface, for want of a seam that does not exist yet.
+    use crate::runtime_script::{ask_event, with_host}; // package-api: exempt running a shipped script offline has no surface seam
+    use crate::runtime_script::{EffectSink, EntityView, RuntimeScript, ScriptEvent}; // package-api: exempt the Host types that offline run needs
+    use crate::test_scan::{code_of, read_scanned, shape_of}; // package-api: exempt no Fake reaches a chokepoint, so these tests scan the source
+
     #[test]
     fn a_pick_stays_within_the_nearest_few_and_differs_between_bots() {
         assert_eq!(pick_index(7, 0), None);
@@ -2760,8 +2766,7 @@ mod tests {
     fn a_foreign_current_melee_target_is_stopped() {
         // ReducerContext has no unit-test Fake. The pure tests above pin the decision; this narrow
         // source check pins the actor chokepoint that applies it.
-        let shape =
-            crate::test_scan::shape_of(include_str!("goals.rs"), "fn current_melee_target(");
+        let shape = shape_of(include_str!("goals.rs"), "fn current_melee_target(");
         assert!(shape.ends_with(
             "if live_target_is_available(ctx, character_guid, &target) { return Some(target_guid); \
              } let _ = crate::actor::stop_attack(ctx, character_guid); None }"
@@ -3218,14 +3223,14 @@ mod tests {
     #[derive(Default)]
     struct NoEffects;
 
-    impl crate::runtime_script::EffectSink for NoEffects {
+    impl EffectSink for NoEffects {
         fn grant_xp(&mut self, _character_guid: u64, _amount: u32) {}
         fn heal(&mut self, _healer_guid: u64, _target_guid: u64, _amount: u32) {}
         fn send_chat(&mut self, _recipient_guid: u64, _message: &str) {}
     }
 
-    fn entity(level: u32, health: u32, max_health: u32) -> crate::runtime_script::EntityView {
-        crate::runtime_script::EntityView {
+    fn entity(level: u32, health: u32, max_health: u32) -> EntityView {
+        EntityView {
             guid: 1,
             name: "Dpsbot1".to_string(),
             is_player: true,
@@ -3241,11 +3246,7 @@ mod tests {
 
     /// Run the shipped script bound to `event` against one actor/target pair and read its answer,
     /// exactly as `script_binding::ask` would.
-    fn shipped_answer(
-        event: &str,
-        actor: crate::runtime_script::EntityView,
-        target: Option<crate::runtime_script::EntityView>,
-    ) -> Option<f64> {
+    fn shipped_answer(event: &str, actor: EntityView, target: Option<EntityView>) -> Option<f64> {
         let artifact = lyracore_package_delta::ScriptArtifact::parse(PERSONALITY_ARTIFACT)
             .expect("the shipped artifact parses");
         let bound: Vec<_> = artifact
@@ -3254,19 +3255,18 @@ mod tests {
             .filter(|script| script.event().as_str() == event)
             .collect();
         assert_eq!(bound.len(), 1, "one script per personality event");
-        let scripts = [crate::runtime_script::RuntimeScript {
+        let scripts = [RuntimeScript {
             name: bound[0].name().as_str(),
             source: bound[0].source(),
         }];
-        let script_event = crate::runtime_script::ScriptEvent {
+        let script_event = ScriptEvent {
             name: event.to_string(),
             actor: Some(actor),
             target,
         };
-        let (diagnostics, answer) = crate::runtime_script::with_host(|host| {
-            crate::runtime_script::ask_event(host, &mut NoEffects, &script_event, &scripts)
-        })
-        .expect("the Host is free");
+        let (diagnostics, answer) =
+            with_host(|host| ask_event(host, &mut NoEffects, &script_event, &scripts))
+                .expect("the Host is free");
         assert!(
             diagnostics.is_empty(),
             "the shipped Lua must run clean: {diagnostics:?}"
@@ -3553,9 +3553,9 @@ mod tests {
             "a bot's quest log is not swept when its Character is deleted, so despawning the \
              population would leave quest rows behind"
         );
-        let src = crate::test_scan::read_scanned("module/src/world.rs")
+        let src = read_scanned("module/src/world.rs")
             .expect("module/src/world.rs is core, never an optional drop-in");
-        let body = crate::test_scan::code_of(&src, "pub(crate) fn cascade_delete_character(");
+        let body = code_of(&src, "pub(crate) fn cascade_delete_character(");
         assert!(
             body.contains("game_corpse()"),
             "`cascade_delete_character` no longer deletes the corpse, so a bot despawned as a \

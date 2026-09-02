@@ -287,7 +287,7 @@ fn damage_smite_to_pct(ctx: &ReducerContext, target_pct: u32) -> Result<(), Stri
     let target_health = smite.max_health * target_pct / 100;
     let amount = smite.health.saturating_sub(target_health);
     require(amount > 0, "Smite is already below the target health")?;
-    crate::debug::debug_apply_damage(ctx, smite.guid, amount, fixture_guid(0, 44))
+    crate::debug::debug_apply_damage(ctx, smite.guid, amount, fixture_guid(0, 44)) // package-api: exempt no surface path damages a boss
 }
 
 #[cfg(feature = "debug_reducers")]
