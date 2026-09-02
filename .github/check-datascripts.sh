@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# The datascripts half of core-tip CI (LyraCore#316): does every committed Package Delta artifact
-# in this collection still match its recorded Build Identity, against LyraCore's CURRENT schema?
+# The datascripts half of core-tip CI (LyraCore#316): does every committed generated artifact in
+# this collection still match its recorded Build Identity, against LyraCore's CURRENT schema?
+#
+# A Package Delta is never committed here — it is regenerated author-side with `packages build`
+# and installed from source; `check-artifact-firewall.sh` refuses one on sight. What this job
+# checks is the one kind that IS committed, a Script Artifact, plus the reproducibility and
+# typecheck gates every Package author builds on:
 #
 # Called from `check-core-tip.sh` with a linked `packages/` tree already in place, so this only has
 # to prove the schema/typechecking half:
