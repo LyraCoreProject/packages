@@ -52,8 +52,71 @@ one class, three roles, three different rotations, no code that knows the differ
 A `(class, role)` pair with no kit rows is a pairing this Package cannot fill, and the spawn verb
 refuses it by name. Adding kit rows for a new pairing makes it legal.
 
-`pkg_playerbots_personality` holds the part of a fight the rotation leaves open. The axis today is
-the flee threshold: two bots on one rotation at the same health break off at different points.
+`pkg_playerbots_personality` holds the part of a fight the rotation leaves open: where a bot breaks
+off, and where a healer places a heal. Two bots on one rotation at the same health diverge on those
+alone. The row is the floor; a Runtime Script can answer for either of them instead.
+
+## Personality as a script
+
+A row is one number. A script is a decision. This Package exposes both personality axes as Package
+Events, so a Runtime Script it ships can answer them per bot, per fight, and an Operator can change
+that answer while the realm is up.
+
+| event | `event.actor` | `event.target` | the answer |
+| --- | --- | --- | --- |
+| `playerbots.flee_at` | the bot | what it is swinging at, or nil | the share of maximum health it breaks off at, 0 to 100 |
+| `playerbots.heal_at` | the healer | the ally most in need of a heal | the share it heals an ally at, 0 to 100 |
+
+**The row is the fallback, always.** A number in `0..=100` is used. Everything else is the
+personality row: no script bound, a script switched off, a script that failed on syntax, one that
+raised, one that ran out of Fuel, one that returned nothing, and one that returned a number that is
+not a share. Out of range is refused rather than clamped — a script answering 5000 has a bug, and
+clamping that to 100 would make every bot flee at full health while the log said nothing. A
+fractional answer truncates, because a share is a whole percent everywhere else here.
+
+**A heal answer can only ever tighten.** The effective threshold is the lower of the rotation row's
+own share and the answer, so a script can make a healer wait longer but never out-heal its rotation.
+That is the rule the personality row already had, unchanged.
+
+**What it costs.** One `ask` per bot per think for the flee share, which is once a second; one more
+for the heal share, and only for a bot whose rotation actually has a heal to place. An event nothing
+is bound to is one indexed range scan and nothing else.
+
+**What ships.** `data/.generated/personality.json`, a Script Artifact holding two scripts:
+
+- `playerbots.cautious-flee` — a low-level bot has nothing to spend and everything to lose, so it
+  bolts at 39% while a level 30 one holds to 10%. A bot already under half health leaves a little
+  earlier than it would have.
+- `playerbots.steady-heal` — the member with a bigger health pool than the healer's is the one
+  taking the hits, so the rotation row's own share stands for it. Everybody else waits until they
+  are properly hurt.
+
+The file is **hand-written**, not generated. Its `source_hash` is 64 zeros for that reason: nothing
+upstream produced it, so there is no Datascript revision to record. LyraCore#320 (TypeScript to Lua)
+would generate the same artifact through the same runtime path; until it exists, hand-written Lua is
+the supported way to ship a Runtime Script.
+
+**Reconciling an edit.** Editing the file changes nothing by itself. Apply it to every Shard:
+
+```bash
+spacetime call <database> apply_package_deltas '"script"' "$(
+  for f in packages/*/data/.generated/*.json; do jq -c 'select(.kind == "script")' "$f"; done | jq -Rs .
+)"
+```
+
+Two things about that command are load-bearing. The payload is the WHOLE enabled plan, every
+Package's Script Artifact and not just this one: an apply clears the Package script range and
+rewrites it, so naming one Package would delete every other Package's scripts. And each artifact
+travels on ONE line, which is what `jq -c` is for — the file here is pretty-printed because a human
+edits it.
+
+No republish is involved, and none is needed. LyraCore#393 tracks carrying the `script` family
+through `lyracore packages replay`, which would make this one command for the whole realm instead of
+this.
+
+**What a script cannot do.** Nothing new. A Runtime Script sees the curated verb surface the Host
+already offers — `heal`, `send_chat`, `grant_xp`, and the snapshotted Entity Handle fields — and no
+query surface. These two events add a return value the Package reads; they add no verb.
 
 ## The mind
 
@@ -61,7 +124,7 @@ One `game_tick_pass!`, with each bot throttled to a decision a second. There is 
 schedule row, so a republish cannot leave the bots pointing at a reducer the new wasm no longer has.
 
 Each decision, in order: put a body back on if the bot has none; get back up if dead; break off if
-hurt past the personality threshold; follow a leader who has crossed into another map or instance of
+hurt past the personality threshold, as a Runtime Script or the personality row settled it; follow a leader who has crossed into another map or instance of
 this Shard; cross a Shard boundary when the party is not on this one at all; quest, unless a player leads the
 party; fight what is on the party; otherwise follow the leader, or wander near home.
 
@@ -257,6 +320,11 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
   taken, and holds one of its three slots until the Operator does something about it; the stall
   column is where that shows up.
 - A bot takes the first reward choice, because it has no gear plan to pick against.
+- A personality script answers a share and nothing else. It cannot pick a target, cast, move a bot
+  or read the world beyond the two Entity Handles the event carries, because the Runtime Script Host
+  offers nothing else and this Package added no verb to it.
+- Editing `personality.json` changes nothing until it is applied to every Shard. There is no watcher
+  and no automatic reload; a Shard that missed the apply keeps the scripts it last got.
 - A bot picks its own fights only inside its own level band: no more than three levels up, nothing
   so far down that the kill pays no experience, and never an elite. With nothing in the band in
   sight it wanders instead.

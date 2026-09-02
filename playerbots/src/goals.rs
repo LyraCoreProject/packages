@@ -227,7 +227,11 @@ fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
         return;
     }
     let personality = personality_of(ctx, bot.character_guid);
-    if should_flee(me.health, me.max_health, personality.flee_at_pct) {
+    if should_flee(
+        me.health,
+        me.max_health,
+        flee_threshold(ctx, &me, personality.flee_at_pct),
+    ) {
         let _ = crate::actor::stop_attack(ctx, me.guid);
         walk_toward(ctx, &me, (bot.home_x, bot.home_y, bot.home_z), 0.0, true);
         record_goal(ctx, bot.character_guid, goal::FLEE, now);
@@ -650,6 +654,71 @@ fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::Wo
     crate::helpers::live_entity(ctx, bot.character_guid).ok()
 }
 
+// ---- personality: the row, or a Runtime Script that overrides it -------------------------------
+
+/// The Package Event a Runtime Script binds to decide where a bot breaks off.
+///
+/// `event.actor` is the bot; `event.target` is what it is swinging at, or nil when it is swinging
+/// at nothing, so a script can answer differently for a fight it is losing than for a walk home.
+const FLEE_AT_EVENT: &str = "playerbots.flee_at";
+
+/// The Package Event a Runtime Script binds to decide where a healer places a heal.
+///
+/// `event.actor` is the healer; `event.target` is the ally most in need of one, which is the ally
+/// the answered share is applied to.
+const HEAL_AT_EVENT: &str = "playerbots.heal_at";
+
+/// The share of maximum health a decision uses: the Script Answer when a script gave one and it is
+/// a share, the personality row otherwise.
+///
+/// A Runtime Script is an OVERRIDE, never a dependency. No script bound, a script that failed on
+/// syntax, one that ran out of Fuel, one that returned nothing, and one that returned a number that
+/// is not a share all reach here as the same answer — the row — because the alternative is a
+/// population frozen on a script somebody has to go and find. Out of range is refused rather than
+/// clamped: a script answering 5000 has a bug, and clamping it to 100 would make every bot flee
+/// instead of saying so.
+///
+/// Truncates toward zero, so 15.9 is 15. A share is a whole percent everywhere else this Package
+/// reads one. Pure.
+pub(crate) fn threshold_from(answer: Option<f64>, row_pct: u8) -> u8 {
+    match answer {
+        Some(share) if (0.0..=100.0).contains(&share) => share as u8,
+        _ => row_pct,
+    }
+}
+
+/// Where this bot breaks off, asked of its Runtime Scripts once per think.
+fn flee_threshold(ctx: &ReducerContext, me: &crate::WorldEntity, row_pct: u8) -> u8 {
+    let engaged = ctx
+        .db
+        .game_melee_attack()
+        .attacker_guid()
+        .find(me.guid)
+        .map_or(0, |row| row.target_guid);
+    threshold_from(
+        crate::script_binding::ask(ctx, FLEE_AT_EVENT, me.guid, engaged),
+        row_pct,
+    )
+}
+
+/// Where this healer places a heal, asked of its Runtime Scripts once per think.
+///
+/// The ally asked about is the one most in need of a heal, whoever that is — the same one the
+/// answered share decides for. Asked even when nobody is hurt, because a script may answer with a
+/// share that makes somebody worth healing who was not before.
+fn heal_threshold(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    party: Option<&Party>,
+    row_pct: u8,
+) -> u8 {
+    let most_hurt = lowest_hurt_ally(ctx, me, party, 100).unwrap_or(0);
+    threshold_from(
+        crate::script_binding::ask(ctx, HEAL_AT_EVENT, me.guid, most_hurt),
+        row_pct,
+    )
+}
+
 /// Break off at or below `flee_at_pct` of maximum health. `0` never flees, which is what a tank
 /// wants; `100` always does, which is what a coward wants. Pure, so the divergence between two
 /// bots on one rotation is a property of a function rather than of a live fight.
@@ -706,7 +775,9 @@ fn party_of(ctx: &ReducerContext, guid: u64) -> Option<Party> {
 /// whose own accept was still in flight. Pure.
 pub(crate) fn invite_scan_is_open(character_guid: u64, now: i64) -> bool {
     let second = (now / THINK_INTERVAL_MICROS) as u64;
-    second.wrapping_add(character_guid) % INVITE_SCAN_SECONDS == 0
+    second
+        .wrapping_add(character_guid)
+        .is_multiple_of(INVITE_SCAN_SECONDS)
 }
 
 /// One entity in a bot's sight, as the invite scan reads it. Plain facts, so who gets invited is a
@@ -1179,8 +1250,19 @@ fn cast_rotation(
         .filter((bot.class, bot.role))
         .collect();
     rows.sort_by_key(|row| (row.priority, row.id));
+    // Once per think, and only for a bot whose rotation has a heal to place. Resolving it here
+    // rather than inside the row loop is what keeps the ask one ask: a healer with two heal rows
+    // would otherwise fire the Package Event twice for one decision.
+    let heal_at_pct = if rows
+        .iter()
+        .any(|row| row.condition == cond::ALLY_HP_BELOW_PCT)
+    {
+        heal_threshold(ctx, me, party, personality.heal_at_pct)
+    } else {
+        personality.heal_at_pct
+    };
     for row in rows {
-        let Some(selected) = rotation_target(ctx, me, party, personality, &row, target) else {
+        let Some(selected) = rotation_target(ctx, me, party, heal_at_pct, &row, target) else {
             continue;
         };
         let Some(cast_at) = available_rotation_target(selected, |target_guid| {
@@ -1215,11 +1297,14 @@ fn available_rotation_target(
 /// Whom a rotation row should be cast at, or `None` when its condition does not hold. The
 /// condition and the target are one answer: a heal that fires without knowing who is hurt would
 /// have to guess, and a peel that fires without knowing who is being hit would peel nothing.
+///
+/// `heal_at_pct` arrives resolved, because the caller asks for it once per think rather than once
+/// per row.
 fn rotation_target(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     party: Option<&Party>,
-    personality: &PlayerbotsPersonality,
+    heal_at_pct: u8,
     row: &PlayerbotsRotation,
     current_target: u64,
 ) -> Option<RotationTarget> {
@@ -1229,13 +1314,14 @@ fn rotation_target(
             .then_some(RotationTarget::Friendly(me.guid)),
         cond::ENEMY_ON_ALLY => enemy_on_ally(ctx, me, party).map(RotationTarget::Hostile),
         cond::ALLY_HP_BELOW_PCT => {
-            // The row's own threshold is the rotation's business; the bot's personality is the
-            // healer's. Take the lower of the two, so a timid healer never out-heals its row and a
-            // generous row never overrides a healer that was told to hold back.
-            let threshold = row.threshold_pct.min(if personality.heal_at_pct == 0 {
+            // The row's own threshold is the rotation's business; `heal_at_pct` is this healer's,
+            // as its Runtime Script or its personality row settled it. Take the lower of the two,
+            // so a timid healer never out-heals its row and a generous row never overrides a healer
+            // that was told to hold back.
+            let threshold = row.threshold_pct.min(if heal_at_pct == 0 {
                 row.threshold_pct
             } else {
-                personality.heal_at_pct
+                heal_at_pct
             });
             lowest_hurt_ally(ctx, me, party, threshold).map(RotationTarget::Friendly)
         }
@@ -3073,6 +3159,211 @@ mod tests {
         assert!(expired_quest_can_wait(1_000, 999));
         assert!(!expired_quest_can_wait(1_000, 1_000));
         assert!(!expired_quest_can_wait(1_000, 5_000));
+    }
+
+    // ---- personality, as a script or as the row ----------------------------------------------------
+
+    /// The point of the whole feature: a script that answers a share is what the bot uses, not the
+    /// row it was spawned with.
+    #[test]
+    fn a_script_answer_is_what_the_bot_uses() {
+        assert_eq!(threshold_from(Some(60.0), 15), 60);
+        assert_eq!(threshold_from(Some(0.0), 15), 0, "never flee is an answer");
+        assert_eq!(threshold_from(Some(100.0), 15), 100, "always flee is too");
+    }
+
+    /// Nothing bound, a script that returned nothing, and a script that returned something that is
+    /// not a number all reach here as `None`. Each leaves the bot on its row.
+    #[test]
+    fn no_answer_leaves_the_bot_on_its_personality_row() {
+        assert_eq!(threshold_from(None, 15), 15);
+        assert_eq!(threshold_from(None, 0), 0);
+    }
+
+    /// A script that failed on syntax, ran out of Fuel, or raised an error contributes no answer,
+    /// so a broken script is a bot on its row rather than a bot frozen. This is the acceptance the
+    /// live-DB test drives end to end.
+    #[test]
+    fn a_broken_script_is_a_bot_on_its_row_not_a_bot_stopped() {
+        let row = super::super::role_personality_defaults(ROLE_HEALER);
+        assert_eq!(threshold_from(None, row.0), row.0);
+        assert_eq!(threshold_from(None, row.1), row.1);
+    }
+
+    /// Refused rather than clamped. A script answering 5000 has a bug in it, and clamping that to
+    /// 100 would make every bot flee at full health while the log said nothing.
+    #[test]
+    fn a_number_that_is_not_a_share_is_not_an_answer() {
+        assert_eq!(threshold_from(Some(101.0), 15), 15);
+        assert_eq!(threshold_from(Some(5_000.0), 15), 15);
+        assert_eq!(threshold_from(Some(-1.0), 15), 15);
+        assert_eq!(threshold_from(Some(f64::NAN), 15), 15);
+        assert_eq!(threshold_from(Some(f64::INFINITY), 15), 15);
+    }
+
+    /// Lua has one number type, so a script doing arithmetic answers with a fraction whether it
+    /// meant to or not. A share is a whole percent everywhere else this Package reads one.
+    #[test]
+    fn a_fractional_answer_truncates_to_a_whole_percent() {
+        assert_eq!(threshold_from(Some(15.9), 0), 15);
+        assert_eq!(threshold_from(Some(0.9), 50), 0);
+    }
+
+    // ---- the personality scripts this Package ships --------------------------------------------
+
+    /// The artifact as it ships, read from the file an Operator reconciles onto a Shard.
+    const PERSONALITY_ARTIFACT: &str = include_str!("../data/.generated/personality.json");
+
+    /// The personality scripts stage no effect, so the sink only has to exist.
+    #[derive(Default)]
+    struct NoEffects;
+
+    impl crate::runtime_script::EffectSink for NoEffects {
+        fn grant_xp(&mut self, _character_guid: u64, _amount: u32) {}
+        fn heal(&mut self, _healer_guid: u64, _target_guid: u64, _amount: u32) {}
+        fn send_chat(&mut self, _recipient_guid: u64, _message: &str) {}
+    }
+
+    fn entity(level: u32, health: u32, max_health: u32) -> crate::runtime_script::EntityView {
+        crate::runtime_script::EntityView {
+            guid: 1,
+            name: "Dpsbot1".to_string(),
+            is_player: true,
+            level,
+            health,
+            max_health,
+            map_id: 0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }
+
+    /// Run the shipped script bound to `event` against one actor/target pair and read its answer,
+    /// exactly as `script_binding::ask` would.
+    fn shipped_answer(
+        event: &str,
+        actor: crate::runtime_script::EntityView,
+        target: Option<crate::runtime_script::EntityView>,
+    ) -> Option<f64> {
+        let artifact = lyracore_package_delta::ScriptArtifact::parse(PERSONALITY_ARTIFACT)
+            .expect("the shipped artifact parses");
+        let bound: Vec<_> = artifact
+            .scripts()
+            .iter()
+            .filter(|script| script.event().as_str() == event)
+            .collect();
+        assert_eq!(bound.len(), 1, "one script per personality event");
+        let scripts = [crate::runtime_script::RuntimeScript {
+            name: bound[0].name().as_str(),
+            source: bound[0].source(),
+        }];
+        let script_event = crate::runtime_script::ScriptEvent {
+            name: event.to_string(),
+            actor: Some(actor),
+            target,
+        };
+        let (diagnostics, answer) = crate::runtime_script::with_host(|host| {
+            crate::runtime_script::ask_event(host, &mut NoEffects, &script_event, &scripts)
+        })
+        .expect("the Host is free");
+        assert!(
+            diagnostics.is_empty(),
+            "the shipped Lua must run clean: {diagnostics:?}"
+        );
+        answer
+    }
+
+    /// The artifact is hand-written, so nothing regenerates it and nothing else would catch a typo
+    /// before a realm did. This is that check: the identity, the two events, and the reserved range
+    /// the identifiers have to sit in.
+    #[test]
+    fn the_shipped_artifact_is_a_valid_script_artifact_for_this_package() {
+        let artifact = lyracore_package_delta::ScriptArtifact::parse(PERSONALITY_ARTIFACT)
+            .expect("the shipped artifact parses");
+        assert_eq!(artifact.package().as_str(), super::super::PACKAGE);
+        let bound: Vec<(u32, &str, bool)> = artifact
+            .scripts()
+            .iter()
+            .map(|script| {
+                (
+                    script.script_id(),
+                    script.event().as_str(),
+                    script.enabled(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            bound,
+            vec![
+                (100_100, FLEE_AT_EVENT, true),
+                (100_101, HEAL_AT_EVENT, true)
+            ],
+            "both events this Package asks are bound, and both ship switched on"
+        );
+    }
+
+    /// The acceptance the live-DB test drives on a realm, at the rung that runs everywhere: the
+    /// shipped Lua answers, and the answer is not the share the bot was spawned with.
+    #[test]
+    fn the_flee_script_answers_something_the_personality_row_never_would() {
+        let low = shipped_answer(FLEE_AT_EVENT, entity(1, 100, 100), None);
+        let high = shipped_answer(FLEE_AT_EVENT, entity(30, 100, 100), None);
+        assert_eq!(threshold_from(low, 15), 39, "a level 1 bot bolts early");
+        assert_eq!(threshold_from(high, 15), 10, "a level 30 bot holds on");
+        for role in [ROLE_TANK, ROLE_HEALER, super::super::ROLE_DPS] {
+            let (row_flee, _) = super::super::role_personality_defaults(role);
+            assert_ne!(
+                threshold_from(low, row_flee),
+                row_flee,
+                "role {role}'s spawned share must be observably overridden"
+            );
+        }
+    }
+
+    /// The second half of the same answer: a bot already under half health leaves a little earlier
+    /// than the one that is not.
+    #[test]
+    fn the_flee_script_reads_how_hurt_the_bot_already_is() {
+        let healthy = shipped_answer(FLEE_AT_EVENT, entity(10, 100, 100), None);
+        let hurt = shipped_answer(FLEE_AT_EVENT, entity(10, 40, 100), None);
+        assert_eq!(threshold_from(healthy, 15), 30);
+        assert_eq!(threshold_from(hurt, 15), 40);
+    }
+
+    /// The healer's answer is about WHICH ally, because the rotation row's own share is the ceiling
+    /// — a heal share can only ever be tightened, never loosened. So the member with the bigger
+    /// pool keeps the row's share and everybody else waits.
+    #[test]
+    fn the_heal_script_lets_the_member_taking_the_hits_through_first() {
+        let healer = entity(10, 200, 200);
+        let tank = shipped_answer(HEAL_AT_EVENT, healer.clone(), Some(entity(10, 300, 400)));
+        let other = shipped_answer(HEAL_AT_EVENT, healer, Some(entity(10, 150, 200)));
+        assert_eq!(
+            threshold_from(tank, 80),
+            100,
+            "the rotation row's own share stands for the tank"
+        );
+        assert_eq!(
+            threshold_from(other, 80),
+            45,
+            "everybody else waits until they are properly hurt"
+        );
+        let (_, row_heal) = super::super::role_personality_defaults(ROLE_HEALER);
+        assert_ne!(threshold_from(other, row_heal), row_heal);
+    }
+
+    /// A Package Event fires with whatever the caller had. `playerbots.heal_at` is asked even when
+    /// the party has nobody to heal, so the script has to survive an absent target rather than
+    /// failing and costing the healer its row.
+    #[test]
+    fn the_heal_script_survives_an_absent_ally() {
+        assert_eq!(
+            shipped_answer(HEAL_AT_EVENT, entity(10, 200, 200), None),
+            None,
+            "no ally is no answer, which is the row"
+        );
+        assert_eq!(threshold_from(None, 80), 80);
     }
 
     // ---- serendipity -----------------------------------------------------------------------------
