@@ -1,0 +1,24 @@
+{
+  "kind": "script",
+  "version": 1,
+  "package": "playerbots",
+  "source_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "scripts": [
+    {
+      "script_id": 100100,
+      "name": "playerbots.cautious-flee",
+      "event": "playerbots.flee_at",
+      "priority": 0,
+      "enabled": true,
+      "source": "local me = event.actor\nif not me then return end\nlocal level = me.level\nif level > 30 then level = 30 end\n-- A level 1 bot bolts at 39%, a level 30 one holds to 10%: the low-level bot has nothing to spend\n-- and everything to lose.\nlocal share = 40 - level\n-- Already under half: leave a little earlier than it would have.\nif me.max_health > 0 and me.health * 2 <= me.max_health then share = share + 10 end\nreturn share"
+    },
+    {
+      "script_id": 100101,
+      "name": "playerbots.steady-heal",
+      "event": "playerbots.heal_at",
+      "priority": 0,
+      "enabled": true,
+      "source": "local me, ally = event.actor, event.target\nif not me or not ally or ally.max_health == 0 then return end\n-- A bigger health pool than the healer's is the member taking the hits. The rotation row's own\n-- share stands for it, so it is caught as early as the row allows.\nif ally.max_health > me.max_health then return 100 end\n-- Everybody else waits until they are properly hurt, which keeps the mana for the one being hit.\nreturn 45"
+    }
+  ]
+}
