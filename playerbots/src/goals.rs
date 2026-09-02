@@ -102,6 +102,8 @@ const INTERACT_STAND_OFF_YD: f32 = INTERACT_RANGE_YD - 1.0;
 /// inside melee reach — a bot that just killed something is already standing on it.
 const LOOT_RANGE_YD: f32 = 5.0;
 
+const LOOT_TAG_REFUSAL_PREFIX: &str = "loot_tag_ineligible:";
+
 /// How many quests a bot works at once, far under the core's twenty-slot log.
 ///
 /// A bot never abandons a quest, because abandoning deletes the log row and the log row is the
@@ -837,6 +839,54 @@ fn portal_into(ctx: &ReducerContext, map_id: u32) -> Option<(f32, f32, f32, f32)
 
 // ---- fighting --------------------------------------------------------------------------------
 
+/// Whether a live target is available to this Character under its resolved Loot Tag. No
+/// entitlement means no tag. A resolved tag admits only its current recipients.
+fn live_target_is_available_to(
+    character_guid: u64,
+    entitlement_recipients: Option<&[u64]>,
+) -> bool {
+    entitlement_recipients.is_none_or(|recipients| recipients.contains(&character_guid))
+}
+
+/// Ask the Module's Loot Tag policy whether `target` is available to this Character.
+fn live_target_is_available(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target: &crate::WorldEntity,
+) -> bool {
+    let entitlement = crate::loot::death_entitlement(
+        ctx,
+        target.guid,
+        target.x,
+        target.y,
+        target.map_id,
+        target.instance_id,
+    );
+    live_target_is_available_to(
+        character_guid,
+        entitlement
+            .as_ref()
+            .map(|entitlement| entitlement.recipients.as_slice()),
+    )
+}
+
+/// Resolve an existing melee row through the live target policy. Preserve the old best-effort
+/// answer for a missing entity, but stop attacking a live target that has become foreign.
+fn current_melee_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target_guid: u64,
+) -> Option<u64> {
+    let Ok(target) = crate::helpers::live_entity(ctx, target_guid) else {
+        return Some(target_guid);
+    };
+    if live_target_is_available(ctx, character_guid, &target) {
+        return Some(target_guid);
+    }
+    let _ = crate::actor::stop_attack(ctx, character_guid);
+    None
+}
+
 /// What this bot should be swinging at: whatever it already fights, or whatever has opened on it
 /// or on somebody in its party nearby.
 fn combat_target(
@@ -846,7 +896,9 @@ fn combat_target(
 ) -> Option<u64> {
     let melee = ctx.db.game_melee_attack();
     if let Some(row) = melee.attacker_guid().find(me.guid) {
-        return Some(row.target_guid);
+        if let Some(target_guid) = current_melee_target(ctx, me.guid, row.target_guid) {
+            return Some(target_guid);
+        }
     }
     let party_guids: &[u64] = party.map(|p| p.members.as_slice()).unwrap_or(&[]);
     for candidate in
@@ -858,7 +910,9 @@ fn combat_target(
         let Some(row) = melee.attacker_guid().find(candidate.guid) else {
             continue;
         };
-        if row.target_guid == me.guid || party_guids.contains(&row.target_guid) {
+        if (row.target_guid == me.guid || party_guids.contains(&row.target_guid))
+            && live_target_is_available(ctx, me.guid, &candidate)
+        {
             return Some(candidate.guid);
         }
     }
@@ -915,12 +969,35 @@ fn cast_rotation(
         .collect();
     rows.sort_by_key(|row| (row.priority, row.id));
     for row in rows {
-        let Some(cast_at) = rotation_target(ctx, me, party, personality, &row, target) else {
+        let Some(selected) = rotation_target(ctx, me, party, personality, &row, target) else {
+            continue;
+        };
+        let Some(cast_at) = available_rotation_target(selected, |target_guid| {
+            crate::helpers::live_entity(ctx, target_guid)
+                .is_ok_and(|target| live_target_is_available(ctx, me.guid, &target))
+        }) else {
             continue;
         };
         if crate::actor::cast_at(ctx, me.guid, row.spell_id, cast_at).is_ok() {
             return;
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RotationTarget {
+    Friendly(u64),
+    Hostile(u64),
+}
+
+/// Resolve a rotation target without applying hostile ownership policy to friendly casts.
+fn available_rotation_target(
+    target: RotationTarget,
+    hostile_is_available: impl FnOnce(u64) -> bool,
+) -> Option<u64> {
+    match target {
+        RotationTarget::Friendly(guid) => Some(guid),
+        RotationTarget::Hostile(guid) => hostile_is_available(guid).then_some(guid),
     }
 }
 
@@ -934,13 +1011,12 @@ fn rotation_target(
     personality: &PlayerbotsPersonality,
     row: &PlayerbotsRotation,
     current_target: u64,
-) -> Option<u64> {
+) -> Option<RotationTarget> {
     match row.condition {
-        cond::ALWAYS => Some(current_target),
-        cond::SELF_MISSING_AURA => {
-            (!crate::spell::has_aura(ctx, me.guid, row.spell_id)).then_some(me.guid)
-        }
-        cond::ENEMY_ON_ALLY => enemy_on_ally(ctx, me, party),
+        cond::ALWAYS => Some(RotationTarget::Hostile(current_target)),
+        cond::SELF_MISSING_AURA => (!crate::spell::has_aura(ctx, me.guid, row.spell_id))
+            .then_some(RotationTarget::Friendly(me.guid)),
+        cond::ENEMY_ON_ALLY => enemy_on_ally(ctx, me, party).map(RotationTarget::Hostile),
         cond::ALLY_HP_BELOW_PCT => {
             // The row's own threshold is the rotation's business; the bot's personality is the
             // healer's. Take the lower of the two, so a timid healer never out-heals its row and a
@@ -950,13 +1026,15 @@ fn rotation_target(
             } else {
                 personality.heal_at_pct
             });
-            lowest_hurt_ally(ctx, me, party, threshold)
+            lowest_hurt_ally(ctx, me, party, threshold).map(RotationTarget::Friendly)
         }
-        cond::ALLY_MISSING_AURA => ally_missing_aura(ctx, me, party, row.spell_id),
-        cond::TANK_ENGAGED => tank_target(ctx, party),
+        cond::ALLY_MISSING_AURA => {
+            ally_missing_aura(ctx, me, party, row.spell_id).map(RotationTarget::Friendly)
+        }
+        cond::TANK_ENGAGED => tank_target(ctx, party).map(RotationTarget::Hostile),
         cond::ENEMIES_ENGAGED_GE_N => (engaged_enemies(ctx, me, party)
             >= usize::from(row.threshold_pct))
-        .then_some(current_target),
+        .then_some(RotationTarget::Hostile(current_target)),
         _ => None,
     }
 }
@@ -1377,7 +1455,10 @@ fn work_quest(
 ) -> Option<QuestStep> {
     if let Some(entry) = kill_target_entry(ctx, cq) {
         let target = pick_near(me, sight, pick_salt(ctx, me.guid), |e| {
-            !e.is_player() && !e.dead && e.entry == entry
+            !e.is_player()
+                && !e.dead
+                && e.entry == entry
+                && live_target_is_available(ctx, me.guid, e)
         })?;
         fight(ctx, me, bot, None, personality, target.guid);
         return Some(QuestStep::progress(goal::QUEST_HUNT));
@@ -1727,6 +1808,7 @@ fn grind(
             && !crate::faction::is_friendly(ctx, me.faction_template, e.faction_template)
             && offered_by(ctx, e.entry, crate::quest::quest_role::START).is_empty()
             && worth_grinding(me.level, e.level, is_elite(ctx, e.entry))
+            && live_target_is_available(ctx, me.guid, e)
     })?;
     fight(ctx, me, bot, None, personality, victim.guid);
     Some(QuestStep::no_progress(goal::GRIND))
@@ -1750,27 +1832,81 @@ fn take_what_the_kill_left(
         .iter()
         .filter(|e| e.dead && !e.is_player() && distance_2d(me.x, me.y, e.x, e.y) <= LOOT_RANGE_YD)
     {
-        if corpse.money > 0 {
-            let _ = crate::actor::loot_money(ctx, me.guid, corpse.guid);
-        }
-        if wanted.is_empty() {
+        let recipients = crate::loot::corpse_eligible_recipients(ctx, corpse.guid);
+        if !crate::loot::corpse_eligible_for_access(&recipients, me.guid) {
             continue;
         }
-        let slots: Vec<u8> = ctx
-            .db
-            .game_corpse_loot()
-            .by_corpse()
-            .filter(&corpse.guid)
-            .filter(|row| wanted.contains(&row.item_entry))
-            .map(|row| row.slot)
-            .collect();
-        for slot in slots {
-            if !crate::items::has_free_slot(ctx, me.guid) {
-                return;
-            }
-            let _ = crate::actor::take_loot(ctx, me.guid, corpse.guid, slot);
+        let result = loot_eligible_corpse(
+            corpse.money > 0,
+            || {
+                if wanted.is_empty() {
+                    Vec::new()
+                } else {
+                    ctx.db
+                        .game_corpse_loot()
+                        .by_corpse()
+                        .filter(&corpse.guid)
+                        .filter(|row| wanted.contains(&row.item_entry))
+                        .map(|row| row.slot)
+                        .collect()
+                }
+            },
+            || crate::items::has_free_slot(ctx, me.guid),
+            |action| match action {
+                CorpseLootAction::Money => crate::actor::loot_money(ctx, me.guid, corpse.guid),
+                CorpseLootAction::Item(slot) => {
+                    crate::actor::take_loot(ctx, me.guid, corpse.guid, slot)
+                }
+            },
+        );
+        if result == CorpseLootResult::BagsFull {
+            return;
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorpseLootAction {
+    Money,
+    Item(u8),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CorpseLootResult {
+    NextCorpse,
+    BagsFull,
+}
+
+/// Try the core loot operations for an eligible corpse. A Loot Tag Refusal closes the corpse for
+/// this tick; any other Refusal keeps the former best-effort behavior.
+fn loot_eligible_corpse(
+    has_money: bool,
+    wanted_slots: impl FnOnce() -> Vec<u8>,
+    mut has_free_slot: impl FnMut() -> bool,
+    mut act: impl FnMut(CorpseLootAction) -> Result<(), String>,
+) -> CorpseLootResult {
+    if has_money {
+        if let Err(refusal) = act(CorpseLootAction::Money) {
+            if is_loot_tag_refusal(&refusal) {
+                return CorpseLootResult::NextCorpse;
+            }
+        }
+    }
+    for slot in wanted_slots() {
+        if !has_free_slot() {
+            return CorpseLootResult::BagsFull;
+        }
+        if let Err(refusal) = act(CorpseLootAction::Item(slot)) {
+            if is_loot_tag_refusal(&refusal) {
+                return CorpseLootResult::NextCorpse;
+            }
+        }
+    }
+    CorpseLootResult::NextCorpse
+}
+
+fn is_loot_tag_refusal(reason: &str) -> bool {
+    reason.starts_with(LOOT_TAG_REFUSAL_PREFIX)
 }
 
 /// The quests creature template `entry` offers in `role`. An indexed read off the relation table
@@ -2296,6 +2432,175 @@ mod tests {
     #[test]
     fn an_ungrouped_healer_fights_like_anyone_else() {
         assert!(closes_to_melee(ROLE_HEALER, false));
+    }
+
+    // ---- Loot Tag target policy ---------------------------------------------------------------
+
+    #[test]
+    fn an_untagged_live_target_is_available() {
+        assert!(live_target_is_available_to(17, None));
+    }
+
+    #[test]
+    fn an_entitled_character_can_take_a_live_target() {
+        assert!(live_target_is_available_to(17, Some(&[11, 17, 23])));
+    }
+
+    #[test]
+    fn a_foreign_live_target_is_unavailable() {
+        assert!(!live_target_is_available_to(17, Some(&[11, 23])));
+    }
+
+    #[test]
+    fn a_foreign_current_melee_target_is_stopped() {
+        // ReducerContext has no unit-test Fake. The pure tests above pin the decision; this narrow
+        // source check pins the actor chokepoint that applies it.
+        let shape =
+            crate::test_scan::shape_of(include_str!("goals.rs"), "fn current_melee_target(");
+        assert!(shape.ends_with(
+            "if live_target_is_available(ctx, character_guid, &target) { return Some(target_guid); \
+             } let _ = crate::actor::stop_attack(ctx, character_guid); None }"
+        ));
+    }
+
+    #[test]
+    fn a_friendly_rotation_target_bypasses_hostile_ownership() {
+        let mut checked_ownership = false;
+        let cast_at = available_rotation_target(RotationTarget::Friendly(17), |_| {
+            checked_ownership = true;
+            false
+        });
+
+        assert_eq!(cast_at, Some(17));
+        assert!(!checked_ownership);
+    }
+
+    #[test]
+    fn a_hostile_rotation_target_requires_live_target_ownership() {
+        assert_eq!(
+            available_rotation_target(RotationTarget::Hostile(91), |_| false),
+            None
+        );
+        assert_eq!(
+            available_rotation_target(RotationTarget::Hostile(91), |_| true),
+            Some(91)
+        );
+    }
+
+    // ---- corpse loot -------------------------------------------------------------------------
+
+    #[test]
+    fn an_eligible_corpse_is_considered_for_loot() {
+        assert!(crate::loot::corpse_eligible_for_access(&[11, 17, 23], 17));
+    }
+
+    #[test]
+    fn a_foreign_corpse_is_skipped_before_loot_work() {
+        assert!(!crate::loot::corpse_eligible_for_access(&[11, 23], 17));
+    }
+
+    #[test]
+    fn an_eligible_corpse_yields_money_and_wanted_items() {
+        let mut actions = Vec::new();
+        let result = loot_eligible_corpse(
+            true,
+            || vec![3, 8],
+            || true,
+            |action| {
+                actions.push(action);
+                Ok(())
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::NextCorpse);
+        assert_eq!(
+            actions,
+            vec![
+                CorpseLootAction::Money,
+                CorpseLootAction::Item(3),
+                CorpseLootAction::Item(8),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_money_loot_tag_refusal_suppresses_item_work() {
+        let mut actions = Vec::new();
+        let mut read_wanted_slots = false;
+        let result = loot_eligible_corpse(
+            true,
+            || {
+                read_wanted_slots = true;
+                vec![3, 8]
+            },
+            || true,
+            |action| {
+                actions.push(action);
+                Err("loot_tag_ineligible: actor_guid=17 corpse_guid=91".to_owned())
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::NextCorpse);
+        assert_eq!(actions, vec![CorpseLootAction::Money]);
+        assert!(!read_wanted_slots);
+    }
+
+    #[test]
+    fn an_item_loot_tag_refusal_suppresses_later_slots() {
+        let mut actions = Vec::new();
+        let result = loot_eligible_corpse(
+            true,
+            || vec![3, 8],
+            || true,
+            |action| {
+                actions.push(action);
+                match action {
+                    CorpseLootAction::Item(3) => {
+                        Err("loot_tag_ineligible: actor_guid=17 corpse_guid=91".to_owned())
+                    }
+                    _ => Ok(()),
+                }
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::NextCorpse);
+        assert_eq!(
+            actions,
+            vec![CorpseLootAction::Money, CorpseLootAction::Item(3)]
+        );
+    }
+
+    #[test]
+    fn only_the_exact_loot_tag_refusal_prefix_matches() {
+        assert!(is_loot_tag_refusal(
+            "loot_tag_ineligible: actor_guid=17 corpse_guid=91"
+        ));
+        assert!(!is_loot_tag_refusal(
+            "action failed: loot_tag_ineligible: actor_guid=17 corpse_guid=91"
+        ));
+        assert!(!is_loot_tag_refusal(
+            "loot_tag_ineligibleish: actor_guid=17 corpse_guid=91"
+        ));
+    }
+
+    #[test]
+    fn another_loot_refusal_keeps_the_existing_best_effort_work() {
+        let mut actions = Vec::new();
+        let result = loot_eligible_corpse(
+            true,
+            || vec![3],
+            || true,
+            |action| {
+                actions.push(action);
+                Err("inventory_full".to_owned())
+            },
+        );
+
+        assert_eq!(result, CorpseLootResult::NextCorpse);
+        assert_eq!(
+            actions,
+            vec![CorpseLootAction::Money, CorpseLootAction::Item(3)]
+        );
     }
 
     // ---- the one Gate the Package still answers itself -------------------------------------------
