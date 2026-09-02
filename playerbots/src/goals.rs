@@ -86,6 +86,15 @@ const QUEST_SIGHT_YD: f32 = 60.0;
 /// past the leash walks home before it does anything else.
 const QUEST_LEASH_YD: f32 = 150.0;
 
+/// How far a bot looks for a fellow quester to invite. Well inside [`QUEST_SIGHT_YD`], so the scan
+/// reads the list the quest loop is already holding, and close enough that the two are working the
+/// same ground rather than merely on the same map.
+const INVITE_RANGE_YD: f32 = 40.0;
+
+/// How many seconds pass between one bot's invite scans. A bot that looked every tick would fire an
+/// Intent a second at a neighbour whose own invite was still crossing to the party authority.
+const INVITE_SCAN_SECONDS: u64 = 15;
+
 /// Close enough to be standing at the home point.
 const HOME_ARRIVAL_YD: f32 = 10.0;
 
@@ -249,19 +258,36 @@ fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
 
     let engaged = combat_target(ctx, &me, party.as_ref());
 
-    // A bot in a party takes its lead from the party; questing is what an ungrouped bot does with
-    // itself. Keeping the branch here — after the crossing, before the plain fight — is what lets
-    // a quester label its own fights, so an Operator reading the goal table sees a bot hunting a
-    // quest target rather than an unattributed FIGHT.
-    if party.is_none() {
-        if let Some(kind) = quest(ctx, &me, bot, &personality, engaged, now) {
+    // Who quests, and who parts ways. A bot in a PLAYER-led party follows, which is what the player
+    // invited it for. A BOT-led party quests, every member on its own leash and its own log, and
+    // its leader leaves once the shared work is done — without that, two bots that found each
+    // other would both stop questing, and a population that had all paired off would never invite
+    // a player again.
+    //
+    // Keeping the branch here — after the crossing, before the plain fight — is what lets a quester
+    // label its own fights, so an Operator reading the goal table sees a bot hunting a quest target
+    // rather than an unattributed FIGHT.
+    let quests_in_this_party = match &party {
+        None => true,
+        Some(party) => {
+            if leaves_the_party(party.leader_guid == bot.character_guid, || {
+                shares_quest_work(ctx, &me, party)
+            }) {
+                part_ways(ctx, &me);
+            }
+            is_bot(ctx, party.leader_guid)
+        }
+    };
+
+    if quests_in_this_party {
+        if let Some(kind) = quest(ctx, &me, bot, &personality, engaged, party.is_none(), now) {
             record_goal(ctx, bot.character_guid, kind, now);
             return;
         }
     } else {
-        // A bot in a party does no quest work, so nothing here can ever stop its stall clock. A
-        // stall it carried into the party would still be reading hours old when the party broke up.
-        // Being invited IS the end of the stall: the bot has a leader to follow now.
+        // A bot in a player-led party does no quest work, so nothing here can ever stop its stall
+        // clock. A stall it carried into the party would still be reading hours old when the party
+        // broke up. Being invited IS the end of the stall: the bot has a leader to follow now.
         keep_stall_clock(ctx, bot.character_guid, QuestWork::NoProgress, 0, now);
     }
 
@@ -668,6 +694,191 @@ fn party_of(ctx: &ReducerContext, guid: u64) -> Option<Party> {
         leader_guid: group.leader_guid,
         members,
     })
+}
+
+// ---- serendipity: finding company, and parting ways --------------------------------------------
+
+/// Is this bot's invite scan open on this second?
+///
+/// Staggered by guid, so twenty-five bots on one pad do not all look on the same tick and hand one
+/// neighbour twenty-five Intents. Slow, because an invite takes a moment to reach the party
+/// authority and come back as a roster: a bot that looked every tick would fire at a neighbour
+/// whose own accept was still in flight. Pure.
+pub(crate) fn invite_scan_is_open(character_guid: u64, now: i64) -> bool {
+    let second = (now / THINK_INTERVAL_MICROS) as u64;
+    second.wrapping_add(character_guid) % INVITE_SCAN_SECONDS == 0
+}
+
+/// One entity in a bot's sight, as the invite scan reads it. Plain facts, so who gets invited is a
+/// property of a function rather than of a live pad.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Neighbour {
+    /// The neighbour's guid. The sight list holds the bot itself as well.
+    pub guid: u64,
+    pub is_player: bool,
+    pub dead: bool,
+    pub distance_yd: f32,
+    /// Both Characters' races resolve to the same team. A Character mid-Transfer reads as neither.
+    pub same_team: bool,
+    /// The neighbour already has a party on this Shard.
+    pub grouped: bool,
+    /// The neighbour holds one of this bot's own quests, un-rewarded and un-failed.
+    pub shares_an_active_quest: bool,
+}
+
+/// Would this bot invite that neighbour?
+///
+/// Every clause is a way the invite would land wrong rather than a preference: a creature or a
+/// corpse cannot join, the other team cannot, somebody already in a party would refuse, and a
+/// stranger on no quest of the bot's has nothing to do with it. The shared quest is the whole
+/// point — the invite means "we are both killing these kobolds", and without one there is nothing
+/// to say. Pure.
+pub(crate) fn worth_inviting(self_guid: u64, neighbour: &Neighbour) -> bool {
+    neighbour.guid != self_guid
+        && neighbour.is_player
+        && !neighbour.dead
+        && neighbour.distance_yd <= INVITE_RANGE_YD
+        && neighbour.same_team
+        && !neighbour.grouped
+        && neighbour.shares_an_active_quest
+}
+
+/// Does this bot leave the party it is in?
+///
+/// Only a LEADER parts ways, and only once nothing in its own quest log is also in somebody else's.
+/// The shared work is what the party was for, so the party ends with it: leadership passes by the
+/// core's own rule, a party of one disbands, and both bots are back in the population an invite is
+/// drawn from. A member never leaves — leaving a party it did not form is not its decision.
+///
+/// `shares_a_quest` is a closure because only a leader's answer is ever used, and reading a party's
+/// quest logs for a member that cannot act on the answer is work for nothing. Pure.
+pub(crate) fn leaves_the_party(
+    leads_the_party: bool,
+    shares_a_quest: impl FnOnce() -> bool,
+) -> bool {
+    leads_the_party && !shares_a_quest()
+}
+
+/// Does anybody else in this party hold a quest this bot is still working?
+fn shares_quest_work(ctx: &ReducerContext, me: &crate::WorldEntity, party: &Party) -> bool {
+    let mine = active_quest_entries(ctx, me.guid);
+    party
+        .members
+        .iter()
+        .any(|guid| *guid != me.guid && holds_one_of(ctx, *guid, &mine))
+}
+
+/// The quest entries this Character is still working: in the log, un-rewarded and un-failed.
+fn active_quest_entries(ctx: &ReducerContext, character_guid: u64) -> Vec<u32> {
+    quest_log(ctx, character_guid)
+        .into_iter()
+        .filter(|row| !row.rewarded && !row.failed)
+        .map(|row| row.quest_entry)
+        .collect()
+}
+
+/// Is this Character still working one of `entries`?
+fn holds_one_of(ctx: &ReducerContext, character_guid: u64, entries: &[u32]) -> bool {
+    !entries.is_empty()
+        && ctx
+            .db
+            .game_character_quest()
+            .by_character()
+            .filter(&character_guid)
+            .any(|row| !row.rewarded && !row.failed && entries.contains(&row.quest_entry))
+}
+
+/// Ask the party authority to drop this bot from the party it leads.
+///
+/// The leave takes the same relay the invite does, and for the same reason: party membership is
+/// authoritative on realm-core, and a leave written here would put rows on this Shard that the next
+/// mirror push contradicts. Repeating the decision costs one refused op — the Intent is picked up in
+/// well under a second, and the core refuses a leave for a Character in no party — so the tick or
+/// two before the roster catches up needs no latch of its own.
+fn part_ways(ctx: &ReducerContext, me: &crate::WorldEntity) {
+    // ponytail: a Gateway that never picks the Intent up leaves this deciding, and saying so, once
+    // a second. If that ever shows up in a log, put the decision on the invite-scan window rather
+    // than adding a column to remember it.
+    spacetimedb::log::info!(
+        "playerbots: bot {} leaves the party it led — no quest work left that anybody else in it \
+         still shares",
+        me.guid
+    );
+    crate::group::emit_bot_leave_intent(ctx, me.guid);
+}
+
+/// What the scan knows about one entity in sight. The three reads are indexed but not free, which
+/// is why the caller only asks about players.
+fn neighbour_facts(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    my_race: u8,
+    my_quests: &[u32],
+    other: &crate::WorldEntity,
+) -> Neighbour {
+    Neighbour {
+        guid: other.guid,
+        is_player: other.is_player(),
+        dead: other.dead,
+        distance_yd: distance_2d(me.x, me.y, other.x, other.y),
+        // `character_by_guid` is the in-transit fence, so a Character half-way across a Shard
+        // boundary answers nothing and is not invited.
+        same_team: crate::helpers::character_by_guid(ctx, other.guid)
+            .is_some_and(|character| lyracore_shared::faction::same_team(my_race, character.race)),
+        grouped: ctx
+            .db
+            .game_group_member()
+            .by_character()
+            .filter(&other.guid)
+            .next()
+            .is_some(),
+        shares_an_active_quest: holds_one_of(ctx, other.guid, my_quests),
+    }
+}
+
+/// The headline moment: a bot working a quest notices somebody on the same quest and invites them.
+///
+/// The Package DECIDES and the Gateway executes. Party membership is authoritative on realm-core,
+/// which a Package can never reach, so this writes one Group Intent and stops — the same split the
+/// Shard crossing already uses. Everything that could refuse the invite (the party cap, an invite
+/// already pending, the target already grouped) is the core's answer, on the correct authority.
+///
+/// With no eligible neighbour this reads a handful of rows and changes nothing.
+fn invite_a_fellow_quester(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    active: &[&crate::CharacterQuest],
+    sight: &[crate::WorldEntity],
+    now: i64,
+) {
+    if active.is_empty() || !invite_scan_is_open(me.guid, now) {
+        return;
+    }
+    let Some(inviter) = crate::helpers::character_by_guid(ctx, me.guid) else {
+        return;
+    };
+    let my_quests: Vec<u32> = active.iter().map(|cq| cq.quest_entry).collect();
+    let fellow = pick_near(me, sight, pick_salt(ctx, me.guid), |other| {
+        // `is_player` is asked twice on purpose: once here, so a sight list that is mostly
+        // creatures never pays for the reads below, and once inside the rule, where it belongs.
+        other.is_player()
+            && worth_inviting(
+                me.guid,
+                &neighbour_facts(ctx, me, inviter.race, &my_quests, other),
+            )
+    });
+    let Some(fellow) = fellow else {
+        return;
+    };
+    // Named, not numbered: this line is the only record a serendipity invite was ever decided, and
+    // a wall of 15-digit guids is not a record anyone can read.
+    let fellow_name = crate::helpers::character_by_guid(ctx, fellow.guid)
+        .map_or_else(|| fellow.guid.to_string(), |character| character.name);
+    spacetimedb::log::info!(
+        "playerbots: {} invites {fellow_name} — both are working a quest the other holds",
+        inviter.name
+    );
+    crate::group::emit_bot_invite_intent(ctx, me.guid, fellow.guid);
 }
 
 // ---- crossing a Shard boundary -------------------------------------------------------------------
@@ -1263,12 +1474,17 @@ impl QuestStep {
 /// Also keeps the stall clock. A bot that holds quests and finds nothing to do with any of them is
 /// not idling, it is stuck, and that is the one state of this loop an Operator cannot infer from
 /// the goal kind — the bot flaps between grinding and walking, and both look like work.
+///
+/// `ungrouped` is what opens the invite scan. A bot already in a party has found its company; the
+/// rest of the loop runs the same either way, which is what lets a bot-led party quest.
+#[allow(clippy::too_many_arguments)] // one tick of one loop, and every argument is one of its inputs
 fn quest(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
     engaged: Option<u64>,
+    ungrouped: bool,
     now: i64,
 ) -> Option<u8> {
     let home = (bot.home_x, bot.home_y, bot.home_z);
@@ -1298,6 +1514,9 @@ fn quest(
         .as_ref()
         .map_or(QuestWork::NoProgress, |step| step.work);
     keep_stall_clock(ctx, me.guid, work, active.len(), now);
+    if ungrouped {
+        invite_a_fellow_quester(ctx, me, &active, &sight, now);
+    }
     decided.map(|step| step.goal)
 }
 
@@ -2854,6 +3073,180 @@ mod tests {
         assert!(expired_quest_can_wait(1_000, 999));
         assert!(!expired_quest_can_wait(1_000, 1_000));
         assert!(!expired_quest_can_wait(1_000, 5_000));
+    }
+
+    // ---- serendipity -----------------------------------------------------------------------------
+
+    /// The good case, which every case below spoils exactly one field of: another player, alive,
+    /// close, same team, ungrouped, on a quest this bot is working.
+    fn a_fellow_quester() -> Neighbour {
+        Neighbour {
+            guid: 22,
+            is_player: true,
+            dead: false,
+            distance_yd: 12.0,
+            same_team: true,
+            grouped: false,
+            shares_an_active_quest: true,
+        }
+    }
+
+    #[test]
+    fn a_fellow_quester_in_range_is_worth_inviting() {
+        assert!(worth_inviting(11, &a_fellow_quester()));
+    }
+
+    /// The sight list holds the bot itself, and `pick_near` is not the only thing that must know it.
+    #[test]
+    fn a_bot_never_invites_itself() {
+        let me = Neighbour {
+            guid: 11,
+            ..a_fellow_quester()
+        };
+        assert!(!worth_inviting(11, &me));
+    }
+
+    #[test]
+    fn a_creature_or_a_corpse_is_never_invited() {
+        assert!(!worth_inviting(
+            11,
+            &Neighbour {
+                is_player: false,
+                ..a_fellow_quester()
+            }
+        ));
+        assert!(!worth_inviting(
+            11,
+            &Neighbour {
+                dead: true,
+                ..a_fellow_quester()
+            }
+        ));
+    }
+
+    /// The invite means "we are both working this ground". Forty yards away is that; the far edge
+    /// of what a bot can see is not.
+    #[test]
+    fn a_quester_beyond_the_invite_range_is_left_alone() {
+        assert!(worth_inviting(
+            11,
+            &Neighbour {
+                distance_yd: INVITE_RANGE_YD,
+                ..a_fellow_quester()
+            }
+        ));
+        assert!(!worth_inviting(
+            11,
+            &Neighbour {
+                distance_yd: INVITE_RANGE_YD + 0.1,
+                ..a_fellow_quester()
+            }
+        ));
+    }
+
+    #[test]
+    fn the_other_team_is_never_invited() {
+        assert!(!worth_inviting(
+            11,
+            &Neighbour {
+                same_team: false,
+                ..a_fellow_quester()
+            }
+        ));
+    }
+
+    /// Somebody already in a party would refuse the invite at the core, so asking is a Refusal a
+    /// second for as long as they both stand there.
+    #[test]
+    fn somebody_already_in_a_party_is_not_invited() {
+        assert!(!worth_inviting(
+            11,
+            &Neighbour {
+                grouped: true,
+                ..a_fellow_quester()
+            }
+        ));
+    }
+
+    /// The shared quest is the whole of it. A stranger on no quest of the bot's has nothing to
+    /// group up about, and a party formed with one would have nothing to do and never end.
+    #[test]
+    fn a_stranger_on_no_quest_of_the_bots_is_not_invited() {
+        assert!(!worth_inviting(
+            11,
+            &Neighbour {
+                shares_an_active_quest: false,
+                ..a_fellow_quester()
+            }
+        ));
+    }
+
+    /// The window is staggered by guid, so two bots standing on one pad do not look on the same
+    /// second and hand one neighbour two Intents.
+    #[test]
+    fn two_bots_do_not_scan_on_the_same_second() {
+        let now = |second: i64| second * THINK_INTERVAL_MICROS;
+        let opens_at: Vec<i64> = (0..60)
+            .filter(|second| invite_scan_is_open(7, now(*second)))
+            .collect();
+        let neighbours_open_at: Vec<i64> = (0..60)
+            .filter(|second| invite_scan_is_open(8, now(*second)))
+            .collect();
+        assert!(
+            opens_at.iter().all(|s| !neighbours_open_at.contains(s)),
+            "guid 7 opened at {opens_at:?} and guid 8 at {neighbours_open_at:?}"
+        );
+    }
+
+    /// One bot looks about once every fifteen seconds — often enough to catch a neighbour standing
+    /// on the same quest, rarely enough that an Intent already in flight has landed.
+    #[test]
+    fn one_bot_scans_about_once_every_fifteen_seconds() {
+        let opens = (0..600_i64)
+            .filter(|second| invite_scan_is_open(7, second * THINK_INTERVAL_MICROS))
+            .count();
+        assert_eq!(opens, 600 / INVITE_SCAN_SECONDS as usize);
+    }
+
+    /// Every guid gets a window. A stagger that left some bot permanently shut would be a bot that
+    /// never invites anybody, and nothing else in the loop would say so.
+    #[test]
+    fn every_bot_gets_a_window() {
+        for guid in [0_u64, 1, 14, 15, 9_999_999_999, u64::MAX] {
+            assert!(
+                (0..INVITE_SCAN_SECONDS as i64)
+                    .any(|second| invite_scan_is_open(guid, second * THINK_INTERVAL_MICROS)),
+                "guid {guid} never scans"
+            );
+        }
+    }
+
+    // ---- parting ways ----------------------------------------------------------------------------
+
+    /// The party is for the shared work, so it lasts exactly as long as the work does.
+    #[test]
+    fn a_leader_with_shared_work_left_keeps_its_party() {
+        assert!(!leaves_the_party(true, || true));
+    }
+
+    /// Both quests handed in: the leader leaves, leadership passes, and a party of two disbands —
+    /// which is what puts both bots back in the population an invite is drawn from.
+    #[test]
+    fn a_leader_with_nothing_left_to_share_parts_ways() {
+        assert!(leaves_the_party(true, || false));
+    }
+
+    /// Leaving a party it did not form is not a member's decision. It also must not read its
+    /// party's quest logs to find that out.
+    #[test]
+    fn a_member_never_leaves_and_never_asks_whether_to() {
+        let mut asked = false;
+        let leaves = leaves_the_party(false, || {
+            asked = true;
+            false
+        });
+        assert!(!leaves);
+        assert!(!asked, "only a leader's answer is ever used");
     }
 
     // ---- teardown --------------------------------------------------------------------------------
