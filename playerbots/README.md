@@ -62,8 +62,8 @@ schedule row, so a republish cannot leave the bots pointing at a reducer the new
 
 Each decision, in order: put a body back on if the bot has none; get back up if dead; break off if
 hurt past the personality threshold; follow a leader who has crossed into another map or instance of
-this Shard; cross a Shard boundary when the party is not on this one at all; quest, if the bot is
-ungrouped; fight what is on the party; otherwise follow the leader, or wander near home.
+this Shard; cross a Shard boundary when the party is not on this one at all; quest, unless a player leads the
+party; fight what is on the party; otherwise follow the leader, or wander near home.
 
 `pkg_playerbots_goal` holds what the bot settled on and when it settled on it. Read it to see what a
 party is doing:
@@ -97,8 +97,8 @@ Three things stop the clock, and they are outcomes rather than goals: a quest ac
 turned in, and a swing at something a held quest names. A walk is not one of them. Reading the goal
 kind instead was the first version of this and it under-reported the case the clock was added for —
 the speculative walk back to the quest hub records `6`, so a bot flapping between the hub and its
-grinding ground cleared its own evidence on every excursion. Joining a party stops the clock as
-well: a bot in a party does no quest work, so nothing there could ever clear it.
+grinding ground cleared its own evidence on every excursion. Joining a PLAYER's party stops the clock
+as well: a bot following a player does no quest work, so nothing there could ever clear it.
 
 A bot that has been stalled for a minute says so once in the log, with what to read next, and
 `stall_warned` is the latch that makes it once. A window on the clock cannot: any gap in the think —
@@ -172,6 +172,32 @@ finish a collect quest — and that is the only thing that ever gives a bot a sl
 to set off would shut it. A quest with nothing to give back has nothing to free, so on a full bag it
 is not walked to at all: that trip could only end in a Refusal.
 
+## Serendipity
+
+The reason to run this Package: you are killing kobolds, somebody on the same quest asks you to
+group up, and you do.
+
+An ungrouped bot with quest work in its log looks around about every fifteen seconds, staggered by
+Character so two bots on one pad never look on the same second. It invites the first fellow quester
+it finds within forty yards: another Character, alive, on its own team, in no party, and holding one
+of the quests the bot is still working. The shared quest is the whole rule — the invite means "we
+are both killing these", so without one there is nothing to say. A bot target answers for itself; a
+player gets the ordinary invite dialog from their own client.
+
+The Package decides and the Gateway executes. Party membership is authoritative on the realm's own
+directory database, which a Package can never reach, so the bot writes one intent row and stops —
+the same split a Shard crossing uses. Everything that could refuse the invite is the core's answer,
+on the correct authority.
+
+A bot-led party quests. Every bot in it works its own log on its own leash, and only the fight is
+shared. Without that, two bots that found each other would both stop questing, and a population that
+had all paired off would never invite anybody again.
+
+The party ends with the work. On each think, a bot that LEADS its party and shares no un-rewarded
+quest with anybody else in it leaves. Leadership passes by the core's rule and a party of one
+disbands, so a player who was invited sees the party end when the two of you are done. That leave
+takes the same relay the invite does, for the same reason.
+
 ## Death
 
 Death is part of the loop, for every bot, in a party or not. A dead bot releases to the graveyard
@@ -214,15 +240,16 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
 
 ## Limits
 
-- Bots do not send invites. A player invites them.
 - Movement is a straight line. Bots do not use navigation data.
 - A leader who logs out is a leader who is not on this Shard, so the bots go home after the wait.
 - A party the leader has LEFT is led by whichever bot inherited it, and a bot leader is on this
-  Shard by definition — so those bots hold where they are. Disband the party, or bring the leader
-  back, to send them home.
+  Shard by definition — so those bots never go home as a party. They dissolve it instead: the
+  inherited leader shares no quest with anybody, leaves, and whoever inherits next does the same,
+  until the party is gone and each bot is questing on its own again.
 - A crossing is aimed at a portal into the destination map. A dungeon map with no imported portal
   row is a dungeon the bots cannot follow anybody into; they wait, then go home.
-- A bot in a party does not quest. It follows the leader, which is what a party is for.
+- A bot in a PLAYER-led party does not quest. It follows the leader, which is what a player
+  invited it for. A bot-led party quests, and its leader disbands it once the shared work is done.
 - A bot quests within 150 yards of its home point and looks 60 yards ahead. Move the home point to
   move the patch.
 - The objectives a bot works are the ones it can kill, and the ones it fills by looting what it
