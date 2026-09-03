@@ -13,7 +13,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  firewall:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out Packages
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test and enforce the no-committed-Package-Delta firewall
+        run: |
+          ./.github/test-artifact-firewall.sh
+          ./.github/check-artifact-firewall.sh
+
   module:
+    needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -37,6 +51,7 @@ jobs:
         run: ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore"
 
   datascripts:
+    needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -86,7 +101,7 @@ jobs:
       - name: Install the pinned lyracore CLI
         run: (cd lyracore && ./lyracore --help >/dev/null)
 
-      - name: Verify committed Package Delta artifacts against core tip
+      - name: Verify committed Script Artifacts against core tip
         run: |
           ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             "$GITHUB_WORKSPACE/collection/.github/check-datascripts.sh" "$GITHUB_WORKSPACE/lyracore"
