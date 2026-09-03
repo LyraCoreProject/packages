@@ -5,9 +5,7 @@ script_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 test_root=$(mktemp -d)
 trap 'rm -rf -- "$test_root"' EXIT
 
-hash=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-valid_artifact="{\"kind\":\"script\",\"version\":1,\"package\":\"greeter\",\"source_hash\":\"$hash\",\"scripts\":[]}"
-valid_identity="{\"artifact_hash\":\"sha256-v1:$hash\",\"bun_lock_hash\":\"sha256-v1:$hash\",\"bun_version\":\"1.3.7\",\"source_hash\":\"sha256-tree-v1:$hash\",\"toolchain_hash\":\"sha256-dir-v1:$hash\",\"version\":1}"
+script_artifact='{"kind":"script"}'
 
 new_case() {
     local name=$1
@@ -50,22 +48,38 @@ expect_refusal() {
     fi
 }
 
+expect_inventory_refusal() {
+    local root=$1
+    mkdir -p "$root/bin"
+    printf '%s\n' '#!/usr/bin/env bash' 'exit 1' >"$root/bin/git"
+    chmod +x "$root/bin/git"
+    if output=$(cd "$root" && PATH="$root/bin:$PATH" ./.github/check-artifact-firewall.sh 2>&1); then
+        echo "expected firewall refusal when Git cannot list tracked files" >&2
+        exit 1
+    fi
+    if [[ "$output" != *"could not list Git-tracked generated Package files"* ]]; then
+        echo "inventory refusal did not explain the failed inventory" >&2
+        echo "$output" >&2
+        exit 1
+    fi
+}
+
 root=$(new_case valid-artifact)
-track "$root" greeter/data/.generated/greeter.script.json "$valid_artifact"
+track "$root" greeter/data/.generated/greeter.script.json "$script_artifact"
 expect_pass "$root"
 
 root=$(new_case valid-pair)
-track "$root" greeter/data/.generated/greeter.script.json "$valid_artifact"
-track "$root" greeter/data/.generated/script.identity "$valid_identity"
+track "$root" greeter/data/.generated/greeter.script.json "$script_artifact"
+track "$root" greeter/data/.generated/script.identity 'the later packages check owns this content'
 expect_pass "$root"
 
 root=$(new_case package-delta)
 track "$root" greeter/data/.generated/spell.json \
-    "{\"version\":1,\"package\":\"greeter\",\"source_hash\":\"$hash\",\"claims\":[]}"
+    '{"version":1,"package":"greeter","claims":[]}'
 expect_refusal "$root" greeter/data/.generated/spell.json
 
-root=$(new_case arbitrary-json)
-track "$root" greeter/data/.generated/notes.json '{"kind":"script","note":"not an artifact"}'
+root=$(new_case non-script-artifact)
+track "$root" greeter/data/.generated/notes.json '{"kind":"delta"}'
 expect_refusal "$root" greeter/data/.generated/notes.json
 
 root=$(new_case non-json)
@@ -73,16 +87,20 @@ track "$root" greeter/data/.generated/readme.txt 'not JSON'
 expect_refusal "$root" greeter/data/.generated/readme.txt
 
 root=$(new_case orphan-sidecar)
-track "$root" greeter/data/.generated/script.identity "$valid_identity"
+track "$root" greeter/data/.generated/script.identity 'not checked here'
 expect_refusal "$root" greeter/data/.generated/script.identity
 
 root=$(new_case malformed-artifact)
 track "$root" greeter/data/.generated/greeter.script.json '{"kind":"script"'
 expect_refusal "$root" greeter/data/.generated/greeter.script.json
 
-root=$(new_case malformed-sidecar)
-track "$root" greeter/data/.generated/greeter.script.json "$valid_artifact"
-track "$root" greeter/data/.generated/script.identity '{"version":1}'
+root=$(new_case ambiguous-sidecar)
+track "$root" greeter/data/.generated/first.json "$script_artifact"
+track "$root" greeter/data/.generated/second.json "$script_artifact"
+track "$root" greeter/data/.generated/script.identity 'one sidecar cannot identify two artifacts'
 expect_refusal "$root" greeter/data/.generated/script.identity
+
+root=$(new_case inventory-failure)
+expect_inventory_refusal "$root"
 
 echo "artifact firewall cases passed."
