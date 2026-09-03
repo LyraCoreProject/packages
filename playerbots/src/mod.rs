@@ -571,7 +571,7 @@ fn ensure_bot_account(ctx: &ReducerContext) -> u64 {
         return *id;
     }
     let username = bot_account_username(wanted);
-    accounts.insert(crate::auth::Account {
+    accounts.insert(crate::auth::Account { // package-api: exempt a bot population owns Accounts no login ever creates
         id: 0,
         username: username.clone(),
         salt: Vec::new(),
@@ -615,7 +615,7 @@ fn spawn_one(
     let name = first_free_name(ctx, name_stem)
         .ok_or_else(|| format!("no free bot name left for stem '{name_stem}'"))?;
     let account_id = ensure_bot_account(ctx);
-    crate::auth::create_character(
+    crate::auth::create_character( // package-api: exempt a bot Character is created without a Session
         ctx,
         account_id,
         name.clone(),
@@ -657,7 +657,7 @@ fn spawn_one(
         .guid()
         .find(guid)
         .ok_or_else(|| format!("bot character {guid} vanished after levelling"))?;
-    let entity = crate::build_player_entity(ctx, &character, Identity::ZERO);
+    let entity = crate::creatures::build_player_entity(ctx, &character, Identity::ZERO);
     ctx.db.game_world_entity().insert(entity);
 
     for spell_id in kit_for(ctx, class, role) {
