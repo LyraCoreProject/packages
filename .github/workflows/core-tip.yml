@@ -21,8 +21,10 @@ jobs:
       - name: Check out Packages
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Enforce the no-committed-Package-Delta firewall
-        run: ./.github/check-artifact-firewall.sh
+      - name: Test and enforce the no-committed-Package-Delta firewall
+        run: |
+          ./.github/test-artifact-firewall.sh
+          ./.github/check-artifact-firewall.sh
 
   module:
     needs: firewall

@@ -4,8 +4,8 @@
 #
 # A Package Delta is never committed here — it is regenerated author-side with `packages build`
 # and installed from source; `check-artifact-firewall.sh` refuses one on sight. What this job
-# checks is the one kind that IS committed, a Script Artifact, plus the reproducibility and
-# typecheck gates every Package author builds on:
+# checks is the one kind that IS committed, a Script Artifact and its `script.identity` Build
+# Identity sidecar, plus the reproducibility and typecheck gates every Package author builds on:
 #
 # Called from `check-core-tip.sh` with a linked `packages/` tree already in place, so this only has
 # to prove the schema/typechecking half:
