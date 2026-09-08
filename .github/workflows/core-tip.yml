@@ -8,6 +8,9 @@ on:
 permissions:
   contents: read
 
+env:
+  LYRACORE_REF: 7f48b5842f3bae59cfaffd10f3db40cc534df311
+
 concurrency:
   group: core-tip-${{ github.ref }}
   cancel-in-progress: true
@@ -40,11 +43,11 @@ jobs:
           path: collection
           persist-credentials: false
 
-      - name: Check out LyraCore main
+      - name: Check out the PB-005 LyraCore source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: main
+          ref: ${{ env.LYRACORE_REF }}
           path: lyracore
           persist-credentials: false
 
@@ -66,11 +69,11 @@ jobs:
           path: collection
           persist-credentials: false
 
-      - name: Check out LyraCore main
+      - name: Check out the PB-005 LyraCore source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: main
+          ref: ${{ env.LYRACORE_REF }}
           path: lyracore
           persist-credentials: false
 
@@ -130,11 +133,11 @@ jobs:
         with:
           path: collection
           persist-credentials: false
-      - name: Check out LyraCore main
+      - name: Check out the PB-005 LyraCore source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: main
+          ref: ${{ env.LYRACORE_REF }}
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -271,7 +274,7 @@ jobs:
           echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
-      - name: Run the real Module and Package action fixture
+      - name: Build the current Wasm and run the durable fixtures
         working-directory: lyracore
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/lyracore/target
