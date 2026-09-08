@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Check out Packages
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Test and enforce the no-committed-Package-Delta firewall
         run: |
@@ -36,6 +38,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: collection
+          persist-credentials: false
 
       - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,6 +46,7 @@ jobs:
           repository: LyraCoreProject/LyraCore
           ref: main
           path: lyracore
+          persist-credentials: false
 
       - name: Install Rust 1.93.0
         run: rustup toolchain install 1.93.0 --profile minimal
@@ -60,6 +64,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: collection
+          persist-credentials: false
 
       - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,6 +72,7 @@ jobs:
           repository: LyraCoreProject/LyraCore
           ref: main
           path: lyracore
+          persist-credentials: false
 
       # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
       # job needs the same toolchain + target the `module` job's compile check needs, plus the

@@ -307,7 +307,8 @@ pub struct PlayerbotsKit {
 #[table(
     accessor = pkg_playerbots_rotation,
     public,
-    index(accessor = by_class_role, btree(columns = [class, role]))
+    index(accessor = by_class_role, btree(columns = [class, role])),
+    index(accessor = by_recovery_scan, btree(columns = [class, role, condition, id]))
 )]
 pub struct PlayerbotsRotation {
     #[primary_key]

@@ -7,10 +7,9 @@ use super::decision::{
 };
 use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
+    PlayerbotsRotation,
 };
-use crate::{
-    game_character_quest, game_creature_spline, game_player_spell, game_threat, game_world_entity,
-};
+use crate::{game_character_quest, game_creature_spline, game_world_entity};
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
 pub const BATCH_LIMIT: usize = 16;
@@ -19,6 +18,7 @@ const OBJECTIVE_LIFETIME: i64 = 120_000_000;
 const STALL_INTERVAL: i64 = 10_000_000;
 const DEFER_INTERVAL: i64 = 30_000_000;
 const HISTORY_LIMIT: usize = 8;
+const RECOVERY_SCAN_LIMIT: usize = 24;
 const FAILURE_LIMIT: usize = 4;
 const CATALOG_REVISION: u64 = 1;
 
@@ -205,6 +205,112 @@ pub struct PlayerbotsScheduler {
     pub processed_guids: Vec<u64>,
     pub excess_due: bool,
     pub oldest_deferred_lag_micros: i64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanStage {
+    Pending,
+    Complete,
+}
+
+/// Each pass reads at most RECOVERY_SCAN_LIMIT healing rows. A completed scan starts again on
+/// the next pass; a retained result is checked against current rotation and spellbook rows.
+#[table(accessor = pkg_playerbots_recovery_scan, public)]
+pub struct PlayerbotsRecoveryScan {
+    #[primary_key]
+    pub character_guid: u64,
+    pub class: u8,
+    pub role: u8,
+    pub stage: ScanStage,
+    pub after_id: u64,
+    pub best_id: Option<u64>,
+    pub selected_id: Option<u64>,
+    pub rows_examined: u32,
+}
+
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_recovery_scan(ctx, character_guid) {
+    ctx.db.pkg_playerbots_recovery_scan().character_guid().delete(character_guid);
+});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_recovery_scan());
+
+fn recovery_spell(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+) -> (Option<PlayerbotsRotation>, ScanStage) {
+    let scans = ctx.db.pkg_playerbots_recovery_scan();
+    let existing = scans.character_guid().find(bot.character_guid);
+    let mut scan = existing
+        .clone()
+        .filter(|s| (s.class, s.role) == (bot.class, bot.role))
+        .unwrap_or(PlayerbotsRecoveryScan {
+            character_guid: bot.character_guid,
+            class: bot.class,
+            role: bot.role,
+            stage: ScanStage::Pending,
+            after_id: 0,
+            best_id: None,
+            selected_id: None,
+            rows_examined: 0,
+        });
+    let rotations = ctx.db.pkg_playerbots_rotation();
+    let valid = |row: &PlayerbotsRotation| {
+        (row.class, row.role, row.condition)
+            == (bot.class, bot.role, super::cond::ALLY_HP_BELOW_PCT)
+            && crate::spell::knows_spell(ctx, bot.character_guid, row.spell_id)
+    };
+    if scan.stage == ScanStage::Complete {
+        scan.after_id = 0;
+        scan.best_id = None;
+    }
+    let mut best = scan
+        .best_id
+        .and_then(|id| rotations.id().find(id))
+        .filter(&valid);
+    let rows: Vec<_> = rotations
+        .by_recovery_scan()
+        .filter((
+            bot.class,
+            bot.role,
+            super::cond::ALLY_HP_BELOW_PCT,
+            (
+                std::ops::Bound::Excluded(scan.after_id),
+                std::ops::Bound::Unbounded,
+            ),
+        ))
+        .take(RECOVERY_SCAN_LIMIT)
+        .collect();
+    scan.rows_examined = rows.len() as u32;
+    scan.stage = if rows.len() < RECOVERY_SCAN_LIMIT {
+        ScanStage::Complete
+    } else {
+        ScanStage::Pending
+    };
+    for row in rows {
+        scan.after_id = row.id;
+        if valid(&row)
+            && best.as_ref().is_none_or(|b| {
+                (row.priority, row.spell_id, row.id) < (b.priority, b.spell_id, b.id)
+            })
+        {
+            best = Some(row);
+        }
+    }
+    scan.best_id = best.as_ref().map(|r| r.id);
+    if scan.stage == ScanStage::Complete {
+        scan.selected_id = scan.best_id;
+    }
+    let selected = scan
+        .selected_id
+        .and_then(|id| rotations.id().find(id))
+        .filter(valid);
+    scan.selected_id = selected.as_ref().map(|r| r.id);
+    let stage = scan.stage;
+    if existing.is_some() {
+        scans.character_guid().update(scan);
+    } else {
+        scans.insert(scan);
+    }
+    (selected, stage)
 }
 
 impl PlayerbotsRunner {
@@ -699,43 +805,18 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         .next();
     let flee_at = personality.as_ref().map_or(15, |p| p.flee_at_pct);
     let low_health = super::goals::should_flee(me.health, me.max_health, flee_at);
-    let observed_attacker = state
+    let threat = state
         .defense_target
         .and_then(|guid| ctx.db.game_world_entity().guid().find(guid))
         .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id));
-    state.defense_target = observed_attacker.as_ref().map(|target| target.guid);
-    let threat = observed_attacker.or_else(|| {
-        ctx.db
-            .game_threat()
-            .by_source()
-            .filter(me.guid)
-            .take(24)
-            .filter_map(|t| ctx.db.game_world_entity().guid().find(t.creature_guid))
-            .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id))
-            .min_by_key(|t| t.guid)
-    });
-    let spell = ctx
-        .db
-        .pkg_playerbots_rotation()
-        .by_class_role()
-        .filter((bot.class, bot.role))
-        .take(24)
-        .filter(|r| r.condition == super::cond::ALLY_HP_BELOW_PCT)
-        .filter(|r| {
-            ctx.db
-                .game_player_spell()
-                .by_character()
-                .filter(me.guid)
-                .take(256)
-                .any(|s| s.spell_id == r.spell_id)
-        })
-        .min_by_key(|r| (r.priority, r.spell_id));
+    state.defense_target = threat.as_ref().map(|target| target.guid);
+    let (spell, recovery_stage) = recovery_spell(ctx, bot);
     let restricted = me.dead || crate::helpers::live_entity(ctx, me.guid).is_err();
     let facts = decision::Facts {
         now,
         restricted,
         low_health,
-        wounded: me.health.saturating_mul(100) < me.max_health.saturating_mul(50),
+        wounded: u64::from(me.health) * 100 < u64::from(me.max_health) * 50,
         attacked: threat.is_some(),
         away: !at_home,
     };
@@ -765,7 +846,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         Reason::Recovery,
         800,
     );
-    if spell.is_none() {
+    if spell.is_none() && recovery_stage == ScanStage::Complete {
         recovery.readiness = Readiness::Refused;
     }
     let mut defense = node(

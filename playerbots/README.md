@@ -464,3 +464,11 @@ build Module Wasm from core `be3fa67d0f0c24749230560544a3e8e8b577f61d` with coll
 publishes that preceding Wasm, populates real bot, goal, quest and action rows, then upgrades the
 same private Standalone to the current Wasm. It records both Wasm identities and asserts the old
 rows survive, selector defaults apply, and backfill takes bounded passes.
+
+Recovery examines at most 24 matching healing rotation rows per pass. The separate
+`pkg_playerbots_recovery_scan` explanation records its indexed cursor, examined row count,
+and Pending or Complete stage. A first incomplete scan selects Recovery Hold. Completed
+scans restart on the next pass, so inserted or edited rows are reconsidered. A retained
+spell is checked against its current class, role, condition, and exact learned-spell row
+before use. Defense in this controller responds to the live attacker recorded by incoming
+damage; target acquisition and assistance remain downstream work.

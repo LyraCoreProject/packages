@@ -1,4 +1,5 @@
-//! Deterministic staging for the private durable action fixture.
+//! Deterministic staging for private, per-test durable databases.
+//! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
 use super::pkg_playerbots_personality;
 use super::{pkg_playerbots_bot, PlayerbotsBot};
@@ -204,8 +205,8 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
     crate::actor::stage_quest(ctx, guid, 50909)?;
     let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
     let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
-    for x in cx - 1..=cx + 1 {
-        for y in cy - 1..=cy + 1 {
+    for x in cx.saturating_sub(1)..=cx.saturating_add(1).min(1023) {
+        for y in cy.saturating_sub(1)..=cy.saturating_add(1).min(1023) {
             let key = lyracore_shared::terrain::cell_key(me.map_id, x, y);
             ctx.db.game_nav_chunk().key().delete(key);
             ctx.db.game_nav_chunk().insert(crate::nav::NavChunk {
@@ -651,7 +652,7 @@ pub fn playerbots_fixture_runner_survival(ctx: &ReducerContext, guid: u64) -> Re
         .ok_or("personality missing")?;
     personality.flee_at_pct = 100;
     ctx.db.pkg_playerbots_personality().id().update(personality);
-    playerbots_fixture_runner_due(ctx)
+    runner_due_for(ctx, guid)
 }
 
 #[reducer]
@@ -663,8 +664,8 @@ pub fn playerbots_fixture_runner_clear_navigation(
     let me = crate::helpers::live_entity(ctx, guid)?;
     let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
     let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
-    for x in cx - 1..=cx + 1 {
-        for y in cy - 1..=cy + 1 {
+    for x in cx.saturating_sub(1)..=cx.saturating_add(1).min(1023) {
+        for y in cy.saturating_sub(1)..=cy.saturating_add(1).min(1023) {
             ctx.db
                 .game_nav_chunk()
                 .key()
@@ -693,5 +694,72 @@ pub fn playerbots_fixture_runner_expire_objective(
         .pkg_playerbots_runner()
         .character_guid()
         .update(state);
-    playerbots_fixture_runner_due(ctx)
+    runner_due_for(ctx, guid)
+}
+
+fn runner_due_for(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    bot.next_think_micros = ctx.timestamp.to_micros_since_unix_epoch() - 2_000_000;
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_wide_recovery(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_runner_stage(ctx, guid, true)?;
+    use crate::game_player_spell;
+    let spells = ctx.db.game_player_spell();
+    let heal = spells
+        .by_character_spell()
+        .filter((guid, HEAL))
+        .next()
+        .ok_or("heal missing")?;
+    spells.id().delete(heal.id);
+    for spell_id in 5_091_000..5_091_300 {
+        spells.insert(crate::spell::PlayerSpell {
+            id: 0,
+            character_guid: guid,
+            owner_identity: heal.owner_identity,
+            spell_id,
+        });
+    }
+    spells.insert(crate::spell::PlayerSpell { id: 0, ..heal });
+    use super::pkg_playerbots_rotation;
+    let rotations = ctx.db.pkg_playerbots_rotation();
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    let heal = rotations
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .next()
+        .ok_or("rotation missing")?;
+    rotations.id().delete(heal.id);
+    for spell_id in 5_092_000..5_092_025 {
+        rotations.insert(super::PlayerbotsRotation {
+            id: 0,
+            spell_id,
+            ..heal.clone()
+        });
+    }
+    rotations.insert(super::PlayerbotsRotation { id: 0, ..heal });
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.health = 1_000_000_000;
+    me.max_health = 4_000_000_000;
+    ctx.db.game_world_entity().guid().update(me);
+    Ok(())
 }
