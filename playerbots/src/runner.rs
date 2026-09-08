@@ -571,6 +571,8 @@ fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut Playerbots
                 let advanced = (me.x - *from_x).powi(2) + (me.y - *from_y).powi(2) > 0.05 * 0.05;
                 let arrived = distance(me, destination) <= 2.05;
                 if advanced || arrived {
+                    state.last_stall_check_micros = now;
+                    state.retry_count = 0;
                     state.movement_progress = Some(MovementProgress {
                         observed_micros: now,
                         x: me.x,
@@ -777,11 +779,21 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         defense.prerequisites.push(close);
     }
     defense.continuers.push(home_action.clone());
-    let survival = if partition_ok && !at_home {
+    let mut survival = if partition_ok && !at_home {
         node(Action::Move, 0, Reason::Survival, 900)
     } else {
         node(Action::Hold, 0, Reason::Survival, 900)
     };
+    if let Some(deferred) = state
+        .deferred_destinations
+        .iter()
+        .find(|d| d.destination == home)
+    {
+        survival.readiness = Readiness::NotBefore(deferred.until_micros);
+        survival
+            .alternatives
+            .push(node(Action::Hold, 0, Reason::Survival, 900));
+    }
     let strategies: Vec<_> = [
         (
             Trigger::Restricted,

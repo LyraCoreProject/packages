@@ -149,10 +149,12 @@ struct Search {
     transitions: usize,
     route_expansions: u32,
     refusals: Vec<DecisionRefusal>,
+    refusal_count: usize,
 }
 
 impl Search {
     fn refuse(&mut self, reason: DecisionRefusal) {
+        self.refusal_count += 1;
         if !self.refusals.contains(&reason) {
             self.refusals.push(reason);
         }
@@ -191,11 +193,11 @@ impl Search {
                 let mut pending = None;
                 let mut refused = false;
                 for prerequisite in &node.prerequisites {
-                    let refusals_before = self.refusals.len();
+                    let refusals_before = self.refusal_count;
                     pending = self.resolve(prerequisite, now, path);
                     if pending.is_none()
                         && prerequisite.readiness == Readiness::Complete
-                        && self.refusals.len() == refusals_before
+                        && self.refusal_count == refusals_before
                     {
                         continue;
                     }
@@ -283,6 +285,7 @@ pub fn choose(facts: &Facts, strategies: &[Strategy], limits: Limits) -> Decisio
         transitions: 0,
         route_expansions: 0,
         refusals: Vec::new(),
+        refusal_count: 0,
     };
     if overflow {
         search.refuse(DecisionRefusal::Candidates);
@@ -414,6 +417,22 @@ mod tests {
                 .event,
             Reason::ReturnHome
         );
+    }
+
+    #[test]
+    fn repeated_cycle_refusals_cannot_satisfy_a_completed_prerequisite() {
+        let mut first = attack(1);
+        first.readiness = Readiness::Complete;
+        first.candidate.priority = 100;
+        first.continuers.push(attack(1));
+        let mut prerequisite = attack(3);
+        prerequisite.readiness = Readiness::Complete;
+        prerequisite.continuers.push(attack(3));
+        let mut second = attack(2);
+        second.prerequisites.push(prerequisite);
+        let result = choose(&facts(), &[strategy(vec![first, second])], LIMITS);
+        assert!(result.chosen.is_none());
+        assert!(result.refusals.contains(&DecisionRefusal::Cycle));
     }
 
     #[test]
