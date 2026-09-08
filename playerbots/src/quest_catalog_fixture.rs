@@ -997,7 +997,7 @@ pub fn playerbots_quest_fixture_direct_gameobject(
     );
     quest_catalog::refresh_catalog(ctx, "unknown");
     let catalog = ctx.db.pkg_playerbots_catalog_objective();
-    let id = (u64::from(DIRECT_GO_QUEST) << 8) | 0;
+    let id = u64::from(DIRECT_GO_QUEST) << 8;
     let previous = catalog.id().find(id).ok_or("catalog objective missing")?;
     catalog.id().update(PlayerbotsCatalogObjective {
         kind: CatalogObjectiveKind::UseGameObject,
