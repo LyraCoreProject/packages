@@ -1146,7 +1146,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         .objective
         .as_ref()
         .filter(|o| {
-            o.kind == ObjectiveKind::ReturnHome
+            o.kind != ObjectiveKind::Companion
                 && o.stage == ObjectiveStage::Travelling
                 && now >= o.deadline_micros
         })
@@ -1306,7 +1306,7 @@ fn execute(
                 if state
                     .objective
                     .as_ref()
-                    .is_some_and(|objective| objective.kind == ObjectiveKind::ReturnHome)
+                    .is_some_and(|objective| objective.kind != ObjectiveKind::Companion)
                 {
                     defer(state, now);
                 }
@@ -1323,7 +1323,7 @@ fn execute(
                     if state
                         .objective
                         .as_ref()
-                        .is_some_and(|objective| objective.kind == ObjectiveKind::ReturnHome)
+                        .is_some_and(|objective| objective.kind != ObjectiveKind::Companion)
                     {
                         defer(state, now);
                     }
