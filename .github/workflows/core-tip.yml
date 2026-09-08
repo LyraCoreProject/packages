@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  LYRACORE_REF: 35f0e5247c2be7baf6c2bfed2788456b6acf84a3
+  LYRACORE_REF: 58867b6f6fe411692b08ab2e0d67c7f090bf42ee
 
 concurrency:
   group: core-tip-${{ github.ref }}
