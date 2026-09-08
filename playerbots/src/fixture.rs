@@ -1539,7 +1539,7 @@ pub fn playerbots_fixture_provision_missing_spell(
     let spells = ctx.db.game_player_spell();
     for row in spells
         .by_character_spell()
-        .filter((guid, 7386))
+        .filter((guid, 7386u32))
         .collect::<Vec<_>>()
     {
         spells.id().delete(row.id);
