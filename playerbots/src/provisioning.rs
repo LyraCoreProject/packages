@@ -4,10 +4,7 @@
 use super::{
     class, pkg_playerbots_bot, pkg_playerbots_kit, Controller, PlayerbotsBot, ROLE_DPS, ROLE_HEALER,
 };
-use crate::{
-    game_character_talent, game_item_instance, game_player_spell, game_talent, game_talent_tab,
-    game_world_entity,
-};
+use crate::{game_item_instance, game_world_entity};
 use spacetimedb::{table, ReducerContext, Table};
 
 const PROFILE_REVISION: u32 = 1;
@@ -16,8 +13,6 @@ const RETRY_INTERVAL_MICROS: i64 = 30_000_000;
 const REPAIR_INTERVAL_MICROS: i64 = 60_000_000;
 const HISTORY_LIMIT: usize = 32;
 const MAX_PROFILE_SPELLS: usize = 12;
-const MAX_PROFILE_TALENTS: usize = 64;
-const MAX_TABS_PER_ORDER: usize = 16;
 const MAX_ACTION_SCAN: usize = 32;
 
 const BAG: u32 = 4496;
@@ -330,7 +325,8 @@ pub(super) fn profile_actions(
     let tree = preferred_talent_tree(bot.class, bot.role);
     actions.push(ProvisionAction::Talent(ProvisionTalent {
         preferred_tree: tree,
-        talent_id: next_talent(ctx, bot.character_guid, bot.class, tree)?,
+        talent_id: crate::actor::select_profile_talent(ctx, bot.character_guid, tree)
+            .map_err(provision_refusal)?,
     }));
     actions.extend([
         ProvisionAction::Item(gear),
@@ -382,120 +378,6 @@ pub(super) fn profile_actions(
     Ok(actions)
 }
 
-fn mask_admits(mask: u32, id: u8) -> bool {
-    mask == 0 || (id != 0 && (id as u32) <= u32::BITS && mask & (1u32 << (id - 1)) != 0)
-}
-
-fn next_talent(
-    ctx: &ReducerContext,
-    guid: u64,
-    class: u8,
-    preferred_tree: u8,
-) -> Result<Option<u32>, ProvisionRefusal> {
-    let Some(entity) = ctx.db.game_world_entity().guid().find(guid) else {
-        return Ok(None);
-    };
-    let learned: Vec<_> = ctx
-        .db
-        .game_character_talent()
-        .by_character()
-        .filter(guid)
-        .take(MAX_PROFILE_TALENTS + 1)
-        .collect();
-    if learned.len() > MAX_PROFILE_TALENTS {
-        return Err(profile_limit(format!(
-            "character {guid} has more than {MAX_PROFILE_TALENTS} learned talent rows"
-        )));
-    }
-    let spent: u32 = learned.iter().map(|row| u32::from(row.rank)).sum();
-    if entity.level.saturating_sub(9).saturating_sub(spent) == 0 {
-        return Ok(None);
-    }
-    let imported = ctx.db.game_talent_tab().count() != 0;
-    let tabs: Vec<_> = ctx
-        .db
-        .game_talent_tab()
-        .by_order()
-        .filter(preferred_tree)
-        .take(MAX_TABS_PER_ORDER + 1)
-        .collect();
-    if tabs.len() > MAX_TABS_PER_ORDER {
-        return Err(profile_limit(format!(
-            "talent order {preferred_tree} has more than {MAX_TABS_PER_ORDER} tabs"
-        )));
-    }
-    let tab = tabs
-        .into_iter()
-        .filter(|tab| {
-            tab.class_mask != 0
-                && mask_admits(tab.class_mask, class)
-                && mask_admits(tab.race_mask, entity.race())
-        })
-        .map(|tab| tab.tab_id)
-        .min();
-    if imported && tab.is_none() {
-        return Ok(None);
-    }
-    let points_in_tree: u32 = learned
-        .iter()
-        .filter_map(|row| {
-            let talent = ctx.db.game_talent().talent_id().find(row.talent_id)?;
-            let same = tab.map_or(
-                talent.tab_id == 0 && talent.tree_id == preferred_tree,
-                |tab_id| talent.tab_id == tab_id,
-            );
-            same.then_some(u32::from(row.rank))
-        })
-        .sum();
-    let mut candidates: Vec<_> = if let Some(tab_id) = tab {
-        ctx.db
-            .game_talent()
-            .by_tab()
-            .filter(tab_id)
-            .take(MAX_PROFILE_TALENTS + 1)
-            .collect()
-    } else if class == class::WARRIOR {
-        ctx.db
-            .game_talent()
-            .by_tree()
-            .filter(preferred_tree)
-            .filter(|talent| talent.tab_id == 0)
-            .take(MAX_PROFILE_TALENTS + 1)
-            .collect()
-    } else {
-        vec![]
-    };
-    if candidates.len() > MAX_PROFILE_TALENTS {
-        return Err(profile_limit(format!(
-            "talent tab has more than {MAX_PROFILE_TALENTS} rows"
-        )));
-    }
-    candidates.sort_by_key(|talent| (talent.tier, talent.column, talent.talent_id));
-    Ok(candidates.into_iter().find_map(|talent| {
-        let rank = learned
-            .iter()
-            .find(|row| row.talent_id == talent.talent_id)
-            .map_or(0, |row| row.rank);
-        let prerequisite_rank = learned
-            .iter()
-            .find(|row| row.talent_id == talent.required_talent_id)
-            .map_or(0, |row| row.rank);
-        (rank < talent.max_rank
-            && points_in_tree >= talent.required_points_in_tree
-            && (talent.required_talent_id == 0
-                || prerequisite_rank >= talent.required_talent_rank.max(1))
-            && (talent.required_spell_id == 0
-                || ctx
-                    .db
-                    .game_player_spell()
-                    .by_character_spell()
-                    .filter((guid, talent.required_spell_id))
-                    .next()
-                    .is_some()))
-        .then_some(talent.talent_id)
-    }))
-}
-
 fn loose_slot(ctx: &ReducerContext, guid: u64, entry: u32) -> Option<u8> {
     ctx.db
         .game_item_instance()
@@ -518,20 +400,29 @@ fn carried_count(ctx: &ReducerContext, guid: u64, entry: u32) -> u32 {
         .sum()
 }
 
-fn core_refusal(refusal: crate::actor::ActionRefusal) -> ProvisionOutcome {
+fn provision_refusal(refusal: crate::actor::ActionRefusal) -> ProvisionRefusal {
     let kind = match refusal.kind {
         crate::actor::ActionRefusalKind::MissingResource => ProvisionRefusalKind::MissingResource,
         crate::actor::ActionRefusalKind::InventoryFull => ProvisionRefusalKind::InventoryFull,
         crate::actor::ActionRefusalKind::Class => ProvisionRefusalKind::Class,
         crate::actor::ActionRefusalKind::Level => ProvisionRefusalKind::Level,
         crate::actor::ActionRefusalKind::Prerequisite => ProvisionRefusalKind::Prerequisite,
+        crate::actor::ActionRefusalKind::ProfileLimit => ProvisionRefusalKind::ProfileLimit,
         _ => ProvisionRefusalKind::CoreGate,
     };
-    let refusal = ProvisionRefusal {
+    ProvisionRefusal {
         kind,
         detail: refusal.detail,
-    };
-    if kind == ProvisionRefusalKind::InventoryFull {
+    }
+}
+
+fn core_refusal(refusal: crate::actor::ActionRefusal) -> ProvisionOutcome {
+    let refusal = provision_refusal(refusal);
+    let kind = refusal.kind;
+    if matches!(
+        kind,
+        ProvisionRefusalKind::InventoryFull | ProvisionRefusalKind::ProfileLimit
+    ) {
         ProvisionOutcome::Stopped(refusal)
     } else {
         ProvisionOutcome::Refused(refusal)
@@ -823,13 +714,6 @@ mod tests {
             for role in [super::super::ROLE_TANK, ROLE_HEALER, ROLE_DPS] {
                 assert!(profile_name(class, role).ends_with("-free"));
             }
-        }
-    }
-
-    #[test]
-    fn resource_targets_are_bounded_by_the_core_limit() {
-        for target in [4, 5, 10, 200] {
-            assert!(target <= 200);
         }
     }
 }

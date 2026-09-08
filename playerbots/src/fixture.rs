@@ -1215,8 +1215,23 @@ pub fn playerbots_fixture_runner_wide_recovery(
 
 const PROVISION_QUEST_ITEM: u32 = 5_090_150;
 const PROVISION_FILLER: u32 = 5_090_151;
+const PROVISION_WARRIOR_TRAINER: u32 = 5_090_200;
+const PROVISION_OTHER_TRAINER: u32 = 5_090_201;
+const PROVISION_LEARN_WRAPPER: u32 = 5_090_202;
+const PROVISION_CHANNEL_WRAPPER: u32 = 5_090_203;
+const PROVISION_PROC_WRAPPER: u32 = 5_090_204;
+const PROVISION_WRONG_CLASS_SPELL: u32 = 5_090_205;
+const PROVISION_LOW_LEVEL_SPELL: u32 = 5_090_206;
+const PROVISION_PREVIOUS_RANK_SPELL: u32 = 5_090_207;
+const PROVISION_OVERFLOW_SPELL: u32 = 5_090_208;
+const PROVISION_PREVIOUS_REQUIRED: u32 = 5_090_209;
+const PROVISION_DUPLICATE_SUCCESS_SPELL: u32 = 5_090_210;
+const PROVISION_WRONG_WRAPPER: u32 = 5_090_211;
+const PROVISION_WRONG_WRAPPER_PAYLOAD: u32 = 5_090_212;
 
-fn replace_profile_item(
+/// Fill a missing low-ID item definition for a private seed-only Shard. Imported or otherwise
+/// existing rows remain authoritative and are never changed by this fixture.
+fn ensure_profile_item(
     ctx: &ReducerContext,
     entry: u32,
     name: &str,
@@ -1227,6 +1242,9 @@ fn replace_profile_item(
     restores_power: bool,
 ) -> Result<(), String> {
     use crate::game_item_template;
+    if ctx.db.game_item_template().entry().find(entry).is_some() {
+        return Ok(());
+    }
     let mut template = ctx
         .db
         .game_item_template()
@@ -1249,7 +1267,6 @@ fn replace_profile_item(
     template.max_count = 0;
     template.required_skill = 0;
     template.required_skill_rank = 0;
-    ctx.db.game_item_template().entry().delete(entry);
     ctx.db.game_item_template().insert(template);
     Ok(())
 }
@@ -1257,18 +1274,18 @@ fn replace_profile_item(
 #[reducer]
 pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    replace_profile_item(ctx, 4496, "Provisioning Bag", 1, 18, 4, 0, false)?;
-    replace_profile_item(ctx, 117, "Provisioning Food", 20, 0, 0, 50115, false)?;
-    replace_profile_item(ctx, 159, "Provisioning Drink", 20, 0, 0, 50114, true)?;
-    replace_profile_item(ctx, 118, "Provisioning Potion", 5, 0, 0, 50110, false)?;
-    replace_profile_item(ctx, 1251, "Provisioning Bandage", 20, 0, 0, 50111, false)?;
-    replace_profile_item(ctx, 2512, "Provisioning Ammo", 200, 0, 0, 0, false)?;
+    ensure_profile_item(ctx, 4496, "Provisioning Bag", 1, 18, 4, 0, false)?;
+    ensure_profile_item(ctx, 117, "Provisioning Food", 20, 0, 0, 50115, false)?;
+    ensure_profile_item(ctx, 159, "Provisioning Drink", 20, 0, 0, 50114, true)?;
+    ensure_profile_item(ctx, 118, "Provisioning Potion", 5, 0, 0, 50110, false)?;
+    ensure_profile_item(ctx, 1251, "Provisioning Bandage", 20, 0, 0, 50111, false)?;
+    ensure_profile_item(ctx, 2512, "Provisioning Ammo", 200, 0, 0, 0, false)?;
     for (entry, name) in [
         (17033, "Paladin Reagent"),
         (17029, "Priest Reagent"),
         (17056, "Mage Reagent"),
     ] {
-        replace_profile_item(ctx, entry, name, 20, 0, 0, 0, false)?;
+        ensure_profile_item(ctx, entry, name, 20, 0, 0, 0, false)?;
     }
     Ok(())
 }
@@ -1312,6 +1329,327 @@ pub fn playerbots_fixture_provision_complete_profile(
         return Err("complete profile fixture contains a spell without a header".to_string());
     }
     Ok(())
+}
+
+fn provision_trainer(ctx: &ReducerContext, entry: u32, class: u8) -> Result<(), String> {
+    let mut template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(51001)
+        .ok_or("seed trainer template missing")?;
+    template.entry = entry;
+    template.name = format!("PB005 class {class} trainer");
+    template.trainer_type = lyracore_shared::trainer::trainer_type::CLASS;
+    template.trainer_class = class;
+    let templates = ctx.db.game_creature_template();
+    templates.entry().delete(entry);
+    templates.insert(template);
+    Ok(())
+}
+
+fn provision_wrapper(
+    ctx: &ReducerContext,
+    wrapper: u32,
+    target: u32,
+    kind: u8,
+) -> Result<(), String> {
+    let mut header = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(target)
+        .ok_or_else(|| format!("seed spell {target} missing"))?;
+    header.spell_id = wrapper;
+    header.name = format!("PB005 wrapper for {target}");
+    let headers = ctx.db.game_spell();
+    headers.spell_id().delete(wrapper);
+    headers.insert(header);
+
+    let mut effect = ctx
+        .db
+        .game_spell_effect()
+        .by_spell()
+        .filter(target)
+        .next()
+        .ok_or_else(|| format!("seed spell {target} has no effect"))?;
+    effect.id = (u64::from(wrapper) << 2) | u64::from(effect.effect_index);
+    effect.spell_id = wrapper;
+    effect.kind = kind;
+    effect.trigger_spell = target;
+    let effects = ctx.db.game_spell_effect();
+    for row in effects.by_spell().filter(wrapper).collect::<Vec<_>>() {
+        effects.id().delete(row.id);
+    }
+    effects.insert(effect);
+    Ok(())
+}
+
+fn provision_spell_clone(
+    ctx: &ReducerContext,
+    spell_id: u32,
+    source_spell: u32,
+) -> Result<(), String> {
+    let mut header = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(source_spell)
+        .ok_or_else(|| format!("seed spell {source_spell} missing"))?;
+    header.spell_id = spell_id;
+    header.name = format!("PB005 fixture spell {spell_id}");
+    let headers = ctx.db.game_spell();
+    headers.spell_id().delete(spell_id);
+    headers.insert(header);
+
+    let source_effects: Vec<_> = ctx
+        .db
+        .game_spell_effect()
+        .by_spell()
+        .filter(source_spell)
+        .collect();
+    if source_effects.is_empty() {
+        return Err(format!("seed spell {source_spell} has no effect"));
+    }
+    let effects = ctx.db.game_spell_effect();
+    for row in effects.by_spell().filter(spell_id).collect::<Vec<_>>() {
+        effects.id().delete(row.id);
+    }
+    for mut effect in source_effects {
+        effect.id = (u64::from(spell_id) << 2) | u64::from(effect.effect_index);
+        effect.spell_id = spell_id;
+        effects.insert(effect);
+    }
+    Ok(())
+}
+
+fn provision_offering(
+    ctx: &ReducerContext,
+    id: u64,
+    trainer_entry: u32,
+    spell_id: u32,
+    required_level: u8,
+) {
+    use crate::game_trainer_spell;
+    let rows = ctx.db.game_trainer_spell();
+    rows.id().delete(id);
+    rows.insert(crate::TrainerSpell {
+        id,
+        trainer_entry,
+        spell_id,
+        cost: 0,
+        required_level,
+        learn_skill_line: 0,
+        learn_skill_cap: 75,
+    });
+}
+
+fn provision_kit_spell(ctx: &ReducerContext, bot: &PlayerbotsBot, spell_id: u32) {
+    let kits = ctx.db.pkg_playerbots_kit();
+    if kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .all(|row| row.spell_id != spell_id)
+    {
+        kits.insert(super::PlayerbotsKit {
+            id: 0,
+            class: bot.class,
+            role: bot.role,
+            spell_id,
+        });
+    }
+}
+
+/// Source-derived rows with the same direct and LearnSpell-wrapper shape as imported trainer data.
+/// They prove lookup and Gates only; they are not evidence about an imported World catalogue.
+#[reducer]
+pub fn playerbots_fixture_provision_trainer_catalog(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if bot.class != super::class::WARRIOR {
+        return Err("trainer catalogue fixture requires a Warrior".to_string());
+    }
+    for spell in [355, 2050, 139, 133] {
+        if ctx.db.game_spell().spell_id().find(spell).is_none() {
+            return Err(format!("seed spell {spell} missing"));
+        }
+    }
+    for (spell, source) in [
+        (PROVISION_WRONG_CLASS_SPELL, 133),
+        (PROVISION_LOW_LEVEL_SPELL, 133),
+        (PROVISION_PREVIOUS_RANK_SPELL, 133),
+        (PROVISION_OVERFLOW_SPELL, 133),
+        (PROVISION_PREVIOUS_REQUIRED, 133),
+        (PROVISION_DUPLICATE_SUCCESS_SPELL, 133),
+        (PROVISION_WRONG_WRAPPER_PAYLOAD, 133),
+    ] {
+        provision_spell_clone(ctx, spell, source)?;
+    }
+    for spell in [
+        355,
+        2050,
+        139,
+        133,
+        PROVISION_WRONG_CLASS_SPELL,
+        PROVISION_LOW_LEVEL_SPELL,
+        PROVISION_PREVIOUS_RANK_SPELL,
+        PROVISION_OVERFLOW_SPELL,
+        PROVISION_DUPLICATE_SUCCESS_SPELL,
+        PROVISION_WRONG_WRAPPER,
+    ] {
+        provision_kit_spell(ctx, &bot, spell);
+    }
+    provision_trainer(ctx, PROVISION_WARRIOR_TRAINER, super::class::WARRIOR)?;
+    provision_trainer(ctx, PROVISION_OTHER_TRAINER, super::class::PALADIN)?;
+    provision_wrapper(ctx, PROVISION_LEARN_WRAPPER, 2050, crate::spell::E_SCRIPTED)?;
+    provision_wrapper(
+        ctx,
+        PROVISION_CHANNEL_WRAPPER,
+        139,
+        crate::spell::A_PERIODIC_TRIGGER,
+    )?;
+    provision_wrapper(
+        ctx,
+        PROVISION_PROC_WRAPPER,
+        133,
+        crate::spell::A_PROC_TRIGGER,
+    )?;
+    provision_wrapper(
+        ctx,
+        PROVISION_WRONG_WRAPPER,
+        PROVISION_WRONG_WRAPPER_PAYLOAD,
+        crate::spell::E_SCRIPTED,
+    )?;
+
+    for ordinal in 0..40u64 {
+        provision_offering(
+            ctx,
+            5_091_000 + ordinal,
+            PROVISION_WARRIOR_TRAINER,
+            5_099_000 + ordinal as u32,
+            1,
+        );
+    }
+    provision_offering(ctx, 5_092_000, PROVISION_WARRIOR_TRAINER, 355, 1);
+    provision_offering(
+        ctx,
+        5_092_001,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_LEARN_WRAPPER,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_002,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_CHANNEL_WRAPPER,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_003,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_PROC_WRAPPER,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_004,
+        PROVISION_OTHER_TRAINER,
+        PROVISION_WRONG_CLASS_SPELL,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_005,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_LOW_LEVEL_SPELL,
+        60,
+    );
+    provision_offering(
+        ctx,
+        5_092_006,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_PREVIOUS_RANK_SPELL,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_007,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_WRONG_WRAPPER,
+        1,
+    );
+    for ordinal in 0..17u64 {
+        provision_offering(
+            ctx,
+            5_093_000 + ordinal,
+            if ordinal < 16 {
+                PROVISION_OTHER_TRAINER
+            } else {
+                PROVISION_WARRIOR_TRAINER
+            },
+            PROVISION_OVERFLOW_SPELL,
+            1,
+        );
+    }
+    for ordinal in 0..17u64 {
+        provision_offering(
+            ctx,
+            5_094_000 + ordinal,
+            PROVISION_WARRIOR_TRAINER,
+            PROVISION_DUPLICATE_SUCCESS_SPELL,
+            1,
+        );
+    }
+    use crate::game_spell_chain;
+    ctx.db
+        .game_spell_chain()
+        .spell_id()
+        .delete(PROVISION_PREVIOUS_RANK_SPELL);
+    ctx.db.game_spell_chain().insert(crate::spell::SpellChain {
+        spell_id: PROVISION_PREVIOUS_RANK_SPELL,
+        prev_spell: PROVISION_PREVIOUS_REQUIRED,
+        first_spell: PROVISION_PREVIOUS_REQUIRED,
+        rank: 2,
+        req_spell: 0,
+    });
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_spell_action(
+    ctx: &ReducerContext,
+    guid: u64,
+    spell_id: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if !matches!(
+        spell_id,
+        355 | 2050
+            | 139
+            | 133
+            | PROVISION_WRONG_CLASS_SPELL
+            | PROVISION_LOW_LEVEL_SPELL
+            | PROVISION_PREVIOUS_RANK_SPELL
+            | PROVISION_OVERFLOW_SPELL
+            | PROVISION_DUPLICATE_SUCCESS_SPELL
+            | PROVISION_WRONG_WRAPPER
+    ) {
+        return Err("spell is outside the provisioning trainer fixture".to_string());
+    }
+    set_provision_action(ctx, guid, |action| {
+        action == super::provisioning::ProvisionAction::Spell(spell_id)
+    })
 }
 
 fn provision_state(
@@ -1480,7 +1818,7 @@ pub fn playerbots_fixture_provision_full_bag(
     {
         items.guid().delete(row.guid);
     }
-    replace_profile_item(
+    ensure_profile_item(
         ctx,
         PROVISION_QUEST_ITEM,
         "Quest Keepsake",
@@ -1490,7 +1828,7 @@ pub fn playerbots_fixture_provision_full_bag(
         0,
         false,
     )?;
-    replace_profile_item(ctx, PROVISION_FILLER, "Bag Filler", 1, 0, 0, 0, false)?;
+    ensure_profile_item(ctx, PROVISION_FILLER, "Bag Filler", 1, 0, 0, 0, false)?;
     let mut quest = ctx
         .db
         .game_item_template()

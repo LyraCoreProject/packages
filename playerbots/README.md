@@ -64,7 +64,10 @@ weapon skill, vanilla talents, gear, four bags, food, drink, potions, ammunition
 bandages, and a Hearthstone. Reconciliation only adds profile entries. It never raises level, awards
 experience or quest credit, removes quest items, or replaces equal or stronger equipped gear.
 One profile accepts at most 12 kit spell rows, 16 tabs at one tree position, and 64 talents in one
-tab. A larger catalogue records a typed profile-limit stop instead of silently omitting an entry.
+tab. Trainer admission reads at most 16 exact offerings, 16 reverse wrapper effects, and three
+effects per candidate wrapper. Each limit reads one extra row to detect overflow. A larger catalogue
+records a typed profile-limit outcome when that bounded prefix cannot decide admission. An eligible
+offering completes admission without reading later duplicates.
 
 `pkg_playerbots_provisioning` records the profile, revision, free-grant policy, current cursor, next
 repair time, and the last 32 typed decisions. A full inventory, missing catalogue row, death, or
