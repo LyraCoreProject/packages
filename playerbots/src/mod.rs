@@ -18,7 +18,11 @@
 
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
+mod actions;
 mod goals;
+pub(crate) use actions::*;
+#[cfg(feature = "debug_reducers")]
+mod fixture;
 pub(crate) use goals::*;
 
 use crate::package_config::game_package_config;
@@ -216,6 +220,9 @@ pub struct PlayerbotsGoal {
     /// End-appended with a default, so a published Shard migrates in place.
     #[default(false)]
     pub stall_warned: bool,
+    /// Last observed objective total. None initializes a baseline without clearing an existing stall.
+    #[default(None::<u64>)]
+    pub quest_credit: Option<u64>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_goal(ctx, character_guid) {

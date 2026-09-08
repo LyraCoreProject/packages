@@ -232,9 +232,16 @@ fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
         me.max_health,
         flee_threshold(ctx, &me, personality.flee_at_pct),
     ) {
+        if let Some(cast) = crate::spell::pending_cast(ctx, me.guid) {
+            crate::spell::cancel_cast_attempt(ctx, me.guid, cast.scheduled_id);
+        }
         let _ = crate::actor::stop_attack(ctx, me.guid);
         walk_toward(ctx, &me, (bot.home_x, bot.home_y, bot.home_z), 0.0, true);
         record_goal(ctx, bot.character_guid, goal::FLEE, now);
+        return;
+    }
+
+    if crate::spell::pending_cast(ctx, me.guid).is_some() {
         return;
     }
 
@@ -423,6 +430,7 @@ fn record_goal(ctx: &ReducerContext, character_guid: u64, kind: u8, now: i64) {
                 hub_x: 0.0,
                 hub_y: 0.0,
                 hub_z: 0.0,
+                quest_credit: None,
             });
         }
     }
@@ -1221,7 +1229,7 @@ fn fight(
     target: u64,
 ) {
     if closes_to_melee(bot.role, party.is_some()) {
-        let _ = crate::actor::attack(ctx, me.guid, target);
+        let _ = super::actions::attack(ctx, me.guid, target);
         // Nothing chases for a PLAYER-typed entity, so a bot that pulled from range would stand
         // there swinging at nothing. Close first, cast second.
         if let Ok(enemy) = crate::helpers::live_entity(ctx, target) {
@@ -1272,7 +1280,7 @@ fn cast_rotation(
         }) else {
             continue;
         };
-        if crate::actor::cast_at(ctx, me.guid, row.spell_id, cast_at).is_ok() {
+        if super::actions::cast(ctx, me.guid, row.spell_id, cast_at).is_ok() {
             return;
         }
     }
@@ -1524,7 +1532,7 @@ fn quest_log(ctx: &ReducerContext, character_guid: u64) -> Vec<crate::CharacterQ
 /// stall clock reads. Conflating them is what hid the stall this instrumentation was added for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuestWork {
-    /// A quest accepted, a quest turned in, or a swing at something a held quest names.
+    /// Observed objective credit increased, or a synchronous quest interaction succeeded.
     Progress,
     /// A walk, or the grind a bot falls back to. Both are hopes rather than outcomes: a bot walks
     /// to a hub it will find nothing at just as readily as to one it will.
@@ -1597,9 +1605,23 @@ fn quest(
     take_what_the_kill_left(ctx, me, &sight, &wanted_items(ctx, &active));
 
     let decided = decide_quest(ctx, me, bot, personality, engaged, &active, &sight, now);
-    let work = decided
+    let mut work = decided
         .as_ref()
         .map_or(QuestWork::NoProgress, |step| step.work);
+    let credit = active
+        .iter()
+        .flat_map(|quest| &quest.counts)
+        .map(|&count| u64::from(count))
+        .sum();
+    if let Some(mut row) = goal_row(ctx, me.guid, now) {
+        if row.quest_credit.is_some_and(|previous| credit > previous) {
+            work = QuestWork::Progress;
+        }
+        if row.quest_credit != Some(credit) {
+            row.quest_credit = Some(credit);
+            ctx.db.pkg_playerbots_goal().id().update(row);
+        }
+    }
     keep_stall_clock(ctx, me.guid, work, active.len(), now);
     if ungrouped {
         invite_a_fellow_quester(ctx, me, &active, &sight, now);
@@ -1656,7 +1678,7 @@ fn engaged_reason(
         .iter()
         .any(|cq| kill_target_entry(ctx, cq) == Some(entry))
     {
-        return Some(QuestStep::progress(goal::QUEST_HUNT));
+        return Some(QuestStep::no_progress(goal::QUEST_HUNT));
     }
     (held == Some(goal::GRIND)).then(|| QuestStep::no_progress(goal::GRIND))
 }
@@ -1767,7 +1789,7 @@ fn work_quest(
                 && live_target_is_available(ctx, me.guid, e)
         })?;
         fight(ctx, me, bot, None, personality, target.guid);
-        return Some(QuestStep::progress(goal::QUEST_HUNT));
+        return Some(QuestStep::no_progress(goal::QUEST_HUNT));
     }
     if !turn_in_ready(ctx, cq, now) {
         return None;
@@ -1839,7 +1861,7 @@ fn hand_it_back(
     }
     // Reward index 0: this Package takes the quest's guaranteed rewards and the first of any
     // choice, because a bot has no gear plan to pick against.
-    match crate::actor::turn_in_quest(ctx, me.guid, ender.guid, quest_entry, 0) {
+    match super::actions::turn_in_quest(ctx, me.guid, ender.guid, quest_entry, 0) {
         Ok(()) => {
             spacetimedb::log::info!("playerbots: bot {} turned in quest {quest_entry}", me.guid);
             Some(QuestStep::progress(goal::QUEST_TRAVEL))
@@ -1850,7 +1872,7 @@ fn hand_it_back(
         // again next tick and gets in. When it does not, the stall clock is what records it; a
         // warning every second about a state the Operator can read off the bag would drown the log
         // that carries the real drift below.
-        Err(refusal) if refusal == lyracore_shared::mail::INVENTORY_FULL => None,
+        Err(refusal) if refusal.kind == crate::actor::ActionRefusalKind::InventoryFull => None,
         // The bot only walks here once [`turn_in_ready`] says yes, so any other Refusal means that
         // reading and the core have disagreed. Said out loud, for the same reason a refused accept
         // is: it is a defect, not a gameplay outcome.
@@ -1900,7 +1922,7 @@ fn take_a_quest(
         return Some(QuestStep::no_progress(goal::QUEST_TRAVEL));
     }
     for quest_entry in open_quests_of(ctx, me, giver.entry, &reach) {
-        match crate::actor::accept_quest(ctx, me.guid, giver.guid, quest_entry) {
+        match super::actions::accept_quest(ctx, me.guid, giver.guid, quest_entry) {
             Ok(()) => {
                 // Bookmark the giver, not the bot: the bot is standing within interaction range of
                 // it, but the giver is the thing that will still be here when the quest is done.
@@ -2380,7 +2402,7 @@ pub(crate) fn wander_offset(character_guid: u64, window: i64) -> (f32, f32) {
 /// One movement leg toward `dest`, stopping `stand_off` yards short of it, capped at what the bot
 /// can cover before it next thinks. Writes the same `game_creature_spline` row every creature leg
 /// writes, so the Gateway relays it through the one movement path it already has.
-fn walk_toward(
+pub(super) fn walk_toward(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     dest: (f32, f32, f32),
@@ -2394,13 +2416,7 @@ fn walk_toward(
     };
     let full = distance_2d(me.x, me.y, dest.0, dest.1);
     let step = step_length(full, stand_off, speed, THINK_INTERVAL_MICROS);
-    if step <= 0.0 {
-        return;
-    }
-    // The same leg a creature walks: one nav-grid A* step toward `dest`, held off walls by the
-    // collision gate. A step the gate refuses leaves the bot where it is, with no spline, and the
-    // stall clock says so.
-    let (lx, ly) = crate::nav::nav_step(
+    let route = crate::nav::route_step(
         ctx,
         me.map_id,
         me.instance_id,
@@ -2409,6 +2425,16 @@ fn walk_toward(
         step,
         stand_off,
         me.z,
+    );
+    let (lx, ly) = (route.endpoint.x, route.endpoint.y);
+    super::actions::movement(
+        ctx,
+        me.guid,
+        me.map_id,
+        me.instance_id,
+        (dest.0, dest.1).into(),
+        full <= stand_off + 0.05,
+        route,
     );
     let travelled = distance_2d(me.x, me.y, lx, ly);
     if travelled <= 0.0 {
