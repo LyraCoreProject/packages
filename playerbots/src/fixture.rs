@@ -164,6 +164,7 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
     };
     ctx.db.game_creature_spawn().guid().delete(target_guid);
     let spawn = ctx.db.game_creature_spawn().insert(spawn);
+    crate::creatures::despawn_creature_entity(ctx, target_guid);
     crate::creatures::insert_creature_entity(
         ctx,
         crate::creatures::build_creature_entity(&spawn, &template, 0, 0),
@@ -403,6 +404,22 @@ pub fn playerbots_fixture_interaction_stage(
     template.src_item_count = 1;
     ctx.db.game_quest_template().entry().delete(QUEST);
     ctx.db.game_quest_template().insert(template);
+    for row in ctx
+        .db
+        .game_creature_quest()
+        .by_creature()
+        .filter(5_090_101u32)
+        .filter(|row| row.quest_entry == QUEST)
+        .collect::<Vec<_>>()
+    {
+        ctx.db.game_creature_quest().id().delete(row.id);
+    }
+    ctx.db.game_quest_objective().id().delete(COLLECT as u64);
+    ctx.db
+        .game_quest_reward_item()
+        .id()
+        .delete(GUARANTEED as u64);
+    ctx.db.game_quest_reward_choice().id().delete(CHOICE as u64);
     ctx.db.game_quest_objective().insert(crate::QuestObjective {
         id: COLLECT as u64,
         quest_entry: QUEST,

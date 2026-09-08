@@ -42,7 +42,7 @@ jobs:
         with:
           repository: LyraCoreProject/LyraCore
           # Restore main after the owning core operations merge.
-          ref: a2834d88e75af38bf6935efc7cca35a9e0fb631d
+          ref: fe9caef6eb0d132c45a5d151827ab6fe64925f79
           path: lyracore
 
       - name: Install Rust 1.93.0
@@ -67,7 +67,7 @@ jobs:
         with:
           repository: LyraCoreProject/LyraCore
           # Restore main after the owning core operations merge.
-          ref: a2834d88e75af38bf6935efc7cca35a9e0fb631d
+          ref: fe9caef6eb0d132c45a5d151827ab6fe64925f79
           path: lyracore
 
       # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
@@ -127,7 +127,7 @@ jobs:
         with:
           repository: LyraCoreProject/LyraCore
           # Restore main after the owning core operations merge.
-          ref: a2834d88e75af38bf6935efc7cca35a9e0fb631d
+          ref: fe9caef6eb0d132c45a5d151827ab6fe64925f79
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
