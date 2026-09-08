@@ -1043,6 +1043,26 @@ pub fn playerbots_fixture_runner_pass(ctx: &ReducerContext) -> Result<(), String
     Ok(())
 }
 
+/// Make one bot due, run the real Bot Controller pass, then keep background ticks from running its
+/// next step before the fixture inspects the result.
+#[reducer]
+pub fn playerbots_fixture_runner_pass_once(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    runner_due_for(ctx, guid)?;
+    super::runner::pass(ctx);
+    use super::pkg_playerbots_scheduler;
+    let processed = ctx
+        .db
+        .pkg_playerbots_scheduler()
+        .id()
+        .find(0)
+        .is_some_and(|row| row.processed_guids.contains(&guid));
+    if !processed {
+        return Err(format!("runner pass did not process bot {guid}"));
+    }
+    runner_park_for(ctx, guid)
+}
+
 #[reducer]
 pub fn playerbots_fixture_runner_survival(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
@@ -1109,6 +1129,19 @@ fn runner_due_for(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
         .next()
         .ok_or("bot missing")?;
     bot.next_think_micros = ctx.timestamp.to_micros_since_unix_epoch() - 2_000_000;
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+    Ok(())
+}
+
+fn runner_park_for(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    bot.next_think_micros = i64::MAX;
     ctx.db.pkg_playerbots_bot().id().update(bot);
     Ok(())
 }
