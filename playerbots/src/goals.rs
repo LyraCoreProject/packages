@@ -1532,7 +1532,7 @@ fn quest_log(ctx: &ReducerContext, character_guid: u64) -> Vec<crate::CharacterQ
 /// stall clock reads. Conflating them is what hid the stall this instrumentation was added for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum QuestWork {
-    /// A quest accepted, a quest turned in, or a swing at something a held quest names.
+    /// Observed objective credit increased, or a synchronous quest interaction succeeded.
     Progress,
     /// A walk, or the grind a bot falls back to. Both are hopes rather than outcomes: a bot walks
     /// to a hub it will find nothing at just as readily as to one it will.
