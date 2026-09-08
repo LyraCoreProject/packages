@@ -2,8 +2,8 @@
 
 use super::actions;
 use super::decision::{
-    self, Action, ActionNode, Candidate, DecisionRefusal, MoveTarget, Readiness, Reason, Strategy,
-    Trigger,
+    self, Action, ActionNode, Candidate, CastAction, DecisionRefusal, MoveTarget, Readiness,
+    Reason, Strategy, Trigger,
 };
 use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
@@ -756,9 +756,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         .alternatives
         .push(node(Action::Hold, Reason::ReturnHome, 100));
     let mut recovery = node(
-        spell.as_ref().map_or(Action::Hold, |spell| Action::Cast {
-            target: me.guid,
-            spell: spell.spell_id,
+        spell.as_ref().map_or(Action::Hold, |spell| {
+            Action::Cast(CastAction {
+                target: me.guid,
+                spell: spell.spell_id,
+            })
         }),
         Reason::Recovery,
         800,
@@ -769,9 +771,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let mut defense = node(
         threat
             .as_ref()
-            .map_or(Action::Hold, |target| Action::Attack {
-                target: target.guid,
-            }),
+            .map_or(Action::Hold, |target| Action::Attack(target.guid)),
         Reason::Defense,
         600,
     );
@@ -1011,7 +1011,7 @@ fn execute(
             });
             state.last_outcome = RunnerOutcome::Waiting;
         }
-        Action::Cast { target, spell } => {
+        Action::Cast(CastAction { target, spell }) => {
             stop_movement(ctx, me.guid);
             let _ = crate::actor::stop_attack(ctx, me.guid);
             match super::actions::cast(ctx, me.guid, spell, target) {
@@ -1020,10 +1020,10 @@ fn execute(
                     | crate::spell::CastStart::Waiting(handle),
                 ) => {
                     let mut actual = candidate;
-                    actual.id.action = Action::Cast {
+                    actual.id.action = Action::Cast(CastAction {
                         spell: handle.spell_id,
                         target: handle.target_guid,
-                    };
+                    });
                     state.foreground = Some(Foreground {
                         candidate: actual,
                         generation: state.generation,
@@ -1056,7 +1056,7 @@ fn execute(
                 }
             }
         }
-        Action::Attack { target } => {
+        Action::Attack(target) => {
             if let Some(target) = ctx.db.game_world_entity().guid().find(target) {
                 state.last_target_health = Some(CombatProgress {
                     observed_micros: now,

@@ -6,8 +6,14 @@ use crate::nav::LEG_MAX_EXPANSIONS;
 pub enum Action {
     Hold,
     Move(MoveTarget),
-    Cast { target: u64, spell: u32 },
-    Attack { target: u64 },
+    Cast(CastAction),
+    Attack(u64),
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct CastAction {
+    pub target: u64,
+    pub spell: u32,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -340,7 +346,7 @@ mod tests {
         }
     }
     fn attack(target: u64) -> ActionNode {
-        ActionNode::ready(Action::Attack { target }, Reason::Defense, 50)
+        ActionNode::ready(Action::Attack(target), Reason::Defense, 50)
     }
 
     #[test]
@@ -353,12 +359,9 @@ mod tests {
             );
             assert_eq!(
                 result.order.iter().map(|c| c.id.action).collect::<Vec<_>>(),
-                vec![Action::Attack { target: 11 }, Action::Attack { target: 22 }]
+                vec![Action::Attack(11), Action::Attack(22)]
             );
-            assert_eq!(
-                result.chosen.unwrap().id.action,
-                Action::Attack { target: 11 }
-            );
+            assert_eq!(result.chosen.unwrap().id.action, Action::Attack(11));
         }
     }
 
@@ -380,7 +383,7 @@ mod tests {
         let strategies = [defense, survival];
         assert_eq!(
             choose(&f, &strategies, LIMITS).chosen.unwrap().id.action,
-            Action::Attack { target: 11 }
+            Action::Attack(11)
         );
         f.low_health = true;
         assert_eq!(
@@ -421,7 +424,7 @@ mod tests {
                 .unwrap()
                 .id
                 .action,
-            Action::Attack { target: 22 }
+            Action::Attack(22)
         );
         node.readiness = Readiness::Complete;
         assert_eq!(
@@ -530,7 +533,7 @@ mod tests {
         );
         assert_eq!(result.order.len(), 2);
         assert_eq!(result.order[0].priority, 100);
-        assert_eq!(result.order[0].id.action, Action::Attack { target: 11 });
+        assert_eq!(result.order[0].id.action, Action::Attack(11));
     }
 
     #[test]
