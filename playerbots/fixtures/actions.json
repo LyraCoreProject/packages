@@ -34,7 +34,8 @@
     "spell": 5090100,
     "source_spell": 2050,
     "cast_time_ms": 5000,
-    "cost": 0
+    "cost": 0,
+    "unsupported_channel_spell": 5090104
   },
   "poor_range_target_x": 1400,
   "quest": {

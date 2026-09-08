@@ -425,10 +425,12 @@ The Cohort behavior follows the durable leader of a human-led party. It refreshe
 position without replacing the companion objective, so a moving leader cannot restart a retained
 cast. An injured same-partition party member outranks follow when the Priest knows a supported
 healing rotation spell. Range or line of sight becomes a movement prerequisite that retains the
-member identity. A blocked route remains visible as a CastingPosition wait. A completed, cancelled,
-or refused cast releases the foreground action so the next pass can heal again or resume follow.
+member identity across movement legs even if another member becomes more injured. A blocked route
+remains visible as a CastingPosition wait. A completed, cancelled, or refused cast releases the
+foreground action so the next pass can heal again or resume follow.
 An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
-control. The existing Legacy policy remains available under its explicit selector.
+control. A membership whose parent Group is unavailable holds the existing objective and records the
+typed failure. The existing Legacy policy remains available under its explicit selector.
 
 A dead companion retains its role and objective while it releases and uses the spirit healer. Once
 alive, it regroups with the same leader. Survival movement has priority over healing while the bot
@@ -437,7 +439,8 @@ can run. If recovery is missing, the runner leaves lower-priority maintenance re
 hiding it behind a Survival Hold.
 
 Recovery scans at most 24 indexed healing rotation rows and revalidates at most two retained
-rows per pass. The separate
+rows per pass. Learned channels are excluded during that scan, before priority chooses the retained
+rotation. The separate
 `pkg_playerbots_recovery_scan` explanation records its indexed cursor, scanned row count,
 and Pending or Complete stage. A first incomplete scan selects Recovery Hold. A completed missing-spell result keeps lower-priority
 actions eligible while later scans continue. Completed
@@ -479,12 +482,13 @@ The roster selector travels with the Character; runner observations and foregrou
 The Character delete operation removes the runner and recovery scan rows. Production publication still requires the
 schema review described in LyraCore's `docs/danger-zones.md`.
 
-The companion migration appends a nullable leader identity to each runner row. Its populated upgrade
-case starts from merged PB-002 core `e6a755db0a150bbf73ad97b972fe829f20f6816c` and collection
+The companion migration appends nullable leader and injured-member identities to each runner row.
+Its populated upgrade case starts from merged PB-002 core
+`e6a755db0a150bbf73ad97b972fe829f20f6816c` and collection
 `155c9e401afb06d5731acedf8fc35a81dbe4aaa6`. It publishes a retained return-home objective and cast
 foreground, upgrades the same private Standalone, and checks that both values survive while the new
-leader field receives its null default. Set `PLAYERBOTS_COMPANION_PRECEDING_WASM` to that immutable
-Wasm when running the companion target outside CI.
+identity fields receive their null defaults. Set `PLAYERBOTS_COMPANION_PRECEDING_WASM` to that
+immutable Wasm when running the companion target outside CI.
 
 Fresh Shards seed Lesser Heal 2050 as a heal for a named ally. Existing Shards keep their stored
 spell definitions when the Module is published, so the normal `debug_repair_after_publish` step

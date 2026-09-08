@@ -30,8 +30,13 @@ impl Party {
 }
 
 /// A party is companion-controlled only when its durable leader is not another bot.
-pub(super) fn human_led_party(ctx: &ReducerContext, character_guid: u64) -> Option<Party> {
-    let facts = crate::group::party_facts(ctx, character_guid)?;
+pub(super) fn human_led_party(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<Option<Party>, crate::group::PartyFactsUnavailable> {
+    let Some(facts) = crate::group::party_facts(ctx, character_guid)? else {
+        return Ok(None);
+    };
     if ctx
         .db
         .pkg_playerbots_bot()
@@ -40,18 +45,18 @@ pub(super) fn human_led_party(ctx: &ReducerContext, character_guid: u64) -> Opti
         .next()
         .is_some()
     {
-        return None;
+        return Ok(None);
     }
     let leader = facts
         .members
         .iter()
         .find(|member| member.character_guid == facts.leader_guid)
         .and_then(|member| member.unit.clone());
-    Some(Party {
+    Ok(Some(Party {
         leader_guid: facts.leader_guid,
         leader,
         members: facts.members,
-    })
+    }))
 }
 
 fn distance_sq(me: &crate::WorldEntity, unit: &crate::group::PartyUnitFacts) -> f32 {
@@ -81,23 +86,46 @@ fn follow(party: &Party, me: &crate::WorldEntity, objective: u64) -> ActionNode 
     )
 }
 
-fn wounded_ally(party: &Party, partition: (u32, u64), heal_at_pct: u8) -> Option<u64> {
+fn wounded_member(
+    member: &crate::group::PartyMemberFacts,
+    partition: (u32, u64),
+    heal_at_pct: u8,
+) -> Option<(u32, u32, u64)> {
+    let unit = member.unit.as_ref()?;
+    ((unit.map_id, unit.instance_id) == partition
+        && !unit.dead
+        && unit.max_health > 0
+        && u64::from(unit.health) * 100 <= u64::from(unit.max_health) * u64::from(heal_at_pct))
+    .then_some((unit.health, unit.max_health, member.character_guid))
+}
+
+fn wounded_ally(
+    party: &Party,
+    partition: (u32, u64),
+    heal_at_pct: u8,
+    retained: Option<u64>,
+) -> Option<u64> {
+    if let Some(retained) = retained.filter(|guid| {
+        party.members.iter().any(|member| {
+            member.character_guid == *guid
+                && wounded_member(member, partition, heal_at_pct).is_some()
+        })
+    }) {
+        return Some(retained);
+    }
     party
         .members
         .iter()
-        .filter_map(|member| {
-            let unit = member.unit.as_ref()?;
-            ((unit.map_id, unit.instance_id) == partition
-                && !unit.dead
-                && unit.max_health > 0
-                && u64::from(unit.health) * 100
-                    <= u64::from(unit.max_health) * u64::from(heal_at_pct))
-            .then_some((unit.health, unit.max_health, member.character_guid))
-        })
+        .filter_map(|member| wounded_member(member, partition, heal_at_pct))
         .min_by(|a, b| {
             (u64::from(a.0) * u64::from(b.1), a.2).cmp(&(u64::from(b.0) * u64::from(a.1), b.2))
         })
         .map(|(_, _, guid)| guid)
+}
+
+pub(super) struct CompanionSelection {
+    pub strategy: Strategy,
+    pub heal_target: Option<u64>,
 }
 
 pub(super) fn strategy(
@@ -108,7 +136,8 @@ pub(super) fn strategy(
     heal_spell: Option<&PlayerbotsRotation>,
     survival_permits_healing: bool,
     objective: u64,
-) -> Strategy {
+    retained_heal_target: Option<u64>,
+) -> CompanionSelection {
     let follow = follow(party, me, objective);
     let personality_heal_at = ctx
         .db
@@ -118,9 +147,31 @@ pub(super) fn strategy(
         .next()
         .map_or(u8::MAX, |personality| personality.heal_at_pct);
     let heal_at_pct = heal_spell.map_or(0, |spell| spell.threshold_pct.min(personality_heal_at));
-    let heal = if bot.role == ROLE_HEALER && survival_permits_healing {
+    let heal_target = if bot.role == ROLE_HEALER {
+        heal_spell.and_then(|_| {
+            retained_heal_target
+                .and_then(|target| {
+                    wounded_ally(
+                        party,
+                        (me.map_id, me.instance_id),
+                        heal_at_pct,
+                        Some(target),
+                    )
+                })
+                .or_else(|| {
+                    if survival_permits_healing {
+                        wounded_ally(party, (me.map_id, me.instance_id), heal_at_pct, None)
+                    } else {
+                        None
+                    }
+                })
+        })
+    } else {
+        None
+    };
+    let heal = if survival_permits_healing {
         heal_spell.and_then(|spell| {
-            let target = wounded_ally(party, (me.map_id, me.instance_id), heal_at_pct)?;
+            let target = heal_target?;
             let cast = CastAction {
                 target,
                 spell: spell.spell_id,
@@ -162,11 +213,14 @@ pub(super) fn strategy(
         candidates.push(heal);
     }
     candidates.push(follow);
-    Strategy {
-        trigger: Trigger::Always,
-        candidates,
-        defaults: vec![],
-        priority_adjustment: 0,
+    CompanionSelection {
+        strategy: Strategy {
+            trigger: Trigger::Always,
+            candidates,
+            defaults: vec![],
+            priority_adjustment: 0,
+        },
+        heal_target,
     }
 }
 
@@ -197,6 +251,7 @@ mod tests {
             leader: None,
             members: vec![member(12, 20, 100), member(11, 10, 50), member(13, 30, 100)],
         };
-        assert_eq!(wounded_ally(&party, (0, 0), 50), Some(11));
+        assert_eq!(wounded_ally(&party, (0, 0), 50, None), Some(11));
+        assert_eq!(wounded_ally(&party, (0, 0), 50, Some(12)), Some(12));
     }
 }

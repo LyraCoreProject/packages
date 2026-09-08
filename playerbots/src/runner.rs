@@ -9,7 +9,7 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
 };
-use crate::{game_character_quest, game_creature_spline, game_world_entity};
+use crate::{game_character_quest, game_creature_spline, game_spell, game_world_entity};
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
 pub const BATCH_LIMIT: usize = 16;
@@ -74,6 +74,7 @@ pub enum Failure {
     ActionRefused(crate::actor::ActionRefusalKind),
     CastRefused(crate::spell::CastRefusalKind),
     Decision(DecisionRefusal),
+    PartyFactsUnavailable,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -193,6 +194,9 @@ pub struct PlayerbotsRunner {
     /// The stable party leader identity. A moving leader only refreshes the companion destination.
     #[default(None::<u64>)]
     pub companion_leader_guid: Option<u64>,
+    /// The injured party member retained from CastingPosition movement through cast completion.
+    #[default(None::<u64>)]
+    pub companion_heal_target_guid: Option<u64>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -272,6 +276,12 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
         (row.class, row.role, row.condition)
             == (bot.class, bot.role, super::cond::ALLY_HP_BELOW_PCT)
             && crate::spell::knows_spell(ctx, bot.character_guid, row.spell_id)
+            && ctx
+                .db
+                .game_spell()
+                .spell_id()
+                .find(row.spell_id)
+                .is_some_and(|spell| spell.cast_flags & crate::spell::SPELL_ATTR_CHANNELED == 0)
     };
     if scan.stage == ScanStage::Complete {
         scan.after_rotation_id = 0;
@@ -365,6 +375,7 @@ impl PlayerbotsRunner {
             route_expansions: 0,
             route_budget: 0,
             companion_leader_guid: None,
+            companion_heal_target_guid: None,
         }
     }
 
@@ -549,6 +560,13 @@ pub fn playerbots_select_controller(
 
 fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
     if let Some(foreground) = state.foreground.take() {
+        if matches!(
+            &foreground.running,
+            Running::Cast(handle)
+                if state.companion_heal_target_guid == Some(handle.target_guid)
+        ) {
+            state.companion_heal_target_guid = None;
+        }
         bounded_push(
             &mut state.history,
             Transition {
@@ -682,6 +700,7 @@ fn objective(
             catalog_revision: CATALOG_REVISION,
         });
         state.companion_leader_guid = leader_guid;
+        state.companion_heal_target_guid = None;
         state.retry_count = 0;
         state.last_stall_check_micros = now;
     } else if kind == ObjectiveKind::Companion {
@@ -849,7 +868,30 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     };
-    let party = super::companion::human_led_party(ctx, me.guid);
+    let party = match super::companion::human_led_party(ctx, me.guid) {
+        Ok(party) => party,
+        Err(unavailable) => {
+            spacetimedb::log::error!(
+                "party facts unavailable: member {} points to missing group {}",
+                me.guid,
+                unavailable.group_id
+            );
+            if bot.controller == Controller::Cohort {
+                stop(ctx, me.guid, &mut state);
+            }
+            state.chosen = Some(Candidate {
+                id: decision::CandidateId {
+                    action: Action::Hold,
+                    reason: Reason::PartyUnavailable,
+                    objective: state.objective_sequence,
+                },
+                priority: 1000,
+            });
+            state.failure(Failure::PartyFactsUnavailable, now);
+            state.save(ctx);
+            return;
+        }
+    };
     let prior_objective = state.objective_sequence;
     objective(ctx, bot, &me, party.as_ref(), &mut state, now);
     if bot.controller == Controller::Cohort {
@@ -990,6 +1032,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         Trigger::Restricted,
         node(Action::Hold, Reason::Restricted, 1000),
     )];
+    let mut companion_heal_target = state.companion_heal_target_guid;
     if me.dead {
         strategies.push(strategy(
             Trigger::Always,
@@ -1002,7 +1045,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
         strategies.push(strategy(Trigger::Attacked, defense));
         if let Some(party) = party.as_ref() {
-            strategies.push(super::companion::strategy(
+            let selection = super::companion::strategy(
                 ctx,
                 bot,
                 &me,
@@ -1010,8 +1053,12 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 spell,
                 !low_health || at_destination,
                 state.objective_sequence,
-            ));
+                state.companion_heal_target_guid,
+            );
+            companion_heal_target = selection.heal_target;
+            strategies.push(selection.strategy);
         } else {
+            companion_heal_target = None;
             strategies.push(strategy(Trigger::Away, travel_action));
         }
     }
@@ -1019,6 +1066,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         Trigger::Always,
         node(Action::Hold, Reason::Idle, 0),
     ));
+    state.companion_heal_target_guid = companion_heal_target;
     let decision = decision::choose(&facts, &strategies, decision::LIMITS);
     state.candidate_order = decision.order;
     state.transitions = decision.transitions as u32;
@@ -1065,7 +1113,13 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     }
     if let Some(fg) = &state.foreground {
         let incompatible = chosen.is_some_and(|c| c.id != fg.candidate.id);
-        let preempts = chosen.is_some_and(|c| c.priority > fg.candidate.priority);
+        let casting_target_invalid = matches!(
+            fg.candidate.id.action,
+            Action::Move(MoveTarget::CastingPosition(target))
+                if state.companion_heal_target_guid != Some(target)
+        );
+        let preempts =
+            casting_target_invalid || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
         if incompatible && preempts {
             stop(ctx, me.guid, &mut state);
             state.last_outcome = RunnerOutcome::Cancelled;
@@ -1251,10 +1305,16 @@ fn execute(
                     });
                     state.last_outcome =
                         RunnerOutcome::CastFinished(crate::spell::CastFinish::Resolved);
+                    if state.companion_heal_target_guid == Some(target) {
+                        state.companion_heal_target_guid = None;
+                    }
                     state.retry_candidate = None;
                 }
                 Err(reason) => {
                     state.failure(Failure::CastRefused(reason.kind), now);
+                    if state.companion_heal_target_guid == Some(target) {
+                        state.companion_heal_target_guid = None;
+                    }
                     state.retry_candidate = Some(candidate.id);
                     state.next_eligible_micros = now.saturating_add(if state.retry_count >= 3 {
                         DEFER_INTERVAL
@@ -1309,6 +1369,9 @@ crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payl
         state.retry_candidate = None;
     }
     state.foreground = None;
+    if state.companion_heal_target_guid == Some(payload.target_guid) {
+        state.companion_heal_target_guid = None;
+    }
     state.last_stall_check_micros = now;
     state.last_outcome = RunnerOutcome::CastFinished(payload.outcome.clone());
     state.save(ctx);

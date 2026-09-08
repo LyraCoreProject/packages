@@ -5,12 +5,14 @@ use super::{pkg_playerbots_bot, PlayerbotsBot};
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
 use crate::{
-    game_creature_spawn, game_creature_template, game_quest_objective, game_quest_template,
+    game_creature_spawn, game_creature_template, game_group, game_quest_objective,
+    game_quest_template,
 };
 use crate::{game_creature_spline, game_spell, game_spell_effect, game_world_entity};
 use spacetimedb::{reducer, ReducerContext, Table};
 
 const HEAL: u32 = 5_090_100;
+const CHANNEL_HEAL: u32 = 5_090_104;
 const COMPANION_GROUP: u64 = 5_090_300;
 
 #[reducer]
@@ -298,6 +300,13 @@ pub fn playerbots_fixture_companion_health(
 }
 
 #[reducer]
+pub fn playerbots_fixture_companion_remove_group(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    ctx.db.game_group().group_id().delete(COMPANION_GROUP);
+    Ok(())
+}
+
+#[reducer]
 pub fn playerbots_fixture_companion_forget_heal(
     ctx: &ReducerContext,
     guid: u64,
@@ -339,6 +348,88 @@ pub fn playerbots_fixture_companion_lesser_heal_target(
         .ok_or("Lesser Heal effect missing")?;
     effect.target = target;
     effects.id().update(effect);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_companion_extra_lesser_heal_effect(
+    ctx: &ReducerContext,
+    present: bool,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let effects = ctx.db.game_spell_effect();
+    let id = (2050u64 << 2) | 1;
+    effects.id().delete(id);
+    if present {
+        let mut effect = effects
+            .id()
+            .find(2050u64 << 2)
+            .ok_or("Lesser Heal effect missing")?;
+        effect.id = id;
+        effect.effect_index = 1;
+        effects.insert(effect);
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_companion_mixed_heals(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut channel = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(HEAL)
+        .ok_or("fixture heal missing")?;
+    channel.spell_id = CHANNEL_HEAL;
+    channel.name = "Unsupported channel heal".to_string();
+    channel.cast_flags = crate::spell::SPELL_ATTR_CHANNELED;
+    ctx.db.game_spell().spell_id().delete(CHANNEL_HEAL);
+    ctx.db.game_spell().insert(channel);
+    let effects = ctx.db.game_spell_effect();
+    for row in effects
+        .by_spell()
+        .filter(&CHANNEL_HEAL)
+        .collect::<Vec<_>>()
+    {
+        effects.id().delete(row.id);
+    }
+    for mut effect in effects.by_spell().filter(&HEAL).collect::<Vec<_>>() {
+        effect.spell_id = CHANNEL_HEAL;
+        effect.id = (u64::from(CHANNEL_HEAL) << 2) | u64::from(effect.effect_index);
+        effects.insert(effect);
+    }
+    crate::spell::learn_spell(
+        ctx,
+        character_guid,
+        spacetimedb::Identity::ZERO,
+        CHANNEL_HEAL,
+    );
+    let rotations = ctx.db.pkg_playerbots_rotation();
+    let mut supported = rotations
+        .iter()
+        .find(|row| row.spell_id == HEAL)
+        .ok_or("supported heal rotation missing")?;
+    supported.priority = 1;
+    let (class, role, condition, threshold_pct) = (
+        supported.class,
+        supported.role,
+        supported.condition,
+        supported.threshold_pct,
+    );
+    rotations.id().update(supported);
+    rotations.insert(super::PlayerbotsRotation {
+        id: 0,
+        class,
+        role,
+        priority: 0,
+        spell_id: CHANNEL_HEAL,
+        condition,
+        threshold_pct,
+    });
     Ok(())
 }
 
