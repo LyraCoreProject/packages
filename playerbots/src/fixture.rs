@@ -1729,7 +1729,7 @@ fn set_provision_action(
         .pkg_playerbots_provisioning()
         .character_guid()
         .update(state);
-    Ok(())
+    runner_park_for(ctx, guid)
 }
 
 #[reducer]
@@ -1776,7 +1776,7 @@ pub fn playerbots_fixture_provision_due(ctx: &ReducerContext, guid: u64) -> Resu
         .pkg_playerbots_provisioning()
         .character_guid()
         .update(state);
-    runner_due_for(ctx, guid)
+    runner_park_for(ctx, guid)
 }
 
 #[reducer]
@@ -1791,7 +1791,7 @@ pub fn playerbots_fixture_provision_reset(ctx: &ReducerContext, guid: u64) -> Re
         .pkg_playerbots_provisioning()
         .character_guid()
         .update(state);
-    Ok(())
+    runner_park_for(ctx, guid)
 }
 
 #[reducer]
@@ -1837,7 +1837,7 @@ pub fn playerbots_fixture_provision_remove_recovery(
         .pkg_playerbots_provisioning()
         .character_guid()
         .update(state);
-    runner_due_for(ctx, guid)
+    runner_park_for(ctx, guid)
 }
 
 #[reducer]
