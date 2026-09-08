@@ -447,8 +447,9 @@ coverage generation. A coverage change invalidates the prior destination decisio
 
 The selector allows at most 24 candidates, depth four, 16 transitions and one route request with
 4096 expansions per decision. These limits also apply to prerequisites, alternatives and continuers.
-Strategies use typed triggers and integer priority adjustments; candidate identity includes its
-action, target, spell, trigger and objective identity. There is no string registry.
+Strategies use typed triggers and integer priority adjustments. Each Candidate carries a typed action
+payload, reason and objective identity. Movement names Home or an Entity; Cast carries its spell and
+target; Attack carries its target. There is no string registry.
 
 The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the roster and adds
 runner and scheduler tables. Existing goals and action observations keep their schema and meaning.

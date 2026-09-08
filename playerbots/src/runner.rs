@@ -2,7 +2,8 @@
 
 use super::actions;
 use super::decision::{
-    self, Action, ActionNode, Candidate, DecisionRefusal, Readiness, Reason, Strategy, Trigger,
+    self, Action, ActionNode, Candidate, DecisionRefusal, MoveTarget, Readiness, Reason, Strategy,
+    Trigger,
 };
 use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
@@ -319,9 +320,7 @@ pub(super) fn pass(ctx: &ReducerContext) {
             state.chosen = Some(Candidate {
                 id: decision::CandidateId {
                     action: Action::Hold,
-                    target: 0,
-                    event: Reason::Restricted,
-                    spell: 0,
+                    reason: Reason::Restricted,
                     objective: state.objective_sequence,
                 },
                 priority: 1000,
@@ -659,9 +658,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.chosen = Some(Candidate {
             id: decision::CandidateId {
                 action: Action::Hold,
-                target: 0,
-                event: Reason::Restricted,
-                spell: 0,
+                reason: Reason::Restricted,
                 objective: state.objective_sequence,
             },
             priority: 1000,
@@ -742,12 +739,12 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         attacked: threat.is_some(),
         away: !at_home,
     };
-    let node = |action, target, reason, priority| {
-        let mut node = ActionNode::ready(action, target, reason, priority);
+    let node = |action, reason, priority| {
+        let mut node = ActionNode::ready(action, reason, priority);
         node.candidate.id.objective = state.objective_sequence;
         node
     };
-    let mut home_action = node(Action::Move, 0, Reason::ReturnHome, 100);
+    let mut home_action = node(Action::Move(MoveTarget::Home), Reason::ReturnHome, 100);
     home_action.readiness = if !partition_ok {
         Readiness::Refused
     } else if state.next_eligible_micros > now {
@@ -757,21 +754,36 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     };
     home_action
         .alternatives
-        .push(node(Action::Hold, 0, Reason::ReturnHome, 100));
-    let mut recovery = node(Action::Cast, me.guid, Reason::Recovery, 800);
-    if let Some(spell) = spell {
-        recovery.candidate.id.spell = spell.spell_id;
-    } else {
+        .push(node(Action::Hold, Reason::ReturnHome, 100));
+    let mut recovery = node(
+        spell.as_ref().map_or(Action::Hold, |spell| Action::Cast {
+            target: me.guid,
+            spell: spell.spell_id,
+        }),
+        Reason::Recovery,
+        800,
+    );
+    if spell.is_none() {
         recovery.readiness = Readiness::Refused;
     }
     let mut defense = node(
-        Action::Attack,
-        threat.as_ref().map_or(0, |t| t.guid),
+        threat
+            .as_ref()
+            .map_or(Action::Hold, |target| Action::Attack {
+                target: target.guid,
+            }),
         Reason::Defense,
         600,
     );
+    if threat.is_none() {
+        defense.readiness = Readiness::Refused;
+    }
     if let Some(target) = &threat {
-        let mut close = node(Action::Move, target.guid, Reason::Defense, 600);
+        let mut close = node(
+            Action::Move(MoveTarget::Entity(target.guid)),
+            Reason::Defense,
+            600,
+        );
         if ((target.x - me.x).powi(2) + (target.y - me.y).powi(2)).sqrt() <= 4.0 {
             close.readiness = Readiness::Complete;
         }
@@ -779,9 +791,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     }
     defense.continuers.push(home_action.clone());
     let mut survival = if partition_ok && !at_home {
-        node(Action::Move, 0, Reason::Survival, 900)
+        node(Action::Move(MoveTarget::Home), Reason::Survival, 900)
     } else {
-        node(Action::Hold, 0, Reason::Survival, 900)
+        node(Action::Hold, Reason::Survival, 900)
     };
     if let Some(deferred) = state
         .deferred_destinations
@@ -791,18 +803,18 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         survival.readiness = Readiness::NotBefore(deferred.until_micros);
         survival
             .alternatives
-            .push(node(Action::Hold, 0, Reason::Survival, 900));
+            .push(node(Action::Hold, Reason::Survival, 900));
     }
     let strategies: Vec<_> = [
         (
             Trigger::Restricted,
-            node(Action::Hold, 0, Reason::Restricted, 1000),
+            node(Action::Hold, Reason::Restricted, 1000),
         ),
         (Trigger::LowHealth, survival),
         (Trigger::Wounded, recovery),
         (Trigger::Attacked, defense),
         (Trigger::Away, home_action),
-        (Trigger::Always, node(Action::Hold, 0, Reason::Idle, 0)),
+        (Trigger::Always, node(Action::Hold, Reason::Idle, 0)),
     ]
     .into_iter()
     .map(|(trigger, mut n)| {
@@ -907,10 +919,11 @@ fn execute(
 ) {
     match candidate.id.action {
         Action::Hold => {
-            if candidate.id.event == Reason::Restricted || candidate.id.event == Reason::Survival {
+            if candidate.id.reason == Reason::Restricted || candidate.id.reason == Reason::Survival
+            {
                 stop(ctx, me.guid, state);
             }
-            if candidate.id.event == Reason::ReturnHome
+            if candidate.id.reason == Reason::ReturnHome
                 && (home.map_id, home.instance_id) != (me.map_id, me.instance_id)
                 && state
                     .objective
@@ -931,22 +944,23 @@ fn execute(
                 RunnerOutcome::Waiting
             };
         }
-        Action::Move => {
-            let destination = if candidate.id.target == 0 {
-                Some(home.clone())
-            } else {
-                ctx.db
-                    .game_world_entity()
-                    .guid()
-                    .find(candidate.id.target)
-                    .map(|e| Destination {
-                        map_id: e.map_id,
-                        instance_id: e.instance_id,
-                        x: e.x,
-                        y: e.y,
-                        z: e.z,
-                        geometry_revision: geometry_revision(ctx, e.map_id),
-                    })
+        Action::Move(target) => {
+            let destination = match target {
+                MoveTarget::Home => Some(home.clone()),
+                MoveTarget::Entity(guid) => {
+                    ctx.db
+                        .game_world_entity()
+                        .guid()
+                        .find(guid)
+                        .map(|e| Destination {
+                            map_id: e.map_id,
+                            instance_id: e.instance_id,
+                            x: e.x,
+                            y: e.y,
+                            z: e.z,
+                            geometry_revision: geometry_revision(ctx, e.map_id),
+                        })
+                }
             };
             let Some(dest) =
                 destination.filter(|d| (d.map_id, d.instance_id) == (me.map_id, me.instance_id))
@@ -955,7 +969,7 @@ fn execute(
                 defer(state, now);
                 return;
             };
-            if candidate.id.event == Reason::Survival {
+            if candidate.id.reason == Reason::Survival {
                 let _ = crate::actor::stop_attack(ctx, me.guid);
             }
             if now.saturating_sub(state.last_stall_check_micros) >= STALL_INTERVAL {
@@ -971,7 +985,7 @@ fn execute(
                 ctx,
                 me,
                 (dest.x, dest.y, dest.z),
-                if candidate.id.target == 0 { 2.0 } else { 3.0 },
+                if target == MoveTarget::Home { 2.0 } else { 3.0 },
                 true,
             );
             state.route_expansions =
@@ -997,17 +1011,19 @@ fn execute(
             });
             state.last_outcome = RunnerOutcome::Waiting;
         }
-        Action::Cast => {
+        Action::Cast { target, spell } => {
             stop_movement(ctx, me.guid);
             let _ = crate::actor::stop_attack(ctx, me.guid);
-            match super::actions::cast(ctx, me.guid, candidate.id.spell, candidate.id.target) {
+            match super::actions::cast(ctx, me.guid, spell, target) {
                 Ok(
                     crate::spell::CastStart::Started(handle)
                     | crate::spell::CastStart::Waiting(handle),
                 ) => {
                     let mut actual = candidate;
-                    actual.id.spell = handle.spell_id;
-                    actual.id.target = handle.target_guid;
+                    actual.id.action = Action::Cast {
+                        spell: handle.spell_id,
+                        target: handle.target_guid,
+                    };
                     state.foreground = Some(Foreground {
                         candidate: actual,
                         generation: state.generation,
@@ -1022,8 +1038,8 @@ fn execute(
                     state.cast_progress = Some(CastProgress {
                         observed_micros: now,
                         scheduled_id: 0,
-                        spell: candidate.id.spell,
-                        target: candidate.id.target,
+                        spell,
+                        target,
                     });
                     state.last_outcome =
                         RunnerOutcome::CastFinished(crate::spell::CastFinish::Resolved);
@@ -1040,15 +1056,15 @@ fn execute(
                 }
             }
         }
-        Action::Attack => {
-            if let Some(target) = ctx.db.game_world_entity().guid().find(candidate.id.target) {
+        Action::Attack { target } => {
+            if let Some(target) = ctx.db.game_world_entity().guid().find(target) {
                 state.last_target_health = Some(CombatProgress {
                     observed_micros: now,
                     target: target.guid,
                     health: target.health,
                 });
             }
-            match super::actions::attack(ctx, me.guid, candidate.id.target) {
+            match super::actions::attack(ctx, me.guid, target) {
                 Ok(_) => state.last_outcome = RunnerOutcome::Accepted,
                 Err(reason) => state.failure(Failure::ActionRefused(reason.kind), now),
             }

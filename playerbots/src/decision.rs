@@ -1,11 +1,19 @@
 //! Pure, bounded selection from typed Strategies and explicit facts.
 
+use crate::nav::LEG_MAX_EXPANSIONS;
+
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {
     Hold,
-    Move,
-    Cast,
-    Attack,
+    Move(MoveTarget),
+    Cast { target: u64, spell: u32 },
+    Attack { target: u64 },
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MoveTarget {
+    Home,
+    Entity(u64),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,9 +29,7 @@ pub enum Reason {
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct CandidateId {
     pub action: Action,
-    pub target: u64,
-    pub event: Reason,
-    pub spell: u32,
+    pub reason: Reason,
     pub objective: u64,
 }
 
@@ -51,14 +57,12 @@ pub struct ActionNode {
 }
 
 impl ActionNode {
-    pub fn ready(action: Action, target: u64, event: Reason, priority: i32) -> Self {
+    pub fn ready(action: Action, reason: Reason, priority: i32) -> Self {
         Self {
             candidate: Candidate {
                 id: CandidateId {
                     action,
-                    target,
-                    event,
-                    spell: 0,
+                    reason,
                     objective: 0,
                 },
                 priority,
@@ -122,7 +126,7 @@ pub const LIMITS: Limits = Limits {
     candidates: 24,
     depth: 4,
     transitions: 16,
-    route_expansions: 4096,
+    route_expansions: LEG_MAX_EXPANSIONS,
 };
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -209,14 +213,14 @@ impl Search {
                 } else if let Some(mut candidate) = pending {
                     candidate.priority = candidate.priority.max(node.candidate.priority);
                     Some(candidate)
-                } else if node.candidate.id.action == Action::Move
-                    && self.limits.route_expansions < 4096
+                } else if matches!(node.candidate.id.action, Action::Move(_))
+                    && self.limits.route_expansions < LEG_MAX_EXPANSIONS
                 {
                     self.refuse(DecisionRefusal::RouteWork);
                     self.first(&node.alternatives, now, path)
                 } else {
-                    if node.candidate.id.action == Action::Move {
-                        self.route_expansions = 4096;
+                    if matches!(node.candidate.id.action, Action::Move(_)) {
+                        self.route_expansions = LEG_MAX_EXPANSIONS;
                     }
                     Some(node.candidate)
                 }
@@ -336,7 +340,7 @@ mod tests {
         }
     }
     fn attack(target: u64) -> ActionNode {
-        ActionNode::ready(Action::Attack, target, Reason::Defense, 50)
+        ActionNode::ready(Action::Attack { target }, Reason::Defense, 50)
     }
 
     #[test]
@@ -348,10 +352,13 @@ mod tests {
                 LIMITS,
             );
             assert_eq!(
-                result.order.iter().map(|c| c.id.target).collect::<Vec<_>>(),
-                vec![11, 22]
+                result.order.iter().map(|c| c.id.action).collect::<Vec<_>>(),
+                vec![Action::Attack { target: 11 }, Action::Attack { target: 22 }]
             );
-            assert_eq!(result.chosen.unwrap().id.target, 11);
+            assert_eq!(
+                result.chosen.unwrap().id.action,
+                Action::Attack { target: 11 }
+            );
         }
     }
 
@@ -361,19 +368,23 @@ mod tests {
         defense.priority_adjustment = 40;
         let survival = Strategy {
             trigger: Trigger::LowHealth,
-            candidates: vec![ActionNode::ready(Action::Move, 0, Reason::Survival, 100)],
-            defaults: vec![ActionNode::ready(Action::Hold, 0, Reason::Idle, 1)],
+            candidates: vec![ActionNode::ready(
+                Action::Move(MoveTarget::Home),
+                Reason::Survival,
+                100,
+            )],
+            defaults: vec![ActionNode::ready(Action::Hold, Reason::Idle, 1)],
             priority_adjustment: 0,
         };
         let mut f = facts();
         let strategies = [defense, survival];
         assert_eq!(
             choose(&f, &strategies, LIMITS).chosen.unwrap().id.action,
-            Action::Attack
+            Action::Attack { target: 11 }
         );
         f.low_health = true;
         assert_eq!(
-            choose(&f, &strategies, LIMITS).chosen.unwrap().id.event,
+            choose(&f, &strategies, LIMITS).chosen.unwrap().id.reason,
             Reason::Survival
         );
     }
@@ -381,32 +392,36 @@ mod tests {
     #[test]
     fn prerequisites_keep_the_target_and_continuers_require_completion() {
         let mut node = attack(22);
-        node.prerequisites
-            .push(ActionNode::ready(Action::Move, 22, Reason::Defense, 1));
+        node.prerequisites.push(ActionNode::ready(
+            Action::Move(MoveTarget::Entity(22)),
+            Reason::Defense,
+            1,
+        ));
         let result = choose(&facts(), &[strategy(vec![node.clone()])], LIMITS);
         assert_eq!(
             result.chosen.unwrap(),
             Candidate {
                 id: CandidateId {
-                    action: Action::Move,
-                    target: 22,
-                    event: Reason::Defense,
-                    spell: 0,
+                    action: Action::Move(MoveTarget::Entity(22)),
+                    reason: Reason::Defense,
                     objective: 0
                 },
                 priority: 50
             }
         );
         node.prerequisites[0].readiness = Readiness::Complete;
-        node.continuers
-            .push(ActionNode::ready(Action::Move, 0, Reason::ReturnHome, 10));
+        node.continuers.push(ActionNode::ready(
+            Action::Move(MoveTarget::Home),
+            Reason::ReturnHome,
+            10,
+        ));
         assert_eq!(
             choose(&facts(), &[strategy(vec![node.clone()])], LIMITS)
                 .chosen
                 .unwrap()
                 .id
                 .action,
-            Action::Attack
+            Action::Attack { target: 22 }
         );
         node.readiness = Readiness::Complete;
         assert_eq!(
@@ -414,7 +429,7 @@ mod tests {
                 .chosen
                 .unwrap()
                 .id
-                .event,
+                .reason,
             Reason::ReturnHome
         );
     }
@@ -436,12 +451,16 @@ mod tests {
     }
 
     #[test]
-    fn cycles_and_each_work_limit_refuse_boundedly() {
+    fn cycles_refuse_boundedly() {
         let mut cycle = attack(11);
         cycle.prerequisites.push(attack(11));
         assert!(choose(&facts(), &[strategy(vec![cycle])], LIMITS)
             .refusals
             .contains(&DecisionRefusal::Cycle));
+    }
+
+    #[test]
+    fn each_work_limit_refuses_boundedly() {
         for (limits, refusal) in [
             (
                 Limits {
@@ -469,8 +488,7 @@ mod tests {
             let result = choose(
                 &facts(),
                 &[strategy(vec![ActionNode::ready(
-                    Action::Move,
-                    0,
+                    Action::Move(MoveTarget::Home),
                     Reason::ReturnHome,
                     1,
                 )])],
@@ -485,7 +503,7 @@ mod tests {
     fn refused_actions_use_alternatives_and_time_is_explicit() {
         let mut node = attack(11);
         node.readiness = Readiness::Refused;
-        let mut fallback = ActionNode::ready(Action::Hold, 0, Reason::Idle, 1);
+        let mut fallback = ActionNode::ready(Action::Hold, Reason::Idle, 1);
         fallback.readiness = Readiness::NotBefore(101);
         node.alternatives.push(fallback);
         let strategies = [strategy(vec![node])];
@@ -512,7 +530,7 @@ mod tests {
         );
         assert_eq!(result.order.len(), 2);
         assert_eq!(result.order[0].priority, 100);
-        assert_eq!(result.order[0].id.target, 11);
+        assert_eq!(result.order[0].id.action, Action::Attack { target: 11 });
     }
 
     #[test]
