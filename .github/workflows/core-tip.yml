@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7114fe00329c231174b125522494500473f1006e
+          ref: 916181024cbdf85bc2f798b31658ef2df9380bf0
           path: lyracore
 
       - name: Install Rust 1.93.0
@@ -65,7 +65,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7114fe00329c231174b125522494500473f1006e
+          ref: 916181024cbdf85bc2f798b31658ef2df9380bf0
           path: lyracore
 
       # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
@@ -124,7 +124,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7114fe00329c231174b125522494500473f1006e
+          ref: 916181024cbdf85bc2f798b31658ef2df9380bf0
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -161,13 +161,14 @@ jobs:
           path: preceding-collection
           persist-credentials: false
       - name: Build the pinned preceding Wasm for populated migration
+        working-directory: preceding-core
         env:
           CARGO_BUILD_JOBS: 2
           CARGO_INCREMENTAL: 0
         run: |
           export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/lyracore/target"
           cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" -p lyracore-module
-          ./preceding-collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/preceding-core" \
+          "$GITHUB_WORKSPACE/preceding-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" \
             --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-preceding.wasm"
