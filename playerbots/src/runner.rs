@@ -213,8 +213,21 @@ pub enum ScanStage {
     Complete,
 }
 
-/// Each pass reads at most RECOVERY_SCAN_LIMIT healing rows. A completed scan starts again on
-/// the next pass; a retained result is checked against current rotation and spellbook rows.
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryResult {
+    Pending,
+    Missing,
+    Spell(u64),
+}
+
+enum RecoveryLookup {
+    Pending,
+    Missing,
+    Spell(PlayerbotsRotation),
+}
+
+/// Each pass scans at most RECOVERY_SCAN_LIMIT indexed rows and checks at most two retained rows.
+/// Completed scans restart on the next pass; their result remains usable while rescanning.
 #[table(accessor = pkg_playerbots_recovery_scan, public)]
 pub struct PlayerbotsRecoveryScan {
     #[primary_key]
@@ -224,8 +237,8 @@ pub struct PlayerbotsRecoveryScan {
     pub stage: ScanStage,
     pub after_id: u64,
     pub best_id: Option<u64>,
-    pub selected_id: Option<u64>,
-    pub rows_examined: u32,
+    pub result: RecoveryResult,
+    pub rows_scanned: u32,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_recovery_scan(ctx, character_guid) {
@@ -233,10 +246,7 @@ crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_recovery_scan(ctx
 });
 crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_recovery_scan());
 
-fn recovery_spell(
-    ctx: &ReducerContext,
-    bot: &PlayerbotsBot,
-) -> (Option<PlayerbotsRotation>, ScanStage) {
+fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
     let scans = ctx.db.pkg_playerbots_recovery_scan();
     let existing = scans.character_guid().find(bot.character_guid);
     let mut scan = existing
@@ -249,8 +259,8 @@ fn recovery_spell(
             stage: ScanStage::Pending,
             after_id: 0,
             best_id: None,
-            selected_id: None,
-            rows_examined: 0,
+            result: RecoveryResult::Pending,
+            rows_scanned: 0,
         });
     let rotations = ctx.db.pkg_playerbots_rotation();
     let valid = |row: &PlayerbotsRotation| {
@@ -279,7 +289,7 @@ fn recovery_spell(
         ))
         .take(RECOVERY_SCAN_LIMIT)
         .collect();
-    scan.rows_examined = rows.len() as u32;
+    scan.rows_scanned = rows.len() as u32;
     scan.stage = if rows.len() < RECOVERY_SCAN_LIMIT {
         ScanStage::Complete
     } else {
@@ -297,20 +307,27 @@ fn recovery_spell(
     }
     scan.best_id = best.as_ref().map(|r| r.id);
     if scan.stage == ScanStage::Complete {
-        scan.selected_id = scan.best_id;
+        scan.result = scan
+            .best_id
+            .map_or(RecoveryResult::Missing, RecoveryResult::Spell);
     }
-    let selected = scan
-        .selected_id
-        .and_then(|id| rotations.id().find(id))
-        .filter(valid);
-    scan.selected_id = selected.as_ref().map(|r| r.id);
-    let stage = scan.stage;
+    let lookup = match scan.result {
+        RecoveryResult::Pending => RecoveryLookup::Pending,
+        RecoveryResult::Missing => RecoveryLookup::Missing,
+        RecoveryResult::Spell(id) => match rotations.id().find(id).filter(valid) {
+            Some(row) => RecoveryLookup::Spell(row),
+            None => {
+                scan.result = RecoveryResult::Missing;
+                RecoveryLookup::Missing
+            }
+        },
+    };
     if existing.is_some() {
         scans.character_guid().update(scan);
     } else {
         scans.insert(scan);
     }
-    (selected, stage)
+    lookup
 }
 
 impl PlayerbotsRunner {
@@ -810,7 +827,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         .and_then(|guid| ctx.db.game_world_entity().guid().find(guid))
         .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id));
     state.defense_target = threat.as_ref().map(|target| target.guid);
-    let (spell, recovery_stage) = recovery_spell(ctx, bot);
+    let recovery_lookup = recovery_spell(ctx, bot);
+    let spell = match &recovery_lookup {
+        RecoveryLookup::Spell(row) => Some(row),
+        RecoveryLookup::Pending | RecoveryLookup::Missing => None,
+    };
     let restricted = me.dead || crate::helpers::live_entity(ctx, me.guid).is_err();
     let facts = decision::Facts {
         now,
@@ -846,7 +867,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         Reason::Recovery,
         800,
     );
-    if spell.is_none() && recovery_stage == ScanStage::Complete {
+    if matches!(recovery_lookup, RecoveryLookup::Missing) {
         recovery.readiness = Readiness::Refused;
     }
     let mut defense = node(

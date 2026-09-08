@@ -426,9 +426,11 @@ while healing itself with a known supported rotation spell, defending against da
 at its configured health threshold. Companion orders and quest catalog execution remain separate
 work. The existing Legacy policy remains available under its explicit selector.
 
-Recovery examines at most 24 matching healing rotation rows per pass. The separate
-`pkg_playerbots_recovery_scan` explanation records its indexed cursor, examined row count,
-and Pending or Complete stage. A first incomplete scan selects Recovery Hold. Completed
+Recovery scans at most 24 indexed healing rotation rows and revalidates at most two retained
+rows per pass. The separate
+`pkg_playerbots_recovery_scan` explanation records its indexed cursor, scanned row count,
+and Pending or Complete stage. A first incomplete scan selects Recovery Hold. A completed missing-spell result keeps lower-priority
+actions eligible while later scans continue. Completed
 scans restart on the next pass, so inserted or edited rows are reconsidered. A retained
 spell is checked against its current class, role, condition, and exact learned-spell row
 before use. Defense in this controller responds to the live attacker recorded by incoming
