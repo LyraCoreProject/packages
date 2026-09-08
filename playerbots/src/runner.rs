@@ -217,7 +217,7 @@ pub enum ScanStage {
 pub enum RecoveryResult {
     Pending,
     Missing,
-    Spell(u64),
+    Rotation(u64),
 }
 
 enum RecoveryLookup {
@@ -228,6 +228,7 @@ enum RecoveryLookup {
 
 /// Each pass scans at most RECOVERY_SCAN_LIMIT indexed rows and checks at most two retained rows.
 /// Completed scans restart on the next pass; their result remains usable while rescanning.
+/// Transfer restarts the scan against the destination's current rotations and spellbook.
 #[table(accessor = pkg_playerbots_recovery_scan, public)]
 pub struct PlayerbotsRecoveryScan {
     #[primary_key]
@@ -235,8 +236,8 @@ pub struct PlayerbotsRecoveryScan {
     pub class: u8,
     pub role: u8,
     pub stage: ScanStage,
-    pub after_id: u64,
-    pub best_id: Option<u64>,
+    pub after_rotation_id: u64,
+    pub best_rotation_id: Option<u64>,
     pub result: RecoveryResult,
     pub rows_scanned: u32,
 }
@@ -257,8 +258,8 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
             class: bot.class,
             role: bot.role,
             stage: ScanStage::Pending,
-            after_id: 0,
-            best_id: None,
+            after_rotation_id: 0,
+            best_rotation_id: None,
             result: RecoveryResult::Pending,
             rows_scanned: 0,
         });
@@ -269,11 +270,11 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
             && crate::spell::knows_spell(ctx, bot.character_guid, row.spell_id)
     };
     if scan.stage == ScanStage::Complete {
-        scan.after_id = 0;
-        scan.best_id = None;
+        scan.after_rotation_id = 0;
+        scan.best_rotation_id = None;
     }
     let mut best = scan
-        .best_id
+        .best_rotation_id
         .and_then(|id| rotations.id().find(id))
         .filter(&valid);
     let rows: Vec<_> = rotations
@@ -283,7 +284,7 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
             bot.role,
             super::cond::ALLY_HP_BELOW_PCT,
             (
-                std::ops::Bound::Excluded(scan.after_id),
+                std::ops::Bound::Excluded(scan.after_rotation_id),
                 std::ops::Bound::Unbounded,
             ),
         ))
@@ -296,7 +297,7 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
         ScanStage::Pending
     };
     for row in rows {
-        scan.after_id = row.id;
+        scan.after_rotation_id = row.id;
         if valid(&row)
             && best.as_ref().is_none_or(|b| {
                 (row.priority, row.spell_id, row.id) < (b.priority, b.spell_id, b.id)
@@ -305,16 +306,16 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
             best = Some(row);
         }
     }
-    scan.best_id = best.as_ref().map(|r| r.id);
+    scan.best_rotation_id = best.as_ref().map(|r| r.id);
     if scan.stage == ScanStage::Complete {
         scan.result = scan
-            .best_id
-            .map_or(RecoveryResult::Missing, RecoveryResult::Spell);
+            .best_rotation_id
+            .map_or(RecoveryResult::Missing, RecoveryResult::Rotation);
     }
     let lookup = match scan.result {
         RecoveryResult::Pending => RecoveryLookup::Pending,
         RecoveryResult::Missing => RecoveryLookup::Missing,
-        RecoveryResult::Spell(id) => match rotations.id().find(id).filter(valid) {
+        RecoveryResult::Rotation(id) => match rotations.id().find(id).filter(valid) {
             Some(row) => RecoveryLookup::Spell(row),
             None => {
                 scan.result = RecoveryResult::Missing;

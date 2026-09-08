@@ -757,9 +757,5 @@ pub fn playerbots_fixture_runner_wide_recovery(
         });
     }
     rotations.insert(super::PlayerbotsRotation { id: 0, ..heal });
-    let mut me = crate::helpers::live_entity(ctx, guid)?;
-    me.health = 1_000_000_000;
-    me.max_health = 4_000_000_000;
-    ctx.db.game_world_entity().guid().update(me);
     Ok(())
 }
