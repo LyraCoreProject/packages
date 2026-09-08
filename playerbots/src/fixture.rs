@@ -1267,7 +1267,7 @@ fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) -> R
             .delete(PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal));
     }
     for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
-        rows.insert(crate::skilldata::SkillAvailability {
+        rows.insert(crate::SkillAvailability {
             id: PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal),
             skill_line: line,
             race_mask: 0,
