@@ -19,7 +19,8 @@ const COMPANION_GROUP: u64 = 5_090_300;
 pub fn playerbots_fixture_prepare(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     let bots: Vec<PlayerbotsBot> = ctx.db.pkg_playerbots_bot().iter().collect();
-    for mut bot in bots.iter().cloned() {
+    let bot_guids: Vec<_> = bots.iter().map(|bot| bot.character_guid).collect();
+    for mut bot in bots {
         bot.next_think_micros = i64::MAX;
         ctx.db
             .game_creature_spline()
@@ -62,8 +63,8 @@ pub fn playerbots_fixture_prepare(ctx: &ReducerContext) -> Result<(), String> {
         ctx.db.game_spell_effect().id().delete(effect.id);
         ctx.db.game_spell_effect().insert(effect);
     }
-    for bot in bots {
-        crate::spell::learn_spell(ctx, bot.character_guid, spacetimedb::Identity::ZERO, HEAL);
+    for guid in bot_guids {
+        crate::spell::learn_spell(ctx, guid, spacetimedb::Identity::ZERO, HEAL);
     }
     Ok(())
 }
