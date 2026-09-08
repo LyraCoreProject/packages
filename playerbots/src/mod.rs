@@ -715,16 +715,6 @@ fn spawn_one(
     Ok(guid)
 }
 
-/// The kit rows for a `(class, role)` pair, as spell ids.
-pub(crate) fn kit_for(ctx: &ReducerContext, class: u8, role: u8) -> Vec<u32> {
-    ctx.db
-        .pkg_playerbots_kit()
-        .by_class_role()
-        .filter((class, role))
-        .map(|row| row.spell_id)
-        .collect()
-}
-
 /// Can this Package field a `(class, role)` bot? The kit table is the answer, so a live SQL insert
 /// that adds a kit for a new pairing makes that pairing legal with no republish.
 fn can_fill_role(ctx: &ReducerContext, class: u8, role: u8) -> bool {
