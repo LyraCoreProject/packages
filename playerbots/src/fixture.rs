@@ -1273,6 +1273,47 @@ pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), 
     Ok(())
 }
 
+/// Give the completion scenario an explicit no-import profile whose every spell has a seeded
+/// `game_spell` header. The default Warrior tank profile still names Sunder Armor (7386); its
+/// missing-resource behavior is exercised separately.
+#[reducer]
+pub fn playerbots_fixture_provision_complete_profile(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if bot.class != super::class::WARRIOR || bot.role != super::ROLE_TANK {
+        return Err("complete profile fixture requires a Warrior tank".to_string());
+    }
+    if ctx.db.game_spell().spell_id().find(355).is_none() {
+        return Err("seed Taunt spell header missing".to_string());
+    }
+    let kits = ctx.db.pkg_playerbots_kit();
+    for row in kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .filter(|row| row.spell_id == 7386)
+        .collect::<Vec<_>>()
+    {
+        kits.id().delete(row.id);
+    }
+    if kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .any(|row| ctx.db.game_spell().spell_id().find(row.spell_id).is_none())
+    {
+        return Err("complete profile fixture contains a spell without a header".to_string());
+    }
+    Ok(())
+}
+
 fn provision_state(
     ctx: &ReducerContext,
     guid: u64,
@@ -1485,6 +1526,31 @@ pub fn playerbots_fixture_provision_missing_resource(
                 if item.kind == super::provisioning::ProvisionItemKind::Supply
                     && item.entry == 1251
         )
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_missing_spell(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::{game_player_spell, game_spell, game_spell_effect};
+    let spells = ctx.db.game_player_spell();
+    for row in spells
+        .by_character_spell()
+        .filter((guid, 7386))
+        .collect::<Vec<_>>()
+    {
+        spells.id().delete(row.id);
+    }
+    ctx.db.game_spell().spell_id().delete(7386);
+    let effects = ctx.db.game_spell_effect();
+    for row in effects.by_spell().filter(7386u32).collect::<Vec<_>>() {
+        effects.id().delete(row.id);
+    }
+    set_provision_action(ctx, guid, |action| {
+        action == super::provisioning::ProvisionAction::Spell(7386)
     })
 }
 
