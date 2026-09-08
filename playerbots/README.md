@@ -426,6 +426,14 @@ while healing itself with a known supported rotation spell, defending against da
 at its configured health threshold. Companion orders and quest catalog execution remain separate
 work. The existing Legacy policy remains available under its explicit selector.
 
+Recovery examines at most 24 matching healing rotation rows per pass. The separate
+`pkg_playerbots_recovery_scan` explanation records its indexed cursor, examined row count,
+and Pending or Complete stage. A first incomplete scan selects Recovery Hold. Completed
+scans restart on the next pass, so inserted or edited rows are reconsidered. A retained
+spell is checked against its current class, role, condition, and exact learned-spell row
+before use. Defense in this controller responds to the live attacker recorded by incoming
+damage; target acquisition and assistance remain downstream work.
+
 The normal Package tick reads the `(next_think_micros, id)` index and processes at most 16 due bots.
 Excess bots keep their due time. They precede bots whose turn already advanced the clock. The
 scheduler row reports the processed identities and the oldest deferred lag. Runner rows backfill
@@ -452,9 +460,9 @@ payload, reason and objective identity. Movement names Home or an Entity; Cast c
 target; Attack carries its target. There is no string registry.
 
 The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the roster and adds
-runner and scheduler tables. Existing goals and action observations keep their schema and meaning.
+runner, recovery scan and scheduler tables. Existing goals and action observations keep their schema and meaning.
 The roster selector travels with the Character; runner observations and foreground work do not.
-The Character delete operation removes the runner row. Production publication still requires the
+The Character delete operation removes the runner and recovery scan rows. Production publication still requires the
 schema review described in LyraCore's `docs/danger-zones.md`.
 
 The durable fixture now includes populated migration. Before running the complete ignored target,
@@ -464,11 +472,3 @@ build Module Wasm from core `be3fa67d0f0c24749230560544a3e8e8b577f61d` with coll
 publishes that preceding Wasm, populates real bot, goal, quest and action rows, then upgrades the
 same private Standalone to the current Wasm. It records both Wasm identities and asserts the old
 rows survive, selector defaults apply, and backfill takes bounded passes.
-
-Recovery examines at most 24 matching healing rotation rows per pass. The separate
-`pkg_playerbots_recovery_scan` explanation records its indexed cursor, examined row count,
-and Pending or Complete stage. A first incomplete scan selects Recovery Hold. Completed
-scans restart on the next pass, so inserted or edited rows are reconsidered. A retained
-spell is checked against its current class, role, condition, and exact learned-spell row
-before use. Defense in this controller responds to the live attacker recorded by incoming
-damage; target acquisition and assistance remain downstream work.
