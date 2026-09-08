@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  LYRACORE_REF: c05b52346fe687b0c7b3faddc563705d6a5c9c08
+  LYRACORE_REF: 8b8f10e7178d9e94da5d6655a439d2f9816b71b4
 
 concurrency:
   group: core-tip-${{ github.ref }}
@@ -277,7 +277,7 @@ jobs:
       - name: Build the current Wasm and run the durable fixtures
         working-directory: lyracore
         env:
-          CARGO_TARGET_DIR: ${{ github.workspace }}/lyracore/target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/playerbots-current-target
         run: |
           cargo clean --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" -p lyracore-module
           "$GITHUB_WORKSPACE/collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/lyracore" \
