@@ -1230,6 +1230,26 @@ const PROVISION_WRONG_WRAPPER: u32 = 5_090_211;
 const PROVISION_WRONG_WRAPPER_PAYLOAD: u32 = 5_090_212;
 const PROVISION_PARTIAL_TALENT_FIRST: u32 = 5_095_000;
 const PROVISION_PARTIAL_TALENT_COUNT: u32 = 65;
+const PROVISION_SKILL_AVAILABILITY_ROWS: u32 = 17;
+
+fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) {
+    use crate::game_skill_availability;
+    let line = crate::skill::skill_line::SWORD_1H;
+    let rows = ctx.db.game_skill_availability();
+    for row in rows.by_skill_line().filter(line).collect::<Vec<_>>() {
+        rows.id().delete(row.id);
+    }
+    for _ in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+        rows.insert(crate::skilldata::SkillAvailability {
+            id: 0,
+            skill_line: line,
+            race_mask: 0,
+            class_mask: if admitted { 1 } else { 1 << 7 },
+            flags: 0,
+            min_level: 1,
+        });
+    }
+}
 
 /// Fill a missing low-ID item definition for a private seed-only Shard. Imported or otherwise
 /// existing rows remain authoritative and are never changed by this fixture.
@@ -1323,6 +1343,7 @@ pub fn playerbots_fixture_provision_complete_profile(
     if bot.class != super::class::WARRIOR || bot.role != super::ROLE_TANK {
         return Err("complete profile fixture requires a Warrior tank".to_string());
     }
+    replace_profile_skill_availability(ctx, true);
     if ctx.db.game_spell().spell_id().find(355).is_none() {
         return Err("seed Taunt spell header missing".to_string());
     }
@@ -1990,6 +2011,25 @@ pub fn playerbots_fixture_provision_profile_overflow(
 }
 
 #[reducer]
+pub fn playerbots_fixture_provision_skill_overflow(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    replace_profile_skill_availability(ctx, false);
+    use crate::game_player_skill;
+    let skills = ctx.db.game_player_skill();
+    for row in skills.by_character().filter(guid).collect::<Vec<_>>() {
+        if row.skill_line == crate::skill::skill_line::SWORD_1H {
+            skills.id().delete(row.id);
+        }
+    }
+    set_provision_action(ctx, guid, |action| {
+        action == super::provisioning::ProvisionAction::Skill(crate::skill::skill_line::SWORD_1H)
+    })
+}
+
+#[reducer]
 pub fn playerbots_fixture_provision_stronger_weapon(
     ctx: &ReducerContext,
     guid: u64,
@@ -2014,6 +2054,35 @@ pub fn playerbots_fixture_provision_stronger_weapon(
                 if item.kind == super::provisioning::ProvisionItemKind::Gear
         )
     })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_bank_weapon(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::game_item_instance;
+    let items = ctx.db.game_item_instance();
+    let mut weapon = items
+        .by_owner_guid()
+        .filter(guid)
+        .find(|row| row.entry == 50)
+        .ok_or("stronger weapon missing")?;
+    weapon.slot = 39;
+    items.guid().update(weapon);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_equip_bank_weapon(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::actor::equip_profile_upgrade(ctx, guid, 39)
+        .map(|_| ())
+        .map_err(|refusal| refusal.as_tag().to_string())
 }
 
 #[reducer]
