@@ -166,7 +166,7 @@ jobs:
           CARGO_BUILD_JOBS: 2
           CARGO_INCREMENTAL: 0
         run: |
-          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/lyracore/target"
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/preceding-core/target"
           cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" -p lyracore-module
           "$GITHUB_WORKSPACE/preceding-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" \
