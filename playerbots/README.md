@@ -421,13 +421,26 @@ the Package cast identity or movement start time, so it preserves a human's late
 can resume after ownership ends. The ownership Gate permits an absent body for Legacy restoration;
 group admission additionally requires a live entity.
 
-The Cohort behavior in this revision returns to the roster's home point. It retains that objective
-while healing itself with a known supported rotation spell, defending against damage, or fleeing
-at its configured health threshold. Companion orders and quest catalog execution remain separate
-work. The existing Legacy policy remains available under its explicit selector.
+The Cohort behavior follows the durable leader of a human-led party. It refreshes the leader's
+position without replacing the companion objective, so a moving leader cannot restart a retained
+cast. An injured same-partition party member outranks follow when the Priest knows a supported
+healing rotation spell. Range or line of sight becomes a movement prerequisite that retains the
+member identity across movement legs even if another member becomes more injured. A blocked route
+remains visible as a CastingPosition wait. A completed, cancelled, or refused cast releases the
+foreground action so the next pass can heal again or resume follow.
+An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
+control. A membership whose parent Group is unavailable holds the existing objective and records the
+typed failure. The existing Legacy policy remains available under its explicit selector.
+
+A dead companion retains its role and objective while it releases and uses the spirit healer. Once
+alive, it regroups with the same leader. Survival movement has priority over healing while the bot
+is away from a safe destination. At a reached destination, survival is complete and usable recovery
+can run. If recovery is missing, the runner leaves lower-priority maintenance reachable instead of
+hiding it behind a Survival Hold.
 
 Recovery scans at most 24 indexed healing rotation rows and revalidates at most two retained
-rows per pass. The separate
+rows per pass. Learned channels are excluded during that scan, before priority chooses the retained
+rotation. The separate
 `pkg_playerbots_recovery_scan` explanation records its indexed cursor, scanned row count,
 and Pending or Complete stage. A first incomplete scan selects Recovery Hold. A completed missing-spell result keeps lower-priority
 actions eligible while later scans continue. Completed
@@ -452,20 +465,35 @@ One foreground action retains the controller generation and partition. A higher-
 cancels incompatible work before starting. Pending casts retain the core scheduled identity and
 refresh its current due time after direct-damage pushback. After a movement request, arrival requires a later position
 observation. Ten seconds without movement records a failure; three failed intervals defer the
-same destination for 30 seconds. Deferred keys include map, instance and optional navigation
-coverage generation. A coverage change invalidates the prior destination decision.
+same return-home destination for 30 seconds. Companion movement keeps the leader identity and
+retries from current durable party facts instead. Deferred keys include map, instance and optional
+navigation coverage generation. A coverage change invalidates the prior destination decision.
 
 The selector allows at most 24 candidates, depth four, 16 transitions and one route request with
 4096 expansions per decision. These limits also apply to prerequisites, alternatives and continuers.
 Strategies use typed triggers and integer priority adjustments. Each Candidate carries a typed action
-payload, reason and objective identity. Movement names Home or an Entity; Cast carries its spell and
-target; Attack carries its target. There is no string registry.
+payload, reason and objective identity. Movement names Home, an Entity, or an ally whose casting
+position is required. Cast carries its spell and target; Attack carries its target. There is no
+string registry.
 
 The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the roster and adds
 runner, recovery scan and scheduler tables. Existing goals and action observations keep their schema and meaning.
 The roster selector travels with the Character; runner observations and foreground work do not.
 The Character delete operation removes the runner and recovery scan rows. Production publication still requires the
 schema review described in LyraCore's `docs/danger-zones.md`.
+
+The companion migration appends nullable leader and injured-member identities to each runner row.
+Its populated upgrade case starts from merged PB-002 core
+`e6a755db0a150bbf73ad97b972fe829f20f6816c` and collection
+`155c9e401afb06d5731acedf8fc35a81dbe4aaa6`. It publishes a retained return-home objective and cast
+foreground, upgrades the same private Standalone, and checks that both values survive while the new
+identity fields receive their null defaults. Set `PLAYERBOTS_COMPANION_PRECEDING_WASM` to that
+immutable Wasm when running the companion target outside CI.
+
+Fresh Shards seed Lesser Heal 2050 as a heal for a named ally. Existing Shards keep their stored
+spell definitions when the Module is published, so the normal `debug_repair_after_publish` step
+updates only the complete former canonical seed shape. Imported or tuned 2050 rows remain unchanged;
+merging or publishing the source without that repair step does not change them.
 
 The durable fixture now includes populated migration. Before running the complete ignored target,
 build Module Wasm from core `be3fa67d0f0c24749230560544a3e8e8b577f61d` with collection

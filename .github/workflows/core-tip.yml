@@ -120,6 +120,10 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.93.0
       SPACETIME_VERSION: 2.7.1
       SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Check out Packages
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,12 +183,108 @@ jobs:
             --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-preceding.wasm"
           echo "PLAYERBOTS_PRECEDING_WASM=$RUNNER_TEMP/playerbots-preceding.wasm" >> "$GITHUB_ENV"
+      - name: Check out the merged PB-002 Module source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: e6a755db0a150bbf73ad97b972fe829f20f6816c
+          path: preceding-pb002-core
+          persist-credentials: false
+      - name: Check out the merged PB-002 Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 155c9e401afb06d5731acedf8fc35a81dbe4aaa6
+          path: preceding-pb002-collection
+          persist-credentials: false
+      - name: Build the merged PB-002 Wasm for populated companion migration
+        working-directory: preceding-pb002-core
+        run: |
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/preceding-pb002-core/target"
+          cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-pb002-core/Cargo.toml" -p lyracore-module
+          "$GITHUB_WORKSPACE/preceding-pb002-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-pb002-core" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-pb002-core/Cargo.toml" \
+            --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-pb002-preceding.wasm"
+          python3 - "$RUNNER_TEMP/playerbots-pb002-preceding.wasm" \
+            "$GITHUB_WORKSPACE/preceding-pb002-core" \
+            "$GITHUB_WORKSPACE/preceding-pb002-collection" \
+            "$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" <<'PY'
+          import datetime
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          wasm_path, core_path, collection_path, manifest_path = map(pathlib.Path, sys.argv[1:])
+
+          def git(path, *args):
+              return subprocess.run(
+                  ["git", *args], cwd=path, check=True, text=True, capture_output=True
+              ).stdout.strip()
+
+          if git(core_path, "status", "--porcelain"):
+              raise SystemExit("the preceding PB-002 Module checkout is dirty")
+          if git(collection_path, "status", "--porcelain"):
+              raise SystemExit("the preceding PB-002 Package checkout is dirty")
+
+          wasm = wasm_path.read_bytes()
+          rust_detail = subprocess.run(
+              ["rustc", "--version"], check=True, text=True, capture_output=True
+          ).stdout.strip()
+          spacetime_detail = subprocess.run(
+              ["spacetime", "--version"], check=True, text=True, capture_output=True
+          ).stdout.strip()
+          installed_packages = sorted(
+              path.name
+              for root in (core_path / "packages", collection_path)
+              for path in root.iterdir()
+              if path.is_dir() and not path.name.startswith(".")
+          )
+          manifest = {
+              "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+              "core": git(core_path, "rev-parse", "HEAD"),
+              "collection": git(collection_path, "rev-parse", "HEAD"),
+              "core_tree": git(core_path, "rev-parse", "HEAD^{tree}"),
+              "collection_tree": git(collection_path, "rev-parse", "HEAD^{tree}"),
+              "playerbots_tree": git(collection_path, "rev-parse", "HEAD:playerbots"),
+              "core_dirty": False,
+              "collection_dirty": False,
+              "rust": rust_detail.split()[1],
+              "rust_detail": rust_detail,
+              "spacetimedb": spacetime_detail.split("spacetimedb tool version ", 1)[1].split(";", 1)[0],
+              "spacetimedb_detail": spacetime_detail,
+              "target": "wasm32-unknown-unknown",
+              "profile": "release",
+              "features": ["debug_reducers"],
+              "installed_packages": installed_packages,
+              "wasm_bytes": len(wasm),
+              "wasm_sha256": hashlib.sha256(wasm).hexdigest(),
+              "package_content_identity": "33fcb8a217aad84f46f9ad65efdad23be24bad8e29828777de7c7e6469417161",
+              "verification": "Build input from clean merged PB-002 checkouts. The consumer verifies the source identities, Package content, and this environment's Wasm digest before publish and populated upgrade.",
+          }
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          echo "PLAYERBOTS_COMPANION_PRECEDING_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
       - name: Run the real Module and Package action fixture
+        working-directory: lyracore
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/lyracore/target
         run: |
           cargo clean --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" -p lyracore-module
-          ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
-            cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-            -p lyracore-module --test playerbots_rewrite -- --ignored --test-threads=1
+          "$GITHUB_WORKSPACE/collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/lyracore" \
+            bash -eu -o pipefail -c '
+              cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
+                --locked --release --target wasm32-unknown-unknown \
+                -p lyracore-module --features=debug_reducers
+              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
+                -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
+                --no-fail-fast -- --ignored --test-threads=1
+            '
       - name: Upload fixture inputs and Standalone logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

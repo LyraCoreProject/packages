@@ -8,6 +8,7 @@ pub enum Action {
     Move(MoveTarget),
     Cast(CastAction),
     Attack(u64),
+    Resurrect,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -20,6 +21,7 @@ pub struct CastAction {
 pub enum MoveTarget {
     Home,
     Entity(u64),
+    CastingPosition(u64),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,6 +32,11 @@ pub enum Reason {
     Defense,
     ReturnHome,
     Idle,
+    Follow,
+    Heal,
+    CastingPosition,
+    Resurrection,
+    PartyUnavailable,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
