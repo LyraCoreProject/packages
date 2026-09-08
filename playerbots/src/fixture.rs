@@ -2131,7 +2131,7 @@ pub fn playerbots_fixture_provision_dead(ctx: &ReducerContext, guid: u64) -> Res
         .pkg_playerbots_provisioning()
         .character_guid()
         .update(state);
-    Ok(())
+    runner_park_for(ctx, guid)
 }
 
 #[reducer]
@@ -2141,5 +2141,5 @@ pub fn playerbots_fixture_provision_levelup(ctx: &ReducerContext, guid: u64) -> 
     let mut entity = crate::helpers::live_entity(ctx, guid)?;
     crate::xp::grant_xp(ctx, &mut entity, 1_000_000);
     ctx.db.game_world_entity().guid().update(entity);
-    Ok(())
+    runner_park_for(ctx, guid)
 }
