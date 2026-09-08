@@ -342,3 +342,58 @@ request, not a record: nothing refuses it and nothing retries it, so the deadlin
   the bot at all. Both leave the bot grinding with a kill objective it cannot serve, so a healthy
   bot in a thin spawn area can warn at a minute. Read its `game_character_quest` rows before acting
   on the warning; the fix would need a respawn timetable the Package has no read of.
+
+## Action fixture
+
+`module/tests/playerbots_rewrite.rs` in LyraCore drives real Package requests through a private
+Standalone. Install this Package into that core checkout, then run:
+
+```sh
+cargo clean -p lyracore-module
+cargo test -p lyracore-module --test playerbots_rewrite -- --ignored --test-threads=1
+```
+
+The input record is `fixtures/actions.json`. Each run records the tested core and collection commits,
+whether either worktree is dirty, the Package Content Identity, and the Module wasm identity under
+`/tmp/lyracore-standalone-logs`. Successful cases also save action, quest, cast, and position observations there. Content comes from core seeds and reserved fixture rows. Obstructions
+come from synthetic navigation cells. No imported client geometry is present, and these cases do not
+prove imported-world routing or real-client appearance.
+
+The fixture uses the existing gameplay operations. A Cast Handle correlates a scheduled spell with
+its terminal outcome; accepting an attack does not certify a hit or quest credit. The bounded
+`pkg_playerbots_action` table retains the latest observation of each action kind per Character.
+
+The rewrite adopts AzerothCore's decision grammar in Rust. The reference inventory at
+`b949b50bfcdd4fab937781bac2d7765e39330e4b` counts 2,967 lines for the selection kernel and 243,560 for
+the whole runtime. Even the kernel retains C++ host pointers and packet-bearing events. Porting that
+runtime would require synthetic WotLK World Sessions, packet queues, and host objects before replacing
+them with LyraCore's Module operations. Keeping typed decisions and durable identifiers beside the
+existing cast, combat, navigation, quest, and item operations is the smaller total implementation.
+The counts describe the reference source, not an estimate of the Rust rewrite.
+
+When sharing `CARGO_TARGET_DIR` between checkouts, clean the Module after changing the worktree or
+installed Package inventory. Its build script discovers Package files and hooks. A shared cache can
+otherwise reuse discovery output from the previous checkout. Dependency artifacts can stay cached.
+
+Cast observations retain the original Cast Handle while waiting. Instant effects resolve in the
+request itself, before any scheduled completion callback. `CastResolved` means effects dispatched;
+a projectile can still be in flight. Channel requests explicitly return `UnsupportedChannel` until
+channel ownership is implemented. Targeted casts currently have no shared line-of-sight Gate; this
+fixture does not invent a line-of-sight refusal. Actor requests also retain the existing spellbook
+bypass; later capability selection must require known, supported spells.
+
+Movement observations retain complete, partial, blocked, and direct planning status, clipping,
+coverage, and a last-advance time measured from successive actual positions. Complete planning is
+separate from arrival. Attack acceptance is separate from quest credit; the quest progress clock
+resets only when objective counts increase or a synchronous quest operation succeeds.
+
+Quest interactions finish synchronously. The core plans collect-item consumption and all rewards
+before changing inventory, so a caught turn-in Refusal leaves items, money, experience, and the quest
+unchanged. The fixture covers an invalid reward choice, full inventory, successful retry after a
+slot is freed, and a source-item acceptance refusal. Imported item uniqueness limits now apply to
+storage and reward exchanges, including bank holdings and other rewards in the same exchange.
+
+`pkg_playerbots_goal.quest_credit` is an end-appended nullable count with a null default. The first
+observation establishes its baseline without clearing an existing stall. Later increases count as
+progress. The fixture exercises an existing stalled goal with nonzero objective credit and this
+migration default; it does not claim to publish an older Package binary before upgrading it.

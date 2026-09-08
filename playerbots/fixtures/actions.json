@@ -1,0 +1,48 @@
+{
+  "fixture": "playerbots-actions-v1",
+  "baseline_core": "95e6ad8c61540f74471e3087897e8c3ef7e065d1",
+  "baseline_collection": "c32b2fb7aa405190728034b63ce6eb9a3c0dd6be",
+  "reference": "b949b50bfcdd4fab937781bac2d7765e39330e4b",
+  "content": {
+    "revision": "playerbots-seeded-actions-v1",
+    "provenance": "core seeded templates and reserved fixture rows",
+    "heal_source_spell": 2050,
+    "creature_source_entry": 51000,
+    "item_source": "first starter item held by the seeded role-1 bot"
+  },
+  "imported_content": null,
+  "geometry": {
+    "revision": "playerbots-synthetic-nav-v1",
+    "provenance": "synthetic walk and obstruction arrays",
+    "client_geometry": null,
+    "blocked": "3 by 3 navigation cells, walk bytes 0, obs bytes 20, base_z 50",
+    "partial": "9 cells along y, one nonwalkable x sub-cell at 1210, other walk bits 1, obs bytes 255"
+  },
+  "spacetimedb": "2.7.1",
+  "rust": "1.93.0",
+  "map": 0,
+  "instance": 0,
+  "position": [
+    1200,
+    1200,
+    50
+  ],
+  "heal": {
+    "spell": 5090100,
+    "source_spell": 2050,
+    "cast_time_ms": 5000,
+    "cost": 0
+  },
+  "poor_range_target_x": 1400,
+  "quest": {
+    "hunt": 50909,
+    "target_entry": 5090101,
+    "required_kills": 2,
+    "interaction": 50910,
+    "collect_item": 5090120,
+    "guaranteed_reward": 5090121,
+    "choice_reward": 5090122,
+    "filler_item": 5090123,
+    "full_inventory_slots": 16
+  }
+}
