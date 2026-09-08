@@ -1,28 +1,5 @@
-//! The bot mind: one tick pass, two notify hooks, and the movement a session-less Character needs
-//! because no client is sending it any.
-//!
-//! WHAT DRIVES A BOT. A bot's `game_world_entity` row carries the PLAYER type mask, so the creature
-//! behaviour cycle skips it — nothing in the core moves a bot, aggroes for it, or picks its spells.
-//! This file is the whole of that. It runs on the core scheduler's tick pass, so there is no
-//! Package-owned schedule row for a republish to leave pointing at a reducer that no longer exists.
-//!
-//! WHAT IT DOES NOT DO. Every action goes out through a core operation the player path also uses:
-//! the actor verbs for attack, stop, cast and invite-accept, and the shared creature leg writer for
-//! movement. The Package decides WHAT to do; the core decides whether it is allowed.
-//!
-//! CROSSING A SHARD BOUNDARY. A bot follows its party wherever the party goes, and on a realm of
-//! several Shards that means a Transfer. The tick decides it and the Gateway drives it: the tick
-//! writes one Transfer Intent, marks the bot in transit, and stops. The bot arrives with no live
-//! entity and no goal, and the first tick there rebuilds it and falls it back in. Both halves are
-//! this file; there is no arrival reducer.
-//!
-//! QUESTING. An ungrouped bot works quests around its home point: take one, kill what it names,
-//! take what the kill leaves, hand it back. ONE rule decides whether a quest is worth walking to,
-//! and it is the core's own rule rather than a copy of it: [`worth_the_walk`] asks
-//! `crate::quest::accept_gates`, the same Gates `apply_accept_quest` applies, and
-//! `crate::actor::accept_quest` is still the authority that answers for real. A bot that walked to
-//! a giver and was refused would walk there again next second and forever; asking the core's own
-//! Gate before the walk is what makes that impossible.
+//! Legacy bot policy and the shared movement request.
+//! The runner selects controllers and due work. Only Legacy bots enter this decision loop or its hooks.
 
 use spacetimedb::{ReducerContext, Table};
 
@@ -134,59 +111,15 @@ struct Party {
 type Partition = (u32, u64);
 
 crate::game_tick_pass!(fn playerbots_brain_pass(ctx) {
-    // The Package's own ensure path. A Shard that has just published, or a second Shard that has
-    // never run an Operator verb, seeds itself here rather than waiting to be told.
-    super::ensure_defaults(ctx);
-    let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let bots = ctx.db.pkg_playerbots_bot();
-    let due: Vec<PlayerbotsBot> = bots
-        .iter()
-        .filter(|bot| bot.next_think_micros <= now)
-        .collect();
-    for mut bot in due {
-        think(ctx, &bot, now);
-        bot.next_think_micros = now + THINK_INTERVAL_MICROS;
-        bots.id().update(bot);
-    }
+    super::runner::pass(ctx);
 });
 
-// A group invite landed on a bot. A bot has no client to answer with, so the answer is server-side,
-// through the same accept core a real client's accept reaches.
-//
-// PLANE NOTE: this hook fires where the invite row is written. On a realm whose party authority is a
-// separate Shard the bot roster there is empty, this handler sees nothing, and the answer has to
-// come from the Gateway instead. That is the Gateway's business, not the Package's.
-crate::game_hook!(on_group_invite, fn playerbots_auto_accept(ctx, payload) {
-    if !is_bot(ctx, payload.target_guid) {
-        return;
-    }
-    // Named, not numbered. A bot has no client and no chat, so this line is the only record that an
-    // invite was answered at all, and a wall of 15-digit guids is not a record anyone can read.
-    // Deliberately NOT the in-transit-fenced lookup: a diagnostic wants the inviter's name even
-    // while they are mid-Transfer, and nothing on this path writes to their Character.
-    let inviter = ctx
-        .db
-        .game_character()
-        .guid()
-        .find(payload.inviter_guid)
-        .map(|character| character.name)
-        .unwrap_or_else(|| payload.inviter_guid.to_string());
-    match crate::actor::accept_group_invite(ctx, payload.target_guid) {
-        Ok(()) => spacetimedb::log::info!(
-            "playerbots: bot {} accepted a party invite from {inviter}",
-            payload.target_guid
-        ),
-        Err(refusal) => spacetimedb::log::warn!(
-            "playerbots: bot {} could not accept the invite from {inviter}: {refusal}",
-            payload.target_guid
-        ),
-    }
-});
+
 
 // A bot was hit. Hit back: a bot that stands still while something chews on it reads as broken long
 // before anyone notices it has no brain for that case.
 crate::game_hook!(on_damage_taken, fn playerbots_defend(ctx, payload) {
-    if payload.attacker_guid == 0 || !is_bot(ctx, payload.target_guid) {
+    if payload.attacker_guid == 0 || !super::runner::legacy_controls(ctx, payload.target_guid) {
         return;
     }
     if ctx
@@ -218,7 +151,7 @@ fn is_bot(ctx: &ReducerContext, guid: u64) -> bool {
 
 // ---- the decision ----------------------------------------------------------------------------
 
-fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
+pub(super) fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
     let Some(me) = body(ctx, bot, now) else {
         return;
     };

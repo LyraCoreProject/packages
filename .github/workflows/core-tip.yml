@@ -20,6 +20,8 @@ jobs:
     steps:
       - name: Check out Packages
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Test and enforce the no-committed-Package-Delta firewall
         run: |
@@ -36,6 +38,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: collection
+          persist-credentials: false
 
       - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -43,6 +46,7 @@ jobs:
           repository: LyraCoreProject/LyraCore
           ref: main
           path: lyracore
+          persist-credentials: false
 
       - name: Install Rust 1.93.0
         run: rustup toolchain install 1.93.0 --profile minimal
@@ -60,6 +64,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: collection
+          persist-credentials: false
 
       - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -67,6 +72,7 @@ jobs:
           repository: LyraCoreProject/LyraCore
           ref: main
           path: lyracore
+          persist-credentials: false
 
       # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
       # job needs the same toolchain + target the `module` job's compile check needs, plus the
@@ -146,6 +152,33 @@ jobs:
           tar --extract --gzip --file "$archive_path" --directory "$cli_dir"
           ln -s spacetimedb-cli "$cli_dir/spacetime"
           echo "$cli_dir" >> "$GITHUB_PATH"
+      - name: Check out the preceding Module source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: be3fa67d0f0c24749230560544a3e8e8b577f61d
+          path: preceding-core
+          persist-credentials: false
+      - name: Check out the preceding Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 5724de1660a2628e88320914bdd5abb0c69da517
+          path: preceding-collection
+          persist-credentials: false
+      - name: Build the pinned preceding Wasm for populated migration
+        working-directory: preceding-core
+        env:
+          CARGO_BUILD_JOBS: 2
+          CARGO_INCREMENTAL: 0
+        run: |
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/preceding-core/target"
+          cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" -p lyracore-module
+          "$GITHUB_WORKSPACE/preceding-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-core" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" \
+            --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-preceding.wasm"
+          echo "PLAYERBOTS_PRECEDING_WASM=$RUNNER_TEMP/playerbots-preceding.wasm" >> "$GITHUB_ENV"
       - name: Run the real Module and Package action fixture
         run: |
           cargo clean --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" -p lyracore-module
