@@ -8,9 +8,6 @@ on:
 permissions:
   contents: read
 
-env:
-  LYRACORE_REF: 58867b6f6fe411692b08ab2e0d67c7f090bf42ee
-
 concurrency:
   group: core-tip-${{ github.ref }}
   cancel-in-progress: true
@@ -43,11 +40,11 @@ jobs:
           path: collection
           persist-credentials: false
 
-      - name: Check out the PB-005 LyraCore source
+      - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: ${{ env.LYRACORE_REF }}
+          ref: main
           path: lyracore
           persist-credentials: false
 
@@ -69,11 +66,11 @@ jobs:
           path: collection
           persist-credentials: false
 
-      - name: Check out the PB-005 LyraCore source
+      - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: ${{ env.LYRACORE_REF }}
+          ref: main
           path: lyracore
           persist-credentials: false
 
@@ -133,11 +130,11 @@ jobs:
         with:
           path: collection
           persist-credentials: false
-      - name: Check out the PB-005 LyraCore source
+      - name: Check out LyraCore main
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: ${{ env.LYRACORE_REF }}
+          ref: main
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
