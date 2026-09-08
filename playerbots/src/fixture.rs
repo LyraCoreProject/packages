@@ -1274,6 +1274,9 @@ fn ensure_profile_item(
 #[reducer]
 pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    // The seed and World import both own this real low id. Deliberately different values prove that
+    // fixture staging takes the import-aware no-op path; item 52 is never part of the profile.
+    ensure_profile_item(ctx, 52, "PB005 preservation probe", 1, 18, 4, 0, true)?;
     ensure_profile_item(ctx, 4496, "Provisioning Bag", 1, 18, 4, 0, false)?;
     ensure_profile_item(ctx, 117, "Provisioning Food", 20, 0, 0, 50115, false)?;
     ensure_profile_item(ctx, 159, "Provisioning Drink", 20, 0, 0, 50114, true)?;
