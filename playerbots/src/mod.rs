@@ -9,7 +9,7 @@
 //! by name, and it refuses whispers.
 //!
 //! This file owns the roster: Accounts, names, the class/role tables, the Operator verbs, and the
-//! despawn sweep. `goals.rs` owns the mind.
+//! despawn sweep. `runner.rs` owns controller selection and due work; `goals.rs` retains Legacy policy.
 //!
 //! WHY NO SCHEDULE ROW: the bot mind runs on one `game_tick_pass!`, which the core scheduler owns.
 //! A Package that schedules itself writes a scheduled row, and a republish leaves that row pointing
@@ -19,7 +19,10 @@
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
 mod actions;
+mod decision;
 mod goals;
+mod runner;
+pub(crate) use runner::*;
 pub(crate) use actions::*;
 #[cfg(feature = "debug_reducers")]
 mod fixture;
@@ -94,7 +97,8 @@ pub(crate) mod cond {
 #[table(
     accessor = pkg_playerbots_bot,
     public,
-    index(accessor = by_character, btree(columns = [character_guid]))
+    index(accessor = by_character, btree(columns = [character_guid])),
+    index(accessor = by_due, btree(columns = [next_think_micros, id]))
 )]
 pub struct PlayerbotsBot {
     #[primary_key]
@@ -113,6 +117,10 @@ pub struct PlayerbotsBot {
     pub home_z: f32,
     /// Wall-clock microseconds before which the brain pass leaves this bot alone.
     pub next_think_micros: i64,
+    #[default(Controller::Legacy)]
+    pub controller: Controller,
+    #[default(0i64)]
+    pub scheduler_lag_micros: i64,
 }
 
 // A despawned bot takes its roster row with it. The row is keyed by `character_guid`, so the
@@ -694,7 +702,10 @@ fn spawn_one(
         // lock-step for the rest of its life.
         next_think_micros: ctx.timestamp.to_micros_since_unix_epoch()
             + (guid % 10) as i64 * 100_000,
+        controller: Controller::Legacy,
+        scheduler_lag_micros: 0,
     });
+    crate::actor::set_sessionless_action_consent(ctx, guid, true);
     Ok(guid)
 }
 

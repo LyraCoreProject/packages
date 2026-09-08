@@ -1,0 +1,1105 @@
+//! One controller, one retained objective, and one foreground action per bot.
+
+use super::actions;
+use super::decision::{
+    self, Action, ActionNode, Candidate, DecisionRefusal, Readiness, Reason, Strategy, Trigger,
+};
+use super::{
+    pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
+};
+use crate::{
+    game_character, game_character_quest, game_creature_spline, game_player_spell, game_threat,
+    game_world_entity,
+};
+use spacetimedb::{reducer, table, ReducerContext, Table};
+
+pub const BATCH_LIMIT: usize = 16;
+const INTERVAL: i64 = 1_000_000;
+const OBJECTIVE_LIFETIME: i64 = 120_000_000;
+const STALL_INTERVAL: i64 = 10_000_000;
+const DEFER_INTERVAL: i64 = 30_000_000;
+const HISTORY_LIMIT: usize = 8;
+const FAILURE_LIMIT: usize = 4;
+const CATALOG_REVISION: u64 = 1;
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Controller {
+    Legacy,
+    RecordOnly,
+    Cohort,
+    Frozen,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+pub struct Destination {
+    pub map_id: u32,
+    pub instance_id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub geometry_revision: Option<u64>,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectiveKind {
+    ReturnHome,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ObjectiveStage {
+    Travelling,
+    Completed,
+    Deferred,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct Objective {
+    pub identity: u64,
+    pub kind: ObjectiveKind,
+    pub destination: Destination,
+    pub stage: ObjectiveStage,
+    pub deadline_micros: i64,
+    pub last_verified_progress_micros: Option<i64>,
+    pub started_micros: i64,
+    pub catalog_revision: u64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Failure {
+    NoMovement,
+    DestinationUnavailable,
+    Deadline,
+    CastLost,
+    ActionRefused(crate::actor::ActionRefusalKind),
+    CastRefused(crate::spell::CastRefusalKind),
+    Decision(DecisionRefusal),
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct FailureRecord {
+    pub reason: Failure,
+    pub at_micros: i64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct DeferredDestination {
+    pub destination: Destination,
+    pub until_micros: i64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct MovementRun {
+    pub destination: Destination,
+    pub from_x: f32,
+    pub from_y: f32,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub enum Running {
+    Movement(MovementRun),
+    Cast(crate::spell::CastHandle),
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct Foreground {
+    pub candidate: Candidate,
+    pub generation: u64,
+    pub map_id: u32,
+    pub instance_id: u64,
+    pub started_micros: i64,
+    pub running: Running,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct MovementProgress {
+    pub observed_micros: i64,
+    pub x: f32,
+    pub y: f32,
+    pub arrived: bool,
+}
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct CombatProgress {
+    pub observed_micros: i64,
+    pub target: u64,
+    pub health: u32,
+}
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct CastProgress {
+    pub observed_micros: i64,
+    pub scheduled_id: u64,
+    pub spell: u32,
+    pub target: u64,
+}
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct QuestProgress {
+    pub observed_micros: i64,
+    pub quest: u32,
+    pub credit: u64,
+    pub rewarded: bool,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub enum RunnerOutcome {
+    Initial,
+    Recorded,
+    Waiting,
+    Arrived,
+    Accepted,
+    CastFinished(crate::spell::CastFinish),
+    Refused(Failure),
+    Cancelled,
+    Frozen,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct Transition {
+    pub at_micros: i64,
+    pub chosen: Option<Candidate>,
+    pub outcome: RunnerOutcome,
+}
+
+/// Backfilled for at most BATCH_LIMIT due bots per pass. Legacy goals keep their stored meaning.
+/// The public row is the explanation read; ages are relative to observed_micros.
+#[table(accessor = pkg_playerbots_runner, public)]
+pub struct PlayerbotsRunner {
+    #[primary_key]
+    pub character_guid: u64,
+    pub generation: u64,
+    pub objective_sequence: u64,
+    pub objective: Option<Objective>,
+    pub foreground: Option<Foreground>,
+    pub chosen: Option<Candidate>,
+    pub candidate_order: Vec<Candidate>,
+    pub last_outcome: RunnerOutcome,
+    pub observed_micros: i64,
+    pub progress_age_micros: Option<i64>,
+    pub retry_count: u8,
+    pub next_eligible_micros: i64,
+    pub retry_candidate: Option<decision::CandidateId>,
+    pub failures: Vec<FailureRecord>,
+    pub deferred_destinations: Vec<DeferredDestination>,
+    pub movement_progress: Option<MovementProgress>,
+    pub combat_progress: Option<CombatProgress>,
+    pub cast_progress: Option<CastProgress>,
+    pub quest_progress: Vec<QuestProgress>,
+    pub history: Vec<Transition>,
+    pub last_stall_check_micros: i64,
+    pub last_target_health: Option<CombatProgress>,
+    pub defense_target: Option<u64>,
+    pub transitions: u32,
+    pub route_expansions: u32,
+    pub route_budget: u32,
+}
+
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
+    ctx.db.pkg_playerbots_runner().character_guid().delete(character_guid);
+});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_runner());
+
+#[table(accessor = pkg_playerbots_scheduler, public)]
+pub struct PlayerbotsScheduler {
+    #[primary_key]
+    pub id: u8,
+    pub observed_micros: i64,
+    pub processed: u32,
+    pub processed_guids: Vec<u64>,
+    pub excess_due: bool,
+    pub oldest_deferred_lag_micros: i64,
+}
+
+impl PlayerbotsRunner {
+    fn initial(guid: u64, now: i64) -> Self {
+        Self {
+            character_guid: guid,
+            generation: 0,
+            objective_sequence: 0,
+            objective: None,
+            foreground: None,
+            chosen: None,
+            candidate_order: vec![],
+            last_outcome: RunnerOutcome::Initial,
+            observed_micros: now,
+            progress_age_micros: None,
+            retry_count: 0,
+            next_eligible_micros: now,
+            retry_candidate: None,
+            failures: vec![],
+            deferred_destinations: vec![],
+            movement_progress: None,
+            combat_progress: None,
+            cast_progress: None,
+            quest_progress: vec![],
+            history: vec![],
+            last_stall_check_micros: now,
+            last_target_health: None,
+            defense_target: None,
+            transitions: 0,
+            route_expansions: 0,
+            route_budget: 0,
+        }
+    }
+
+    fn failure(&mut self, reason: Failure, now: i64) {
+        self.retry_count = self.retry_count.saturating_add(1).min(3);
+        bounded_push(
+            &mut self.failures,
+            FailureRecord {
+                reason,
+                at_micros: now,
+            },
+            FAILURE_LIMIT,
+        );
+        self.last_outcome = RunnerOutcome::Refused(reason);
+    }
+
+    fn save(mut self, ctx: &ReducerContext) {
+        self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
+        self.next_eligible_micros = self
+            .next_eligible_micros
+            .max(self.observed_micros.saturating_add(INTERVAL));
+        self.progress_age_micros = self.objective.as_ref().map(|o| {
+            self.observed_micros
+                .saturating_sub(o.last_verified_progress_micros.unwrap_or(o.started_micros))
+        });
+        let changed = self.history.last().is_none_or(|t| {
+            t.chosen != self.chosen
+                || std::mem::discriminant(&t.outcome) != std::mem::discriminant(&self.last_outcome)
+        });
+        if changed {
+            let transition = Transition {
+                at_micros: self.observed_micros,
+                chosen: self.chosen,
+                outcome: self.last_outcome.clone(),
+            };
+            bounded_push(&mut self.history, transition, HISTORY_LIMIT);
+        }
+        let rows = ctx.db.pkg_playerbots_runner();
+        if rows.character_guid().find(self.character_guid).is_some() {
+            rows.character_guid().update(self);
+        } else {
+            rows.insert(self);
+        }
+    }
+}
+
+fn bounded_push<T>(values: &mut Vec<T>, value: T, limit: usize) {
+    if values.len() >= limit {
+        values.remove(0);
+    }
+    values.push(value);
+}
+
+pub(super) fn legacy_controls(ctx: &ReducerContext, guid: u64) -> bool {
+    ctx.db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .is_some_and(|bot| bot.controller == Controller::Legacy)
+        && crate::actor::sessionless_action_gate(ctx, guid).is_ok()
+}
+
+pub(super) fn pass(ctx: &ReducerContext) {
+    super::ensure_defaults(ctx);
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let bots = ctx.db.pkg_playerbots_bot();
+    let due: Vec<_> = bots.by_due().filter(..=now).take(BATCH_LIMIT).collect();
+    let guids = due.iter().map(|b| b.character_guid).collect();
+    let count = due.len();
+    for mut bot in due {
+        let mut state = ctx
+            .db
+            .pkg_playerbots_runner()
+            .character_guid()
+            .find(bot.character_guid)
+            .unwrap_or_else(|| PlayerbotsRunner::initial(bot.character_guid, now));
+        if crate::actor::sessionless_action_gate(ctx, bot.character_guid).is_err() {
+            if matches!(bot.controller, Controller::Legacy | Controller::Cohort) {
+                stop(ctx, bot.character_guid, &mut state);
+            }
+            state.chosen = Some(Candidate {
+                id: decision::CandidateId {
+                    action: Action::Hold,
+                    target: 0,
+                    event: Reason::Restricted,
+                    spell: 0,
+                    objective: state.objective_sequence,
+                },
+                priority: 1000,
+            });
+            state.last_outcome = RunnerOutcome::Waiting;
+            state.save(ctx);
+        } else {
+            match bot.controller {
+                Controller::Legacy => {
+                    state.save(ctx);
+                    super::goals::think(ctx, &bot, now);
+                }
+                Controller::RecordOnly | Controller::Cohort => run(ctx, &bot, state, now),
+                Controller::Frozen => {
+                    state.save(ctx);
+                }
+            }
+        }
+        bot.scheduler_lag_micros = now.saturating_sub(bot.next_think_micros).max(0);
+        bot.next_think_micros = now.saturating_add(INTERVAL);
+        bots.id().update(bot);
+    }
+    let deferred = bots.by_due().filter(..=now).next();
+    let row = PlayerbotsScheduler {
+        id: 0,
+        observed_micros: now,
+        processed: count as u32,
+        processed_guids: guids,
+        excess_due: deferred.is_some(),
+        oldest_deferred_lag_micros: deferred
+            .map_or(0, |bot| now.saturating_sub(bot.next_think_micros).max(0)),
+    };
+    let rows = ctx.db.pkg_playerbots_scheduler();
+    if rows.id().find(0).is_some() {
+        rows.id().update(row);
+    } else {
+        rows.insert(row);
+    }
+}
+
+/// Selection is idempotent. A changed controller cancels work before the new generation can act.
+#[reducer]
+pub fn playerbots_select_controller(
+    ctx: &ReducerContext,
+    guid: u64,
+    controller: Controller,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    crate::actor::set_sessionless_action_consent(
+        ctx,
+        guid,
+        matches!(controller, Controller::Legacy | Controller::Cohort),
+    );
+    if bot.controller == controller {
+        return Ok(());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let mut state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .unwrap_or_else(|| PlayerbotsRunner::initial(guid, now));
+    stop(ctx, guid, &mut state);
+    state.last_stall_check_micros = now;
+    state.generation = state
+        .generation
+        .checked_add(1)
+        .ok_or("controller generation exhausted")?;
+    state.next_eligible_micros = if controller == Controller::Frozen {
+        i64::MAX
+    } else {
+        now
+    };
+    state.last_outcome = if controller == Controller::Frozen {
+        RunnerOutcome::Frozen
+    } else {
+        RunnerOutcome::Cancelled
+    };
+    state.save(ctx);
+    bot.controller = controller;
+    bot.next_think_micros = if controller == Controller::Frozen {
+        i64::MAX
+    } else {
+        now
+    };
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+    Ok(())
+}
+
+fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
+    if let Some(foreground) = state.foreground.take() {
+        bounded_push(
+            &mut state.history,
+            Transition {
+                at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+                chosen: Some(foreground.candidate),
+                outcome: RunnerOutcome::Cancelled,
+            },
+            HISTORY_LIMIT,
+        );
+    }
+    if let Some(cast) = crate::spell::pending_cast(ctx, guid) {
+        if actions::observation(ctx, guid, actions::ActionKind::Cast)
+            .is_some_and(|owned| owned.cast_id == cast.scheduled_id)
+        {
+            crate::spell::cancel_cast_attempt(ctx, guid, cast.scheduled_id);
+        }
+    }
+    if crate::actor::sessionless_action_gate(ctx, guid).is_ok() {
+        let _ = crate::actor::stop_attack(ctx, guid);
+    }
+    stop_movement(ctx, guid);
+}
+
+fn stop_movement(ctx: &ReducerContext, guid: u64) {
+    let Some(spline) = ctx.db.game_creature_spline().guid().find(guid) else {
+        return;
+    };
+    if !actions::observation(ctx, guid, actions::ActionKind::Move)
+        .is_some_and(|owned| owned.observed_micros as u64 == spline.start_micros)
+    {
+        return;
+    }
+    if let Some(me) = ctx.db.game_world_entity().guid().find(guid) {
+        let point = (me.x, me.y, me.z);
+        crate::creatures::tick::emit_move_spline(
+            ctx,
+            guid,
+            point,
+            point,
+            0,
+            false,
+            (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32,
+            me.map_id,
+            me.instance_id,
+            (me.grid_x, me.grid_y),
+        );
+    } else {
+        ctx.db.game_creature_spline().guid().delete(guid);
+    }
+}
+
+fn geometry_revision(ctx: &ReducerContext, map: u32) -> Option<u64> {
+    crate::nav::coverage_generation(ctx, map)
+}
+
+fn distance(me: &crate::WorldEntity, dest: &Destination) -> f32 {
+    ((me.x - dest.x).powi(2) + (me.y - dest.y).powi(2) + (me.z - dest.z).powi(2)).sqrt()
+}
+
+fn objective(ctx: &ReducerContext, bot: &PlayerbotsBot, state: &mut PlayerbotsRunner, now: i64) {
+    let destination = Destination {
+        map_id: bot.home_map,
+        instance_id: 0,
+        x: bot.home_x,
+        y: bot.home_y,
+        z: bot.home_z,
+        geometry_revision: geometry_revision(ctx, bot.home_map),
+    };
+    state.deferred_destinations.retain(|d| d.until_micros > now);
+    if state
+        .objective
+        .as_ref()
+        .is_none_or(|o| o.destination != destination)
+    {
+        state.objective_sequence = state.objective_sequence.saturating_add(1);
+        state.objective = Some(Objective {
+            identity: state.objective_sequence,
+            kind: ObjectiveKind::ReturnHome,
+            destination,
+            stage: ObjectiveStage::Travelling,
+            deadline_micros: now.saturating_add(OBJECTIVE_LIFETIME),
+            last_verified_progress_micros: None,
+            started_micros: now,
+            catalog_revision: CATALOG_REVISION,
+        });
+        state.retry_count = 0;
+        state.last_stall_check_micros = now;
+    }
+    if let Some(o) = &mut state.objective {
+        if o.stage == ObjectiveStage::Deferred
+            && !state
+                .deferred_destinations
+                .iter()
+                .any(|d| d.destination == o.destination)
+        {
+            o.stage = ObjectiveStage::Travelling;
+            o.deadline_micros = now.saturating_add(OBJECTIVE_LIFETIME);
+            state.retry_count = 0;
+            state.last_stall_check_micros = now;
+        }
+        if o.stage == ObjectiveStage::Deferred {
+            if let Some(deferred) = state
+                .deferred_destinations
+                .iter()
+                .find(|d| d.destination == o.destination)
+            {
+                state.next_eligible_micros = state.next_eligible_micros.max(deferred.until_micros);
+            }
+        }
+    }
+}
+
+fn defer(state: &mut PlayerbotsRunner, now: i64) {
+    if let Some(o) = &mut state.objective {
+        o.stage = ObjectiveStage::Deferred;
+        state
+            .deferred_destinations
+            .retain(|d| d.destination != o.destination);
+        bounded_push(
+            &mut state.deferred_destinations,
+            DeferredDestination {
+                destination: o.destination.clone(),
+                until_micros: now.saturating_add(DEFER_INTERVAL),
+            },
+            FAILURE_LIMIT,
+        );
+    }
+    state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+}
+
+fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut PlayerbotsRunner, now: i64) {
+    if let Some(fg) = &state.foreground {
+        if fg.generation != state.generation
+            || (fg.map_id, fg.instance_id) != (me.map_id, me.instance_id)
+        {
+            stop(ctx, me.guid, state);
+            state.last_outcome = RunnerOutcome::Cancelled;
+        }
+    }
+    if let Some(fg) = &mut state.foreground {
+        match &mut fg.running {
+            Running::Movement(MovementRun {
+                destination,
+                from_x,
+                from_y,
+            }) => {
+                let advanced = (me.x - *from_x).powi(2) + (me.y - *from_y).powi(2) > 0.05 * 0.05;
+                let arrived = distance(me, destination) <= 2.05;
+                if advanced || arrived {
+                    state.movement_progress = Some(MovementProgress {
+                        observed_micros: now,
+                        x: me.x,
+                        y: me.y,
+                        arrived,
+                    });
+                    if let Some(o) = &mut state.objective {
+                        if o.destination == *destination {
+                            o.last_verified_progress_micros = Some(now);
+                            state.retry_count = 0;
+                            state.last_stall_check_micros = now;
+                            if arrived {
+                                o.stage = ObjectiveStage::Completed;
+                                state.last_outcome = RunnerOutcome::Arrived;
+                            }
+                        }
+                    }
+                }
+                *from_x = me.x;
+                *from_y = me.y;
+                if arrived {
+                    state.foreground = None;
+                }
+            }
+            Running::Cast(handle) => {
+                if let Some(current) = crate::spell::pending_cast(ctx, me.guid)
+                    .filter(|h| h.scheduled_id == handle.scheduled_id)
+                {
+                    // Direct damage moves due_micros without changing the core cast identity.
+                    *handle = current;
+                } else {
+                    state.foreground = None;
+                    state.failure(Failure::CastLost, now);
+                }
+            }
+        }
+    }
+    if let Some(previous) = &mut state.last_target_health {
+        if let Some(target) = ctx.db.game_world_entity().guid().find(previous.target) {
+            if target.health < previous.health {
+                state.combat_progress = Some(CombatProgress {
+                    observed_micros: now,
+                    target: target.guid,
+                    health: target.health,
+                });
+            }
+            previous.health = target.health;
+        }
+    }
+    for quest in ctx
+        .db
+        .game_character_quest()
+        .by_character()
+        .filter(me.guid)
+        .take(20)
+    {
+        let credit = quest.counts.iter().map(|&c| u64::from(c)).sum();
+        if let Some(previous) = state
+            .quest_progress
+            .iter_mut()
+            .find(|q| q.quest == quest.quest_entry)
+        {
+            if credit > previous.credit || (quest.rewarded && !previous.rewarded) {
+                previous.observed_micros = now;
+            }
+            previous.credit = credit;
+            previous.rewarded = quest.rewarded;
+        } else {
+            bounded_push(
+                &mut state.quest_progress,
+                QuestProgress {
+                    observed_micros: 0,
+                    quest: quest.quest_entry,
+                    credit,
+                    rewarded: quest.rewarded,
+                },
+                20,
+            );
+        }
+    }
+}
+
+fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, now: i64) {
+    let Some(me) = ctx.db.game_world_entity().guid().find(bot.character_guid) else {
+        state.chosen = Some(Candidate {
+            id: decision::CandidateId {
+                action: Action::Hold,
+                target: 0,
+                event: Reason::Restricted,
+                spell: 0,
+                objective: state.objective_sequence,
+            },
+            priority: 1000,
+        });
+        state.last_outcome = RunnerOutcome::Waiting;
+        state.save(ctx);
+        return;
+    };
+    let prior_objective = state.objective_sequence;
+    objective(ctx, bot, &mut state, now);
+    if bot.controller == Controller::Cohort {
+        if prior_objective != state.objective_sequence && state.foreground.is_some() {
+            stop(ctx, me.guid, &mut state);
+        }
+        observe(ctx, &me, &mut state, now);
+    }
+    let Some(home) = state.objective.as_ref().map(|o| o.destination.clone()) else {
+        return;
+    };
+    let partition_ok = (home.map_id, home.instance_id) == (me.map_id, me.instance_id);
+    let at_home = partition_ok && distance(&me, &home) <= 2.05;
+    if bot.controller == Controller::Cohort {
+        if let Some(o) = &mut state.objective {
+            if at_home {
+                o.stage = ObjectiveStage::Completed;
+            } else if o.stage == ObjectiveStage::Completed {
+                o.stage = ObjectiveStage::Travelling;
+                o.deadline_micros = now.saturating_add(OBJECTIVE_LIFETIME);
+                state.last_stall_check_micros = now;
+            }
+        }
+    }
+    let personality = ctx
+        .db
+        .pkg_playerbots_personality()
+        .by_character()
+        .filter(me.guid)
+        .next();
+    let flee_at = personality.as_ref().map_or(15, |p| p.flee_at_pct);
+    let low_health = super::goals::should_flee(me.health, me.max_health, flee_at);
+    let observed_attacker = state
+        .defense_target
+        .and_then(|guid| ctx.db.game_world_entity().guid().find(guid))
+        .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id));
+    state.defense_target = observed_attacker.as_ref().map(|target| target.guid);
+    let threat = observed_attacker.or_else(|| {
+        ctx.db
+            .game_threat()
+            .by_source()
+            .filter(me.guid)
+            .take(24)
+            .filter_map(|t| ctx.db.game_world_entity().guid().find(t.creature_guid))
+            .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id))
+            .min_by_key(|t| t.guid)
+    });
+    let spell = ctx
+        .db
+        .pkg_playerbots_rotation()
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .take(24)
+        .filter(|r| r.condition == super::cond::ALLY_HP_BELOW_PCT)
+        .filter(|r| {
+            ctx.db
+                .game_player_spell()
+                .by_character()
+                .filter(me.guid)
+                .take(256)
+                .any(|s| s.spell_id == r.spell_id)
+        })
+        .min_by_key(|r| (r.priority, r.spell_id));
+    let restricted = me.dead || crate::helpers::live_entity(ctx, me.guid).is_err();
+    let facts = decision::Facts {
+        now,
+        restricted,
+        low_health,
+        wounded: me.health.saturating_mul(100) < me.max_health.saturating_mul(50),
+        attacked: threat.is_some(),
+        away: !at_home,
+    };
+    let node = |action, target, reason, priority| {
+        let mut node = ActionNode::ready(action, target, reason, priority);
+        node.candidate.id.objective = state.objective_sequence;
+        node
+    };
+    let mut home_action = node(Action::Move, 0, Reason::ReturnHome, 100);
+    home_action.readiness = if !partition_ok {
+        Readiness::Refused
+    } else if state.next_eligible_micros > now {
+        Readiness::NotBefore(state.next_eligible_micros)
+    } else {
+        Readiness::Ready
+    };
+    home_action
+        .alternatives
+        .push(node(Action::Hold, 0, Reason::ReturnHome, 100));
+    let mut recovery = node(Action::Cast, me.guid, Reason::Recovery, 800);
+    if let Some(spell) = spell {
+        recovery.candidate.id.spell = spell.spell_id;
+    } else {
+        recovery.readiness = Readiness::Refused;
+    }
+    let mut defense = node(
+        Action::Attack,
+        threat.as_ref().map_or(0, |t| t.guid),
+        Reason::Defense,
+        600,
+    );
+    if let Some(target) = &threat {
+        let mut close = node(Action::Move, target.guid, Reason::Defense, 600);
+        if ((target.x - me.x).powi(2) + (target.y - me.y).powi(2)).sqrt() <= 4.0 {
+            close.readiness = Readiness::Complete;
+        }
+        defense.prerequisites.push(close);
+    }
+    defense.continuers.push(home_action.clone());
+    let survival = if partition_ok && !at_home {
+        node(Action::Move, 0, Reason::Survival, 900)
+    } else {
+        node(Action::Hold, 0, Reason::Survival, 900)
+    };
+    let strategies: Vec<_> = [
+        (
+            Trigger::Restricted,
+            node(Action::Hold, 0, Reason::Restricted, 1000),
+        ),
+        (Trigger::LowHealth, survival),
+        (Trigger::Wounded, recovery),
+        (Trigger::Attacked, defense),
+        (Trigger::Away, home_action),
+        (Trigger::Always, node(Action::Hold, 0, Reason::Idle, 0)),
+    ]
+    .into_iter()
+    .map(|(trigger, mut n)| {
+        if state.retry_candidate == Some(n.candidate.id) && state.next_eligible_micros > now {
+            n.readiness = Readiness::NotBefore(state.next_eligible_micros);
+        }
+        Strategy {
+            trigger,
+            candidates: vec![n],
+            defaults: vec![],
+            priority_adjustment: 0,
+        }
+    })
+    .collect();
+    let decision = decision::choose(&facts, &strategies, decision::LIMITS);
+    state.candidate_order = decision.order;
+    state.transitions = decision.transitions as u32;
+    state.route_expansions = 0;
+    state.route_budget = decision.route_expansions;
+    let chosen = decision.chosen;
+    if bot.controller == Controller::RecordOnly {
+        state.chosen = chosen;
+        state.last_outcome = RunnerOutcome::Recorded;
+        state.save(ctx);
+        return;
+    }
+    if let Some(deadline) = state
+        .objective
+        .as_ref()
+        .filter(|o| o.stage == ObjectiveStage::Travelling && now >= o.deadline_micros)
+        .map(|o| o.deadline_micros)
+    {
+        if let Some(foreground) = state.foreground.clone() {
+            if let Running::Cast(handle) = foreground.running {
+                if crate::spell::expire_cast_attempt(ctx, me.guid, handle.scheduled_id, deadline) {
+                    state.foreground = None;
+                    bounded_push(
+                        &mut state.history,
+                        Transition {
+                            at_micros: now,
+                            chosen: Some(foreground.candidate),
+                            outcome: RunnerOutcome::CastFinished(crate::spell::CastFinish::Expired),
+                        },
+                        HISTORY_LIMIT,
+                    );
+                }
+            }
+        }
+        stop(ctx, me.guid, &mut state);
+        state.failure(Failure::Deadline, now);
+        defer(&mut state, now);
+        state.save(ctx);
+        return;
+    }
+    if let Some(fg) = &state.foreground {
+        let incompatible = chosen.is_some_and(|c| c.id != fg.candidate.id);
+        let preempts = chosen.is_some_and(|c| c.priority > fg.candidate.priority);
+        if incompatible && preempts {
+            stop(ctx, me.guid, &mut state);
+            state.last_outcome = RunnerOutcome::Cancelled;
+        } else if matches!(fg.running, Running::Cast(_)) {
+            state.chosen = Some(fg.candidate);
+            state.last_outcome = RunnerOutcome::Waiting;
+            state.save(ctx);
+            return;
+        } else if incompatible && !preempts {
+            // A completed leg releases ownership; a running leg retains it until observed arrival.
+            if ctx
+                .db
+                .game_creature_spline()
+                .guid()
+                .find(me.guid)
+                .is_some_and(|s| {
+                    s.start_micros.saturating_add(u64::from(s.dur_ms) * 1000) > now.max(0) as u64
+                })
+            {
+                state.chosen = Some(fg.candidate);
+                state.last_outcome = RunnerOutcome::Waiting;
+                state.save(ctx);
+                return;
+            }
+            state.foreground = None;
+        }
+    }
+    state.chosen = chosen;
+    if let Some(candidate) = chosen {
+        execute(ctx, &me, &home, candidate, &mut state, now);
+    } else if let Some(reason) = decision.refusals.first() {
+        state.failure(Failure::Decision(*reason), now);
+    }
+    state.next_eligible_micros = state.next_eligible_micros.max(now.saturating_add(INTERVAL));
+    state.save(ctx);
+}
+
+fn execute(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    home: &Destination,
+    candidate: Candidate,
+    state: &mut PlayerbotsRunner,
+    now: i64,
+) {
+    match candidate.id.action {
+        Action::Hold => {
+            if candidate.id.event == Reason::Restricted || candidate.id.event == Reason::Survival {
+                stop(ctx, me.guid, state);
+            }
+            if candidate.id.event == Reason::ReturnHome
+                && (home.map_id, home.instance_id) != (me.map_id, me.instance_id)
+                && state
+                    .objective
+                    .as_ref()
+                    .is_some_and(|o| o.stage != ObjectiveStage::Deferred)
+            {
+                state.failure(Failure::DestinationUnavailable, now);
+                defer(state, now);
+                return;
+            }
+            state.last_outcome = if state
+                .objective
+                .as_ref()
+                .is_some_and(|o| o.stage == ObjectiveStage::Completed)
+            {
+                RunnerOutcome::Arrived
+            } else {
+                RunnerOutcome::Waiting
+            };
+        }
+        Action::Move => {
+            let destination = if candidate.id.target == 0 {
+                Some(home.clone())
+            } else {
+                ctx.db
+                    .game_world_entity()
+                    .guid()
+                    .find(candidate.id.target)
+                    .map(|e| Destination {
+                        map_id: e.map_id,
+                        instance_id: e.instance_id,
+                        x: e.x,
+                        y: e.y,
+                        z: e.z,
+                        geometry_revision: geometry_revision(ctx, e.map_id),
+                    })
+            };
+            let Some(dest) =
+                destination.filter(|d| (d.map_id, d.instance_id) == (me.map_id, me.instance_id))
+            else {
+                state.failure(Failure::DestinationUnavailable, now);
+                defer(state, now);
+                return;
+            };
+            if candidate.id.event == Reason::Survival {
+                let _ = crate::actor::stop_attack(ctx, me.guid);
+            }
+            if now.saturating_sub(state.last_stall_check_micros) >= STALL_INTERVAL {
+                state.failure(Failure::NoMovement, now);
+                state.last_stall_check_micros = now;
+                if state.retry_count >= 3 {
+                    stop(ctx, me.guid, state);
+                    defer(state, now);
+                    return;
+                }
+            }
+            super::goals::walk_toward(
+                ctx,
+                me,
+                (dest.x, dest.y, dest.z),
+                if candidate.id.target == 0 { 2.0 } else { 3.0 },
+                true,
+            );
+            state.route_expansions =
+                super::actions::observation(ctx, me.guid, super::actions::ActionKind::Move)
+                    .and_then(|row| match row.outcome {
+                        super::actions::ActionOutcome::Movement(observation) => {
+                            Some(observation.route.expansions)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(0);
+            state.foreground = Some(Foreground {
+                candidate,
+                generation: state.generation,
+                map_id: me.map_id,
+                instance_id: me.instance_id,
+                started_micros: now,
+                running: Running::Movement(MovementRun {
+                    destination: dest,
+                    from_x: me.x,
+                    from_y: me.y,
+                }),
+            });
+            state.last_outcome = RunnerOutcome::Waiting;
+        }
+        Action::Cast => {
+            stop_movement(ctx, me.guid);
+            let _ = crate::actor::stop_attack(ctx, me.guid);
+            match super::actions::cast(ctx, me.guid, candidate.id.spell, candidate.id.target) {
+                Ok(
+                    crate::spell::CastStart::Started(handle)
+                    | crate::spell::CastStart::Waiting(handle),
+                ) => {
+                    let mut actual = candidate;
+                    actual.id.spell = handle.spell_id;
+                    actual.id.target = handle.target_guid;
+                    state.foreground = Some(Foreground {
+                        candidate: actual,
+                        generation: state.generation,
+                        map_id: me.map_id,
+                        instance_id: me.instance_id,
+                        started_micros: now,
+                        running: Running::Cast(handle),
+                    });
+                    state.last_outcome = RunnerOutcome::Waiting;
+                }
+                Ok(crate::spell::CastStart::Resolved) => {
+                    state.cast_progress = Some(CastProgress {
+                        observed_micros: now,
+                        scheduled_id: 0,
+                        spell: candidate.id.spell,
+                        target: candidate.id.target,
+                    });
+                    state.last_outcome =
+                        RunnerOutcome::CastFinished(crate::spell::CastFinish::Resolved);
+                    state.retry_candidate = None;
+                }
+                Err(reason) => {
+                    state.failure(Failure::CastRefused(reason.kind), now);
+                    state.retry_candidate = Some(candidate.id);
+                    state.next_eligible_micros = now.saturating_add(if state.retry_count >= 3 {
+                        DEFER_INTERVAL
+                    } else {
+                        INTERVAL * i64::from(state.retry_count)
+                    });
+                }
+            }
+        }
+        Action::Attack => {
+            if let Some(target) = ctx.db.game_world_entity().guid().find(candidate.id.target) {
+                state.last_target_health = Some(CombatProgress {
+                    observed_micros: now,
+                    target: target.guid,
+                    health: target.health,
+                });
+            }
+            match super::actions::attack(ctx, me.guid, candidate.id.target) {
+                Ok(_) => state.last_outcome = RunnerOutcome::Accepted,
+                Err(reason) => state.failure(Failure::ActionRefused(reason.kind), now),
+            }
+        }
+    }
+}
+
+crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payload) {
+    let Some(bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.caster_guid).next() else { return; };
+    if bot.controller != Controller::Cohort { return; }
+    let Some(mut state) = ctx.db.pkg_playerbots_runner().character_guid().find(payload.caster_guid) else { return; };
+    let Some(fg) = &state.foreground else { return; };
+    let Running::Cast(handle) = &fg.running else { return; };
+    if fg.generation != state.generation || handle.scheduled_id != payload.scheduled_id { return; }
+    if !ctx.db.game_world_entity().guid().find(payload.caster_guid).is_some_and(|e| (e.map_id, e.instance_id) == (fg.map_id, fg.instance_id)) { return; }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    if matches!(payload.outcome, crate::spell::CastFinish::Resolved) {
+        state.cast_progress = Some(CastProgress { observed_micros: now, scheduled_id: handle.scheduled_id, spell: handle.spell_id, target: handle.target_guid });
+        state.retry_candidate = None;
+    }
+    state.foreground = None;
+    state.last_stall_check_micros = now;
+    state.last_outcome = RunnerOutcome::CastFinished(payload.outcome.clone());
+    state.save(ctx);
+});
+
+crate::game_hook!(on_damage_taken, fn playerbots_runner_reconsider_damage(ctx, payload) {
+    if payload.attacker_guid == 0 { return; }
+    let Some(mut bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.target_guid).next() else { return; };
+    if !matches!(bot.controller, Controller::Cohort | Controller::RecordOnly) { return; }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let mut state = ctx.db.pkg_playerbots_runner().character_guid().find(payload.target_guid)
+        .unwrap_or_else(|| PlayerbotsRunner::initial(payload.target_guid, now));
+    state.defense_target = Some(payload.attacker_guid);
+    state.save(ctx);
+    bot.next_think_micros = bot.next_think_micros.min(now);
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+});
+
+// Both active controllers use this one invite response. Sharded admission belongs to the Gateway.
+crate::game_hook!(on_group_invite, fn playerbots_auto_accept(ctx, payload) {
+    let Some(bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.target_guid).next() else { return; };
+    if !matches!(bot.controller, Controller::Legacy | Controller::Cohort)
+        || crate::actor::sessionless_action_gate(ctx, payload.target_guid).is_err()
+    {
+        return;
+    }
+    let inviter = ctx
+        .db
+        .game_character()
+        .guid()
+        .find(payload.inviter_guid)
+        .map(|character| character.name)
+        .unwrap_or_else(|| payload.inviter_guid.to_string());
+    match crate::actor::accept_group_invite(ctx, payload.target_guid) {
+        Ok(()) => spacetimedb::log::info!(
+            "playerbots: bot {} accepted a party invite from {inviter}",
+            payload.target_guid
+        ),
+        Err(refusal) => spacetimedb::log::warn!(
+            "playerbots: bot {} could not accept the invite from {inviter}: {refusal}",
+            payload.target_guid
+        ),
+    }
+});

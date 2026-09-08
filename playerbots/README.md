@@ -397,3 +397,69 @@ storage and reward exchanges, including bank holdings and other rewards in the s
 observation establishes its baseline without clearing an existing stall. Later increases count as
 progress. The fixture exercises an existing stalled goal with nonzero objective credit and this
 migration default; it does not claim to publish an older Package binary before upgrading it.
+
+## Durable controller and objective
+
+`playerbots_select_controller(guid, controller)` selects one controller for that Character. The
+SpacetimeDB argument names are `legacy`, `recordOnly`, `cohort`, and `frozen`.
+
+| Controller | Behavior |
+| --- | --- |
+| Legacy | Existing quest and party policy. This is the additive migration default. |
+| RecordOnly | Records the new decision without issuing gameplay from either controller. |
+| Cohort | Runs the durable objective and typed action runner. |
+| Frozen | Cancels Package casts and movement, stops bot attacks, and prevents new bot work. |
+
+Selection also updates core-owned session-less action consent. Legacy and Cohort allow group
+admission; RecordOnly and Frozen suppress it. Every selection clears this Character's unclaimed
+Group Intents, including a repeated selection. A group action admitted before the selection may
+finish at Realm-core afterwards. There is no atomic operation across Shards.
+
+Every gameplay entry checks current Account Claim and Fence ownership and Character World Session
+status. A human taking ownership suspends the bot even before `online` changes. Cancellation matches
+the Package cast identity or movement start time, so it preserves a human's later work. Bot control
+can resume after ownership ends. The ownership Gate permits an absent body for Legacy restoration;
+group admission additionally requires a live entity.
+
+The Cohort behavior in this revision returns to the roster's home point. It retains that objective
+while healing itself with a known supported rotation spell, defending against damage, or fleeing
+at its configured health threshold. Companion orders and quest catalog execution remain separate
+work. The existing Legacy policy remains available under its explicit selector.
+
+The normal Package tick reads the `(next_think_micros, id)` index and processes at most 16 due bots.
+Excess bots keep their due time. They precede bots whose turn already advanced the clock. The
+scheduler row reports the processed identities and the oldest deferred lag. Runner rows backfill
+only for that bounded batch, or for one explicitly selected bot.
+
+`pkg_playerbots_runner` is the explanation read. It reports the retained objective and destination,
+chosen target and reason, ordered candidates, foreground cast or movement, latest outcome, progress
+age at `observed_micros`, retry count, next eligible time, and catalog revision. It retains eight
+meaningful transitions, four failures and four deferred destinations per Character. Movement,
+combat, cast and quest evidence have separate clocks. An accepted attack does not advance any of
+them. A completed cast records dispatched effects, and does not complete the return-home objective.
+
+One foreground action retains the controller generation and partition. A higher-priority action
+cancels incompatible work before starting. Pending casts retain the core scheduled identity and
+refresh its current due time after direct-damage pushback. After a movement request, arrival requires a later position
+observation. Ten seconds without movement records a failure; three failed intervals defer the
+same destination for 30 seconds. Deferred keys include map, instance and optional navigation
+coverage generation. A coverage change invalidates the prior destination decision.
+
+The selector allows at most 24 candidates, depth four, 16 transitions and one route request with
+4096 expansions per decision. These limits also apply to prerequisites, alternatives and continuers.
+Strategies use typed triggers and integer priority adjustments; candidate identity includes its
+action, target, spell, trigger and objective identity. There is no string registry.
+
+The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the roster and adds
+runner and scheduler tables. Existing goals and action observations keep their schema and meaning.
+The roster selector travels with the Character; runner observations and foreground work do not.
+The Character delete operation removes the runner row. Production publication still requires the
+schema review described in LyraCore's `docs/danger-zones.md`.
+
+The durable fixture now includes populated migration. Before running the complete ignored target,
+build Module Wasm from core `be3fa67d0f0c24749230560544a3e8e8b577f61d` with collection
+`5724de1660a2628e88320914bdd5abb0c69da517`, retain an immutable copy, and set
+`PLAYERBOTS_PRECEDING_WASM` to that path. Package CI performs this build automatically. The case
+publishes that preceding Wasm, populates real bot, goal, quest and action rows, then upgrades the
+same private Standalone to the current Wasm. It records both Wasm identities and asserts the old
+rows survive, selector defaults apply, and backfill takes bounded passes.

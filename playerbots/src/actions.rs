@@ -51,7 +51,11 @@ crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_action(ctx, chara
 });
 crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_action());
 
-fn prior(ctx: &ReducerContext, guid: u64, kind: ActionKind) -> Option<PlayerbotsAction> {
+pub(super) fn observation(
+    ctx: &ReducerContext,
+    guid: u64,
+    kind: ActionKind,
+) -> Option<PlayerbotsAction> {
     ctx.db
         .pkg_playerbots_action()
         .by_character()
@@ -61,7 +65,7 @@ fn prior(ctx: &ReducerContext, guid: u64, kind: ActionKind) -> Option<Playerbots
 
 fn record(ctx: &ReducerContext, mut row: PlayerbotsAction) {
     let rows = ctx.db.pkg_playerbots_action();
-    if let Some(before) = prior(ctx, row.character_guid, row.kind) {
+    if let Some(before) = observation(ctx, row.character_guid, row.kind) {
         row.id = before.id;
         if row.cast_id != 0 && row.cast_id == before.cast_id {
             row.started_micros = before.started_micros;
@@ -143,7 +147,7 @@ pub(super) fn cast(
 }
 
 crate::game_hook!(on_cast_finished, fn playerbots_cast_finished(ctx, payload) {
-    let Some(mut row) = prior(ctx, payload.caster_guid, ActionKind::Cast) else { return; };
+    let Some(mut row) = observation(ctx, payload.caster_guid, ActionKind::Cast) else { return; };
     if row.cast_id != payload.scheduled_id { return; }
     row.outcome = match &payload.outcome {
         CastFinish::Resolved => ActionOutcome::CastResolved,
@@ -241,7 +245,7 @@ pub(super) fn movement(
 ) {
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let mut last_advance_micros = None;
-    if let Some(before) = prior(ctx, guid, ActionKind::Move) {
+    if let Some(before) = observation(ctx, guid, ActionKind::Move) {
         if let ActionOutcome::Movement(previous) = before.outcome {
             if previous.map_id == map_id
                 && previous.instance_id == instance_id

@@ -535,3 +535,163 @@ pub fn playerbots_fixture_credit_kill(ctx: &ReducerContext, guid: u64) -> Result
     }
     Ok(())
 }
+
+#[reducer]
+pub fn playerbots_fixture_runner_stage(
+    ctx: &ReducerContext,
+    guid: u64,
+    healing: bool,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    bot.home_x = 1240.0;
+    bot.home_y = 1200.0;
+    bot.home_z = 50.0;
+    bot.home_map = 0;
+    bot.next_think_micros = i64::MAX;
+    let _ = crate::actor::stop_attack(ctx, guid);
+    use crate::game_threat;
+    let threats = ctx.db.game_threat();
+    for row in threats.by_source().filter(guid).collect::<Vec<_>>() {
+        threats.id().delete(row.id);
+    }
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.health = if healing {
+        me.max_health / 4
+    } else {
+        me.max_health
+    };
+    ctx.db.game_world_entity().guid().update(me);
+    let mut personality = ctx
+        .db
+        .pkg_playerbots_personality()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("personality missing")?;
+    personality.flee_at_pct = 0;
+    ctx.db.pkg_playerbots_personality().id().update(personality);
+    if healing {
+        crate::spell::learn_spell(ctx, guid, spacetimedb::Identity::ZERO, HEAL);
+        use super::pkg_playerbots_rotation;
+        let rows = ctx.db.pkg_playerbots_rotation();
+        for row in rows
+            .by_class_role()
+            .filter((bot.class, bot.role))
+            .collect::<Vec<_>>()
+        {
+            rows.id().delete(row.id);
+        }
+        rows.insert(super::PlayerbotsRotation {
+            id: 0,
+            class: bot.class,
+            role: bot.role,
+            priority: 0,
+            spell_id: HEAL,
+            condition: super::cond::ALLY_HP_BELOW_PCT,
+            threshold_pct: 50,
+        });
+    }
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_damage(
+    ctx: &ReducerContext,
+    guid: u64,
+    attacker: u64,
+    damage: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let (amount, _) = crate::combat::fold_incoming_damage(ctx, attacker, guid, damage);
+    let damage = crate::combat::final_damage(ctx, guid, amount);
+    crate::combat::apply_hit(
+        ctx,
+        attacker,
+        guid,
+        damage,
+        crate::combat::Hit::weapon(crate::combat::HitSource::MainHand, false),
+    );
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_due(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    for mut bot in ctx.db.pkg_playerbots_bot().iter().collect::<Vec<_>>() {
+        bot.next_think_micros = ctx.timestamp.to_micros_since_unix_epoch() - 2_000_000;
+        ctx.db.pkg_playerbots_bot().id().update(bot);
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_pass(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    super::runner::pass(ctx);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_survival(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut personality = ctx
+        .db
+        .pkg_playerbots_personality()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("personality missing")?;
+    personality.flee_at_pct = 100;
+    ctx.db.pkg_playerbots_personality().id().update(personality);
+    playerbots_fixture_runner_due(ctx)
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_clear_navigation(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
+    let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
+    for x in cx - 1..=cx + 1 {
+        for y in cy - 1..=cy + 1 {
+            ctx.db
+                .game_nav_chunk()
+                .key()
+                .delete(lyracore_shared::terrain::cell_key(me.map_id, x, y));
+        }
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_expire_objective(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::pkg_playerbots_runner;
+    let mut state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("objective missing")?;
+    objective.deadline_micros = ctx.timestamp.to_micros_since_unix_epoch();
+    ctx.db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .update(state);
+    playerbots_fixture_runner_due(ctx)
+}
