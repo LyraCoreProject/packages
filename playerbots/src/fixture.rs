@@ -1228,6 +1228,8 @@ const PROVISION_PREVIOUS_REQUIRED: u32 = 5_090_209;
 const PROVISION_DUPLICATE_SUCCESS_SPELL: u32 = 5_090_210;
 const PROVISION_WRONG_WRAPPER: u32 = 5_090_211;
 const PROVISION_WRONG_WRAPPER_PAYLOAD: u32 = 5_090_212;
+const PROVISION_PARTIAL_TALENT_FIRST: u32 = 5_095_000;
+const PROVISION_PARTIAL_TALENT_COUNT: u32 = 65;
 
 /// Fill a missing low-ID item definition for a private seed-only Shard. Imported or otherwise
 /// existing rows remain authoritative and are never changed by this fixture.
@@ -1276,7 +1278,16 @@ pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), 
     crate::helpers::require_operator(ctx)?;
     // The seed and World import both own this real low id. Deliberately different values prove that
     // fixture staging takes the import-aware no-op path; item 52 is never part of the profile.
-    ensure_profile_item(ctx, 52, "PB005 preservation probe", 1, 18, 4, 0, true)?;
+    ensure_profile_item(
+        ctx,
+        52,
+        "Provisioning preservation fixture",
+        1,
+        18,
+        4,
+        0,
+        true,
+    )?;
     ensure_profile_item(ctx, 4496, "Provisioning Bag", 1, 18, 4, 0, false)?;
     ensure_profile_item(ctx, 117, "Provisioning Food", 20, 0, 0, 50115, false)?;
     ensure_profile_item(ctx, 159, "Provisioning Drink", 20, 0, 0, 50114, true)?;
@@ -1330,6 +1341,31 @@ pub fn playerbots_fixture_provision_complete_profile(
         .any(|row| ctx.db.game_spell().spell_id().find(row.spell_id).is_none())
     {
         return Err("complete profile fixture contains a spell without a header".to_string());
+    }
+    Ok(())
+}
+
+/// Stage a partial Talent import: tabs are absent and 65 imported-style rows remain at the
+/// preferred tree position.
+#[reducer]
+pub fn playerbots_fixture_provision_partial_talent_catalog(
+    ctx: &ReducerContext,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::{game_talent, game_talent_tab};
+    if ctx.db.game_talent_tab().count() != 0 {
+        return Err("partial talent catalogue requires no tab rows".to_string());
+    }
+    let talents = ctx.db.game_talent();
+    for ordinal in 0..PROVISION_PARTIAL_TALENT_COUNT {
+        let talent_id = PROVISION_PARTIAL_TALENT_FIRST + ordinal;
+        let mut talent = talents.talent_id().find(1).ok_or("seed talent missing")?;
+        talent.talent_id = talent_id;
+        talent.name = format!("Provisioning partial talent {ordinal}");
+        talent.tree_id = 2;
+        talent.tab_id = talent_id;
+        talents.talent_id().delete(talent_id);
+        talents.insert(talent);
     }
     Ok(())
 }
