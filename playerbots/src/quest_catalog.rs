@@ -620,19 +620,20 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
             ]);
             hash_u64(&mut hasher, u64::from(objective.target_entry));
             hash_u64(&mut hasher, u64::from(objective.required_count));
-            if objective.kind == CatalogObjectiveKind::CollectItem
-                && let Some(item) = ctx
+            if objective.kind == CatalogObjectiveKind::CollectItem {
+                if let Some(item) = ctx
                     .db
                     .game_item_template()
                     .entry()
                     .find(objective.target_entry)
-            {
-                hasher.update(&[1]);
-                hash_u64(&mut hasher, u64::from(item.entry));
-                hash_u64(&mut hasher, u64::from(item.max_stack));
-                hash_u64(&mut hasher, u64::from(item.max_count));
-            } else if objective.kind == CatalogObjectiveKind::CollectItem {
-                hasher.update(&[0]);
+                {
+                    hasher.update(&[1]);
+                    hash_u64(&mut hasher, u64::from(item.entry));
+                    hash_u64(&mut hasher, u64::from(item.max_stack));
+                    hash_u64(&mut hasher, u64::from(item.max_count));
+                } else {
+                    hasher.update(&[0]);
+                }
             }
             for entry in objective.source_entries {
                 hash_u64(&mut hasher, u64::from(*entry));
@@ -661,25 +662,25 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
                         hasher.update(&[loot.quest_only as u8]);
                     }
                 }
-                if objective.source_kind == Some(CatalogEntityKind::GameObject)
-                    && let Some(template) = ctx.db.game_gameobject_template().entry().find(entry)
-                {
-                    hasher.update(&[template.type_id]);
-                    for value in [template.data0, template.data1, template.lock_id] {
-                        hash_u64(&mut hasher, u64::from(value));
-                    }
-                    let mut gameobject_loot: Vec<_> = ctx
-                        .db
-                        .game_gameobject_loot()
-                        .by_loot()
-                        .filter(template.data1)
-                        .collect();
-                    gameobject_loot.sort_by_key(|loot| loot.id);
-                    for loot in gameobject_loot {
-                        for value in [loot.item_entry, loot.chance_bp, loot.count] {
+                if objective.source_kind == Some(CatalogEntityKind::GameObject) {
+                    if let Some(template) = ctx.db.game_gameobject_template().entry().find(entry) {
+                        hasher.update(&[template.type_id]);
+                        for value in [template.data0, template.data1, template.lock_id] {
                             hash_u64(&mut hasher, u64::from(value));
                         }
-                        hasher.update(&[loot.quest_only as u8]);
+                        let mut gameobject_loot: Vec<_> = ctx
+                            .db
+                            .game_gameobject_loot()
+                            .by_loot()
+                            .filter(template.data1)
+                            .collect();
+                        gameobject_loot.sort_by_key(|loot| loot.id);
+                        for loot in gameobject_loot {
+                            for value in [loot.item_entry, loot.chance_bp, loot.count] {
+                                hash_u64(&mut hasher, u64::from(value));
+                            }
+                            hasher.update(&[loot.quest_only as u8]);
+                        }
                     }
                 }
             }
