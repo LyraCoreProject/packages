@@ -1231,17 +1231,44 @@ const PROVISION_WRONG_WRAPPER_PAYLOAD: u32 = 5_090_212;
 const PROVISION_PARTIAL_TALENT_FIRST: u32 = 5_095_000;
 const PROVISION_PARTIAL_TALENT_COUNT: u32 = 65;
 const PROVISION_SKILL_AVAILABILITY_ROWS: u32 = 17;
+const PROVISION_SKILL_AVAILABILITY_FIRST: u64 = 5_096_000;
 
-fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) {
+fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) -> Result<(), String> {
     use crate::game_skill_availability;
     let line = super::provisioning::WARRIOR_PROFILE_SKILL;
     let rows = ctx.db.game_skill_availability();
-    for row in rows.by_skill_line().filter(line).collect::<Vec<_>>() {
-        rows.id().delete(row.id);
+    let fixture_end =
+        PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(PROVISION_SKILL_AVAILABILITY_ROWS);
+    if let Some(row) = rows
+        .by_skill_line()
+        .filter(line)
+        .find(|row| !(PROVISION_SKILL_AVAILABILITY_FIRST..fixture_end).contains(&row.id))
+    {
+        return Err(format!(
+            "skill line {line} already has non-fixture availability row {}",
+            row.id
+        ));
     }
-    for _ in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+    for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+        let id = PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal);
+        if let Some(row) = rows.id().find(id) {
+            let fixture_row = row.skill_line == line
+                && row.race_mask == 0
+                && matches!(row.class_mask, 1 | 128)
+                && row.flags == 0
+                && row.min_level == 1;
+            if !fixture_row {
+                return Err(format!("skill availability fixture id {id} is occupied"));
+            }
+        }
+    }
+    for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+        rows.id()
+            .delete(PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal));
+    }
+    for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
         rows.insert(crate::skilldata::SkillAvailability {
-            id: 0,
+            id: PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal),
             skill_line: line,
             race_mask: 0,
             class_mask: if admitted { 1 } else { 1 << 7 },
@@ -1249,6 +1276,7 @@ fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) {
             min_level: 1,
         });
     }
+    Ok(())
 }
 
 /// Fill a missing low-ID item definition for a private seed-only Shard. Imported or otherwise
@@ -1343,7 +1371,7 @@ pub fn playerbots_fixture_provision_complete_profile(
     if bot.class != super::class::WARRIOR || bot.role != super::ROLE_TANK {
         return Err("complete profile fixture requires a Warrior tank".to_string());
     }
-    replace_profile_skill_availability(ctx, true);
+    replace_profile_skill_availability(ctx, true)?;
     if ctx.db.game_spell().spell_id().find(355).is_none() {
         return Err("seed Taunt spell header missing".to_string());
     }
@@ -2016,7 +2044,7 @@ pub fn playerbots_fixture_provision_skill_overflow(
     guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    replace_profile_skill_availability(ctx, false);
+    replace_profile_skill_availability(ctx, false)?;
     use crate::game_player_skill;
     let skills = ctx.db.game_player_skill();
     for row in skills.by_character().filter(guid).collect::<Vec<_>>() {
