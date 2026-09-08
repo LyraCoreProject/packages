@@ -274,11 +274,12 @@ jobs:
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
       - name: Run the real Module and Package action fixture
+        working-directory: lyracore
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/lyracore/target
         run: |
           cargo clean --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" -p lyracore-module
-          ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
+          "$GITHUB_WORKSPACE/collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/lyracore" \
             bash -eu -o pipefail -c '
               cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
