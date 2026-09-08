@@ -421,6 +421,13 @@ unchanged. The fixture covers an invalid reward choice, full inventory, successf
 slot is freed, and a source-item acceptance refusal. Imported item uniqueness limits now apply to
 storage and reward exchanges, including bank holdings and other rewards in the same exchange.
 
+The quest catalog fixture runs only on a private Standalone with an empty Import Catalogue. Its first
+stage refuses if a required Northshire row or Fixture-Reserved Identifier already exists, then records
+private fixture ownership. Repeating that stage is a no-op. Any later import makes every quest fixture
+operation refuse before mutation. The low quest and world entries retain their Northshire meaning, but
+the fixture definitions are synthetic stand-ins and do not prove an imported-world run. Static
+relation, objective, and loot rows use the project-wide Fixture-Reserved Identifier band.
+
 `pkg_playerbots_goal.quest_credit` is an end-appended nullable count with a null default. The first
 observation establishes its baseline without clearing an existing stall. Later increases count as
 progress. The fixture exercises an existing stalled goal with nonzero objective credit and this

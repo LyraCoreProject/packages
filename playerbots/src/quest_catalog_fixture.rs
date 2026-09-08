@@ -5,19 +5,30 @@ use super::quest_catalog::{
     CatalogEntityKind, CatalogObjectiveKind, ObjectiveExecutor, PlayerbotsCatalogObjective,
     CATALOG_REVISION,
 };
+use crate::import_meta::game_import_meta;
 use crate::{
     game_character_quest, game_corpse_loot, game_creature_loot, game_creature_quest,
     game_creature_spawn, game_creature_template, game_gameobject, game_gameobject_loot,
     game_gameobject_quest, game_gameobject_template, game_item_instance, game_item_template,
-    game_quest_objective, game_quest_template, game_world_entity,
+    game_quest_objective, game_quest_template, game_spell, game_spell_effect, game_world_entity,
 };
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, table, ReducerContext, Table};
 
 const FIXTURE_REVISION: &str = "playerbots-synthetic-quest-catalog-v1";
 const CHEST_ENTRY: u32 = 161557;
 const CHEST_LOOT: u32 = 10119;
 const DIRECT_GO_QUEST: u32 = 3904;
-const INVENTORY_FILLER: u32 = 51119;
+const FIXTURE_OWNERSHIP_ID: u8 = 1;
+const RELATION_ID_BASE: u64 = 509_9000;
+const OBJECTIVE_ID_BASE: u64 = 509_9100;
+const CREATURE_LOOT_ID_BASE: u64 = 509_9200;
+const GAMEOBJECT_LOOT_ID: u64 = 509_9210;
+const INVENTORY_FILLER: u32 = 509_9400;
+const SHARED_FIXTURE_HEAL: u32 = 5_090_100;
+
+const CREATURES: [u32; 12] = [823, 197, 196, 9296, 952, 241, 240, 261, 6, 299, 69, 38];
+const GAMEOBJECTS: [u32; 3] = [55, 56, CHEST_ENTRY];
+const ITEMS: [u32; 4] = [750, 752, 11119, 11125];
 
 const QUESTS: &[(u32, u32, u32, u32, u32)] = &[
     (783, 1, 0, 823, 197),
@@ -34,12 +45,322 @@ const QUESTS: &[(u32, u32, u32, u32, u32)] = &[
     (45, 1, 37, 55, 56),
 ];
 
+#[table(accessor = pkg_playerbots_quest_fixture_ownership)]
+pub struct PlayerbotsQuestFixtureOwnership {
+    #[primary_key]
+    pub id: u8,
+    pub revision: String,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FixtureStage {
+    New,
+    Existing,
+}
+
+fn reject_imported_content(ctx: &ReducerContext) -> Result<(), String> {
+    if let Some(import) = ctx.db.game_import_meta().iter().next() {
+        return Err(format!(
+            "quest fixture refuses non-empty import catalogue ({})",
+            import.family
+        ));
+    }
+    Ok(())
+}
+
+fn require_fixture(ctx: &ReducerContext) -> Result<(), String> {
+    reject_imported_content(ctx)?;
+    let ownership = ctx
+        .db
+        .pkg_playerbots_quest_fixture_ownership()
+        .id()
+        .find(FIXTURE_OWNERSHIP_ID)
+        .ok_or("quest fixture has not claimed this database")?;
+    if ownership.revision != FIXTURE_REVISION {
+        return Err("quest fixture ownership revision differs".to_string());
+    }
+    Ok(())
+}
+
+fn quest_offset(quest_entry: u32) -> u64 {
+    QUESTS
+        .iter()
+        .position(|quest| quest.0 == quest_entry)
+        .expect("fixture quest must be listed") as u64
+}
+
+fn relation_id(quest_entry: u32, role: u8) -> u64 {
+    RELATION_ID_BASE + quest_offset(quest_entry) * 2 + u64::from(role)
+}
+
+fn objective_id(quest_entry: u32, index: u8) -> u64 {
+    OBJECTIVE_ID_BASE + quest_offset(quest_entry) * 4 + u64::from(index)
+}
+
+fn creature_loot_id(source_entry: u32) -> u64 {
+    CREATURE_LOOT_ID_BASE
+        + match source_entry {
+            299 => 0,
+            69 => 1,
+            38 => 2,
+            _ => unreachable!("fixture creature loot source must be listed"),
+        }
+}
+
 fn creature_guid(entry: u32) -> u64 {
     (0xF130u64 << 48) | (u64::from(entry) << 24) | 1
 }
 
 fn gameobject_guid(entry: u32) -> u64 {
     (0xF110u64 << 48) | u64::from(entry)
+}
+
+fn relation_exists(
+    ctx: &ReducerContext,
+    kind: CatalogEntityKind,
+    entry: u32,
+    quest_entry: u32,
+    role: u8,
+) -> bool {
+    match kind {
+        CatalogEntityKind::Creature => ctx
+            .db
+            .game_creature_quest()
+            .by_creature()
+            .filter(entry)
+            .any(|row| row.quest_entry == quest_entry && row.role == role),
+        CatalogEntityKind::GameObject => ctx
+            .db
+            .game_gameobject_quest()
+            .by_gameobject()
+            .filter(entry)
+            .any(|row| row.quest_entry == quest_entry && row.role == role),
+    }
+}
+
+fn stage_gate(ctx: &ReducerContext, character_guid: u64) -> Result<FixtureStage, String> {
+    reject_imported_content(ctx)?;
+    if let Some(ownership) = ctx
+        .db
+        .pkg_playerbots_quest_fixture_ownership()
+        .id()
+        .find(FIXTURE_OWNERSHIP_ID)
+    {
+        return if ownership.revision == FIXTURE_REVISION {
+            Ok(FixtureStage::Existing)
+        } else {
+            Err("quest fixture ownership revision differs".to_string())
+        };
+    }
+
+    if ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(character_guid)
+        .is_none()
+    {
+        return Err("Character missing".to_string());
+    }
+    let source_item = ctx
+        .db
+        .game_item_instance()
+        .by_owner_guid()
+        .filter(character_guid)
+        .next()
+        .ok_or("starter item missing")?;
+    if ctx
+        .db
+        .game_item_template()
+        .entry()
+        .find(source_item.entry)
+        .is_none()
+    {
+        return Err("starter item template missing".to_string());
+    }
+    if ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(51000)
+        .is_none()
+    {
+        return Err("seed creature template missing".to_string());
+    }
+    if ctx.db.game_spell().spell_id().find(2050).is_none() {
+        return Err("seed heal missing".to_string());
+    }
+    for bot in ctx.db.pkg_playerbots_bot().iter() {
+        if ctx
+            .db
+            .game_world_entity()
+            .guid()
+            .find(bot.character_guid)
+            .is_none()
+        {
+            return Err("fixture bot is not in the world".to_string());
+        }
+    }
+    let occupied = ITEMS
+        .iter()
+        .copied()
+        .chain([INVENTORY_FILLER])
+        .find(|entry| ctx.db.game_item_template().entry().find(*entry).is_some());
+    if let Some(entry) = occupied {
+        return Err(format!("quest fixture item entry {entry} already exists"));
+    }
+    for entry in CREATURES {
+        if ctx
+            .db
+            .game_creature_template()
+            .entry()
+            .find(entry)
+            .is_some()
+            || ctx
+                .db
+                .game_creature_spawn()
+                .guid()
+                .find(creature_guid(entry))
+                .is_some()
+            || ctx
+                .db
+                .game_world_entity()
+                .guid()
+                .find(creature_guid(entry))
+                .is_some()
+        {
+            return Err(format!(
+                "quest fixture creature entry {entry} already exists"
+            ));
+        }
+    }
+    for entry in GAMEOBJECTS {
+        if ctx
+            .db
+            .game_gameobject_template()
+            .entry()
+            .find(entry)
+            .is_some()
+            || ctx
+                .db
+                .game_gameobject()
+                .guid()
+                .find(gameobject_guid(entry))
+                .is_some()
+        {
+            return Err(format!(
+                "quest fixture GameObject entry {entry} already exists"
+            ));
+        }
+    }
+    for (quest_entry, _, _, start, actual_ender) in QUESTS.iter().copied() {
+        if ctx
+            .db
+            .game_quest_template()
+            .entry()
+            .find(quest_entry)
+            .is_some()
+            || ctx
+                .db
+                .game_quest_objective()
+                .by_quest()
+                .filter(quest_entry)
+                .next()
+                .is_some()
+        {
+            return Err(format!("quest fixture quest {quest_entry} already exists"));
+        }
+        for (entry, role) in [
+            (start, crate::quest::quest_role::START),
+            (actual_ender, crate::quest::quest_role::END),
+        ] {
+            let kind = if matches!(entry, 55 | 56) {
+                CatalogEntityKind::GameObject
+            } else {
+                CatalogEntityKind::Creature
+            };
+            if relation_exists(ctx, kind, entry, quest_entry, role) {
+                return Err(format!(
+                    "quest fixture relation for quest {quest_entry} already exists"
+                ));
+            }
+            let id = relation_id(quest_entry, role);
+            let reserved_occupied = match kind {
+                CatalogEntityKind::Creature => ctx.db.game_creature_quest().id().find(id).is_some(),
+                CatalogEntityKind::GameObject => {
+                    ctx.db.game_gameobject_quest().id().find(id).is_some()
+                }
+            };
+            if reserved_occupied {
+                return Err(format!("quest fixture relation id {id} is occupied"));
+            }
+        }
+        for index in 0..4 {
+            let id = objective_id(quest_entry, index);
+            if ctx.db.game_quest_objective().id().find(id).is_some() {
+                return Err(format!("quest fixture objective id {id} is occupied"));
+            }
+        }
+    }
+    for source in [299, 69, 38] {
+        if ctx
+            .db
+            .game_creature_loot()
+            .by_creature()
+            .filter(source)
+            .next()
+            .is_some()
+        {
+            return Err(format!(
+                "quest fixture creature loot for {source} already exists"
+            ));
+        }
+        let id = creature_loot_id(source);
+        if ctx.db.game_creature_loot().id().find(id).is_some() {
+            return Err(format!("quest fixture creature loot id {id} is occupied"));
+        }
+    }
+    if ctx
+        .db
+        .game_gameobject_loot()
+        .by_loot()
+        .filter(CHEST_LOOT)
+        .next()
+        .is_some()
+        || ctx
+            .db
+            .game_gameobject_loot()
+            .id()
+            .find(GAMEOBJECT_LOOT_ID)
+            .is_some()
+    {
+        return Err("quest fixture GameObject loot is occupied".to_string());
+    }
+    if ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(SHARED_FIXTURE_HEAL)
+        .is_some()
+        || ctx
+            .db
+            .game_spell_effect()
+            .by_spell()
+            .filter(SHARED_FIXTURE_HEAL)
+            .next()
+            .is_some()
+    {
+        return Err("shared playerbots fixture spell is occupied".to_string());
+    }
+    for effect in ctx.db.game_spell_effect().by_spell().filter(2050u32) {
+        let id = (u64::from(SHARED_FIXTURE_HEAL) << 2) | u64::from(effect.effect_index);
+        if ctx.db.game_spell_effect().id().find(id).is_some() {
+            return Err(format!(
+                "shared playerbots fixture spell effect id {id} is occupied"
+            ));
+        }
+    }
+    Ok(FixtureStage::New)
 }
 
 fn insert_creature(ctx: &ReducerContext, entry: u32, x: f32, y: f32, z: f32) -> Result<(), String> {
@@ -52,11 +373,8 @@ fn insert_creature(ctx: &ReducerContext, entry: u32, x: f32, y: f32, z: f32) -> 
     template.entry = entry;
     template.name = format!("Catalog creature {entry}");
     template.faction_template = 14;
-    ctx.db.game_creature_template().entry().delete(entry);
     let template = ctx.db.game_creature_template().insert(template);
     let guid = creature_guid(entry);
-    crate::creatures::despawn_creature_entity(ctx, guid);
-    ctx.db.game_creature_spawn().guid().delete(guid);
     let spawn = ctx.db.game_creature_spawn().insert(crate::CreatureSpawn {
         guid,
         entry,
@@ -87,7 +405,6 @@ fn insert_gameobject(
     y: f32,
     z: f32,
 ) {
-    ctx.db.game_gameobject_template().entry().delete(entry);
     ctx.db
         .game_gameobject_template()
         .insert(crate::GameObjectTemplate {
@@ -104,7 +421,6 @@ fn insert_gameobject(
             size: 1.0,
         });
     let guid = gameobject_guid(entry);
-    ctx.db.game_gameobject().guid().delete(guid);
     ctx.db.game_gameobject().insert(crate::GameObject {
         guid,
         template_entry: entry,
@@ -138,7 +454,6 @@ fn clone_item(ctx: &ReducerContext, entry: u32, source_entry: u32) -> Result<(),
     item.name = format!("Catalog item {entry}");
     item.max_stack = 20;
     item.max_count = 0;
-    ctx.db.game_item_template().entry().delete(entry);
     ctx.db.game_item_template().insert(item);
     Ok(())
 }
@@ -151,7 +466,6 @@ fn insert_quest(
     start: u32,
     actual_ender: u32,
 ) {
-    ctx.db.game_quest_template().entry().delete(entry);
     ctx.db.game_quest_template().insert(crate::QuestTemplate {
         entry,
         min_level,
@@ -210,16 +524,10 @@ fn insert_relation(
     match kind {
         CatalogEntityKind::Creature => {
             let table = ctx.db.game_creature_quest();
-            for row in table
-                .by_creature()
-                .filter(entry)
-                .filter(|row| row.quest_entry == quest_entry && row.role == role)
-                .collect::<Vec<_>>()
-            {
-                table.id().delete(row.id);
-            }
+            let id = relation_id(quest_entry, role);
+            table.id().delete(id);
             table.insert(crate::CreatureQuest {
-                id: 0,
+                id,
                 creature_entry: entry,
                 quest_entry,
                 role,
@@ -227,16 +535,10 @@ fn insert_relation(
         }
         CatalogEntityKind::GameObject => {
             let table = ctx.db.game_gameobject_quest();
-            for row in table
-                .by_gameobject()
-                .filter(entry)
-                .filter(|row| row.quest_entry == quest_entry && row.role == role)
-                .collect::<Vec<_>>()
-            {
-                table.id().delete(row.id);
-            }
+            let id = relation_id(quest_entry, role);
+            table.id().delete(id);
             table.insert(crate::GameObjectQuest {
-                id: 0,
+                id,
                 go_entry: entry,
                 quest_entry,
                 role,
@@ -253,7 +555,7 @@ fn insert_objective(
     target_entry: u32,
     required_count: u32,
 ) {
-    let id = (u64::from(quest_entry) << 8) | u64::from(index);
+    let id = objective_id(quest_entry, index);
     ctx.db.game_quest_objective().id().delete(id);
     ctx.db.game_quest_objective().insert(crate::QuestObjective {
         id,
@@ -284,7 +586,7 @@ fn reward_prerequisite(ctx: &ReducerContext, guid: u64, quest_entry: u32) -> Res
         .ok_or("Character missing")?
         .owner_identity;
     ctx.db.game_character_quest().insert(crate::CharacterQuest {
-        id: 0,
+        id: 0, // Core allocates per-Character quest-log ids.
         character_guid: guid,
         owner_identity,
         quest_entry,
@@ -302,6 +604,15 @@ pub fn playerbots_quest_fixture_stage(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    if stage_gate(ctx, character_guid)? == FixtureStage::Existing {
+        return Ok(());
+    }
+    ctx.db
+        .pkg_playerbots_quest_fixture_ownership()
+        .insert(PlayerbotsQuestFixtureOwnership {
+            id: FIXTURE_OWNERSHIP_ID,
+            revision: FIXTURE_REVISION.to_string(),
+        });
     super::fixture::playerbots_fixture_prepare(ctx)?;
     let mut character = ctx
         .db
@@ -325,13 +636,10 @@ pub fn playerbots_quest_fixture_stage(
         .next()
         .ok_or("starter item missing")?
         .entry;
-    for entry in [750, 752, 11119, 11125] {
+    for entry in ITEMS {
         clone_item(ctx, entry, source_item)?;
     }
-    for (offset, entry) in [823, 197, 196, 9296, 952, 241, 240, 261, 6, 299, 69, 38]
-        .into_iter()
-        .enumerate()
-    {
+    for (offset, entry) in CREATURES.into_iter().enumerate() {
         insert_creature(
             ctx,
             entry,
@@ -381,8 +689,10 @@ pub fn playerbots_quest_fixture_stage(
     }
     let creature_loot = ctx.db.game_creature_loot();
     for (source, item) in [(299, 750), (69, 750), (38, 752)] {
+        let id = creature_loot_id(source);
+        creature_loot.id().delete(id);
         creature_loot.insert(crate::CreatureLoot {
-            id: 0,
+            id,
             creature_entry: source,
             item_entry: item,
             chance_bp: 10_000,
@@ -391,8 +701,10 @@ pub fn playerbots_quest_fixture_stage(
             quest_only: true,
         });
     }
-    ctx.db.game_gameobject_loot().insert(crate::GameObjectLoot {
-        id: 0,
+    let gameobject_loot = ctx.db.game_gameobject_loot();
+    gameobject_loot.id().delete(GAMEOBJECT_LOOT_ID);
+    gameobject_loot.insert(crate::GameObjectLoot {
+        id: GAMEOBJECT_LOOT_ID,
         loot_id: CHEST_LOOT,
         item_entry: 11119,
         chance_bp: 10_000,
@@ -411,6 +723,7 @@ pub fn playerbots_quest_fixture_admit_accept(
     quest_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let prerequisite = ctx
         .db
         .game_quest_template()
@@ -448,6 +761,7 @@ pub fn playerbots_quest_fixture_turn_in(
     quest_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let admission = quest_catalog::admit_held(ctx, character_guid, quest_entry).map_err(
         |refusal| match refusal {
             AdmissionRefusal::Ineligible(detail) | AdmissionRefusal::Unsupported { detail, .. } => {
@@ -472,6 +786,7 @@ pub fn playerbots_quest_fixture_kill(
     creature_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let target = quest_catalog::live_creature_target(ctx, character_guid, creature_entry)
         .ok_or("no live target")?;
     super::actions::attack(ctx, character_guid, target.guid).map_err(String::from)?;
@@ -498,6 +813,7 @@ pub fn playerbots_quest_fixture_take_creature_loot(
     creature_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let guid = creature_guid(creature_entry);
     super::actions::open_creature_loot(ctx, character_guid, guid, 33).map_err(String::from)?;
     let slots: Vec<_> = ctx
@@ -524,6 +840,7 @@ pub fn playerbots_quest_fixture_use_gameobject(
     take_loot: bool,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let guid = gameobject_guid(gameobject_entry);
     super::actions::use_gameobject(ctx, character_guid, guid, DIRECT_GO_QUEST)
         .map_err(String::from)?;
@@ -552,6 +869,7 @@ pub fn playerbots_quest_fixture_fill_inventory(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let source_entry = ctx
         .db
         .game_item_instance()
@@ -583,6 +901,7 @@ pub fn playerbots_quest_fixture_try_take_gameobject_loot(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let guid = gameobject_guid(CHEST_ENTRY);
     let slot = ctx
         .db
@@ -606,6 +925,7 @@ pub fn playerbots_quest_fixture_clear_filler_and_take_gameobject_loot(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let items = ctx.db.game_item_instance();
     for item in items
         .by_owner_guid()
@@ -640,6 +960,7 @@ pub fn playerbots_quest_fixture_try_use_gameobject(
     gameobject_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let _ = super::actions::use_gameobject(
         ctx,
         character_guid,
@@ -655,6 +976,7 @@ pub fn playerbots_quest_fixture_direct_gameobject(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     reward_prerequisite(ctx, character_guid, 3903)?;
     let templates = ctx.db.game_gameobject_template();
     let mut template = templates
@@ -694,6 +1016,7 @@ pub fn playerbots_quest_fixture_mixed_unsupported(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     reward_prerequisite(ctx, character_guid, 783)?;
     insert_objective(ctx, 7, 1, crate::quest::objective_kind::KILL_CREATURE, 6, 1);
     quest_catalog::refresh_catalog(ctx, "unknown");
@@ -727,6 +1050,7 @@ pub fn playerbots_quest_fixture_mixed_progress(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     reward_prerequisite(ctx, character_guid, 783)?;
     insert_objective(
         ctx,
@@ -811,6 +1135,7 @@ pub fn playerbots_quest_fixture_unsupported(
     unsupported_kind: u8,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     if unsupported_kind == 4 {
         reward_prerequisite(ctx, character_guid, 3903)?;
         let templates = ctx.db.game_gameobject_template();
@@ -854,6 +1179,7 @@ pub fn playerbots_quest_fixture_level_admission(
     quest_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let rows = ctx.db.game_world_entity();
     let mut character = rows
         .guid()
@@ -882,6 +1208,7 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let alternative = quest_catalog::admit_available(ctx, character_guid, 5261).map_err(
         |refusal| match refusal {
             AdmissionRefusal::Ineligible(detail) | AdmissionRefusal::Unsupported { detail, .. } => {
@@ -916,6 +1243,7 @@ pub fn playerbots_quest_fixture_lose_provided_item(
     bank_item: bool,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let items = ctx.db.game_item_instance();
     let mut item = items
         .by_owner_guid()
@@ -940,6 +1268,7 @@ pub fn playerbots_quest_fixture_hide_live_target(
     creature_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     crate::creatures::despawn_creature_entity(ctx, creature_guid(creature_entry));
     Ok(())
 }
@@ -950,6 +1279,7 @@ pub fn playerbots_quest_fixture_deplete_gameobject(
     gameobject_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let rows = ctx.db.game_gameobject();
     let mut row = rows
         .guid()
@@ -967,6 +1297,7 @@ pub fn playerbots_quest_fixture_move_gameobject(
     x: f32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let rows = ctx.db.game_gameobject();
     let mut row = rows
         .guid()
@@ -988,6 +1319,7 @@ pub fn playerbots_quest_fixture_move_creature_spawn(
     x: f32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let rows = ctx.db.game_creature_spawn();
     let mut row = rows
         .guid()
@@ -1005,6 +1337,7 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
     creature_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     if quest_catalog::live_creature_target(ctx, character_guid, creature_entry).is_some() {
         Err("live target still present".to_string())
     } else {
@@ -1015,6 +1348,7 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
 #[reducer]
 pub fn playerbots_quest_fixture_refresh(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     quest_catalog::refresh_catalog(ctx, "unknown");
     Ok(())
 }
@@ -1022,6 +1356,7 @@ pub fn playerbots_quest_fixture_refresh(ctx: &ReducerContext) -> Result<(), Stri
 #[reducer]
 pub fn playerbots_quest_fixture_recheck_unchanged(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
     let headers = ctx.db.pkg_playerbots_quest_catalog();
     let mut header = headers
         .revision()

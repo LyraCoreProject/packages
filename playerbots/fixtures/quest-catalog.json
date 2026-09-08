@@ -32,5 +32,13 @@
     "imported_world_run": false,
     "client_geometry": null
   },
+  "fixture_boundary": {
+    "import_catalogue_required_empty": true,
+    "semantic_entries_required_absent": true,
+    "semantic_entries_replaced": false,
+    "static_surrogate_id_band": "5090000-5099999",
+    "repeat_stage": "no-op for the same owned fixture revision",
+    "later_import": "refused before mutation"
+  },
   "provenance": "Private Standalone rows shaped from the inspected ClassicDB schema. Coordinates, item drops, and action outcomes in this fixture are synthetic."
 }
