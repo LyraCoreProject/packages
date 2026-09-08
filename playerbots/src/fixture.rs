@@ -1234,7 +1234,7 @@ const PROVISION_SKILL_AVAILABILITY_ROWS: u32 = 17;
 
 fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) {
     use crate::game_skill_availability;
-    let line = crate::skill::skill_line::SWORD_1H;
+    let line = super::provisioning::WARRIOR_PROFILE_SKILL;
     let rows = ctx.db.game_skill_availability();
     for row in rows.by_skill_line().filter(line).collect::<Vec<_>>() {
         rows.id().delete(row.id);
@@ -2020,12 +2020,15 @@ pub fn playerbots_fixture_provision_skill_overflow(
     use crate::game_player_skill;
     let skills = ctx.db.game_player_skill();
     for row in skills.by_character().filter(guid).collect::<Vec<_>>() {
-        if row.skill_line == crate::skill::skill_line::SWORD_1H {
+        if row.skill_line == super::provisioning::WARRIOR_PROFILE_SKILL {
             skills.id().delete(row.id);
         }
     }
     set_provision_action(ctx, guid, |action| {
-        action == super::provisioning::ProvisionAction::Skill(crate::skill::skill_line::SWORD_1H)
+        action
+            == super::provisioning::ProvisionAction::Skill(
+                super::provisioning::WARRIOR_PROFILE_SKILL,
+            )
     })
 }
 

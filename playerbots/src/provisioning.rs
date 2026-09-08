@@ -8,6 +8,7 @@ use crate::{game_item_instance, game_world_entity};
 use spacetimedb::{table, ReducerContext, Table};
 
 const PROFILE_REVISION: u32 = 1;
+pub(super) const WARRIOR_PROFILE_SKILL: u32 = 43;
 const STEP_INTERVAL_MICROS: i64 = 1_000_000;
 const RETRY_INTERVAL_MICROS: i64 = 30_000_000;
 const REPAIR_INTERVAL_MICROS: i64 = 60_000_000;
@@ -252,10 +253,10 @@ crate::game_hook!(on_levelup, fn playerbots_arm_provisioning_on_levelup(ctx, pay
 
 fn preferred_skill(class: u8) -> u32 {
     match class {
-        class::WARRIOR => 43,                 // One-Handed Swords
-        class::PALADIN | class::PRIEST => 54, // One-Handed Maces
-        class::MAGE => 136,                   // Staves
-        _ => 162,                             // Unarmed
+        class::WARRIOR => WARRIOR_PROFILE_SKILL, // One-Handed Swords
+        class::PALADIN | class::PRIEST => 54,    // One-Handed Maces
+        class::MAGE => 136,                      // Staves
+        _ => 162,                                // Unarmed
     }
 }
 
