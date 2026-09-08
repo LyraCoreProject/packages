@@ -41,7 +41,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 916181024cbdf85bc2f798b31658ef2df9380bf0
+          ref: 41488bfe8fecae21498371e172969c01948e7bc2
           path: lyracore
 
       - name: Install Rust 1.93.0
@@ -65,7 +65,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 916181024cbdf85bc2f798b31658ef2df9380bf0
+          ref: 41488bfe8fecae21498371e172969c01948e7bc2
           path: lyracore
 
       # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
@@ -124,7 +124,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 916181024cbdf85bc2f798b31658ef2df9380bf0
+          ref: 41488bfe8fecae21498371e172969c01948e7bc2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
