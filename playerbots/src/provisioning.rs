@@ -7,7 +7,7 @@ use super::{
 use crate::{game_item_instance, game_world_entity};
 use spacetimedb::{table, ReducerContext, Table};
 
-const PROFILE_REVISION: u32 = 1;
+const PROFILE_REVISION: u32 = 2;
 pub(super) const WARRIOR_PROFILE_SKILL: u32 = 43;
 const STEP_INTERVAL_MICROS: i64 = 1_000_000;
 const RETRY_INTERVAL_MICROS: i64 = 30_000_000;
@@ -630,6 +630,16 @@ pub(super) fn reconcile_due(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64)
             };
             rows.insert(state)
         });
+    let expected_profile = profile_name(bot.class, bot.role);
+    if state.revision != PROFILE_REVISION || state.profile != expected_profile {
+        state.profile = expected_profile;
+        state.revision = PROFILE_REVISION;
+        state.free_grants = true;
+        state.armed_level = entity.level;
+        state.cause = ProvisionCause::Periodic;
+        state.action_cursor = 0;
+        state.next_repair_micros = now;
+    }
     if now < state.next_repair_micros {
         return ReconcileStep::Ready;
     }

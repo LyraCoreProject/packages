@@ -286,6 +286,7 @@ jobs:
               cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
                 --test playerbots_provisioning --test playerbots_quest_catalog \
+                --test playerbots_roles \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs

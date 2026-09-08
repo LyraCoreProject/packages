@@ -1,19 +1,22 @@
 //! Deterministic staging for private, per-test durable databases.
 //! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
-use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use super::{pkg_playerbots_bot, pkg_playerbots_kit, PlayerbotsBot};
+use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
+use crate::{game_aura, game_creature_spline, game_spell, game_spell_effect, game_world_entity};
 use crate::{
     game_creature_spawn, game_creature_template, game_group, game_quest_objective,
     game_quest_template,
 };
-use crate::{game_creature_spline, game_spell, game_spell_effect, game_world_entity};
 use spacetimedb::{reducer, ReducerContext, Table};
 
 const HEAL: u32 = 5_090_100;
 const CHANNEL_HEAL: u32 = 5_090_104;
 const COMPANION_GROUP: u64 = 5_090_300;
+const ROLES_GROUP: u64 = 5_098_000;
+const ROLES_PRIEST_TRAINER: u32 = 5_098_200;
+const ROLES_FORTITUDE_OFFERING: u64 = 5_098_201;
 
 #[reducer]
 pub fn playerbots_fixture_prepare(ctx: &ReducerContext) -> Result<(), String> {
@@ -276,6 +279,274 @@ pub fn playerbots_fixture_companion_stage(
             ownership: None,
         },
     )?;
+    Ok(())
+}
+
+/// Stage the supported level-5 Warrior, Priest, and Mage around one human-led party. The fourth
+/// spawned Character stands in for the human leader after its bot roster row is removed.
+#[reducer]
+pub fn playerbots_fixture_roles_stage(
+    ctx: &ReducerContext,
+    warrior_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    leader_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    for (guid, class, role) in [
+        (warrior_guid, super::class::WARRIOR, super::ROLE_TANK),
+        (priest_guid, super::class::PRIEST, super::ROLE_HEALER),
+        (mage_guid, super::class::MAGE, super::ROLE_DPS),
+    ] {
+        let mut bot = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next()
+            .ok_or_else(|| format!("role fixture bot {guid} missing"))?;
+        if (bot.class, bot.role) != (class, role) {
+            return Err(format!(
+                "role fixture bot {guid} has the wrong class or role"
+            ));
+        }
+        let entity = crate::helpers::live_entity(ctx, guid)?;
+        if entity.level != 5 {
+            return Err(format!(
+                "role fixture supports level 5, got {}",
+                entity.level
+            ));
+        }
+        bot.next_think_micros = i64::MAX;
+        ctx.db.pkg_playerbots_bot().id().update(bot);
+        let mut personality = ctx
+            .db
+            .pkg_playerbots_personality()
+            .by_character()
+            .filter(guid)
+            .next()
+            .ok_or("role fixture personality missing")?;
+        personality.flee_at_pct = 0;
+        ctx.db.pkg_playerbots_personality().id().update(personality);
+    }
+    let leader = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(leader_guid)
+        .next()
+        .ok_or("role fixture leader missing")?;
+    ctx.db.pkg_playerbots_bot().id().delete(leader.id);
+    crate::actor::set_sessionless_action_consent(ctx, leader_guid, true);
+
+    companion_unit(ctx, warrior_guid, 1200.0, 1200.0, 100)?;
+    companion_unit(ctx, priest_guid, 1198.0, 1200.0, 100)?;
+    companion_unit(ctx, mage_guid, 1180.0, 1200.0, 100)?;
+    companion_unit(ctx, leader_guid, 1202.0, 1200.0, 100)?;
+    for (entry, x, y) in [
+        (5_098_001, 1208.0, 1200.0),
+        (5_098_002, 1210.0, 1203.0),
+        (5_098_003, 1212.0, 1197.0),
+    ] {
+        let guid = companion_creature(ctx, entry, x, y, 50.0, None)?;
+        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        entity.max_health = 1_000;
+        entity.health = 1_000;
+        ctx.db.game_world_entity().guid().update(entity);
+    }
+    crate::group::sync_group_mirror(
+        ctx,
+        ROLES_GROUP,
+        leader_guid,
+        0,
+        2,
+        0,
+        vec![leader_guid, warrior_guid, priest_guid, mage_guid],
+        crate::SessionActor {
+            guid: leader_guid,
+            ownership: None,
+        },
+    )?;
+    for guid in [warrior_guid, priest_guid, mage_guid] {
+        super::runner::playerbots_select_controller(ctx, guid, super::Controller::Cohort)?;
+        runner_park_for(ctx, guid)?;
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_roles_select(
+    ctx: &ReducerContext,
+    leader_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut leader = crate::helpers::live_entity(ctx, leader_guid)?;
+    leader.target_guid = target_guid;
+    ctx.db.game_world_entity().guid().update(leader);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_roles_engage(
+    ctx: &ReducerContext,
+    leader_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::actor::request_attack(ctx, leader_guid, target_guid)
+        .map(|_| ())
+        .map_err(|refusal| format!("leader attack refused: {refusal:?}"))
+}
+
+#[reducer]
+pub fn playerbots_fixture_roles_enemy_engage(
+    ctx: &ReducerContext,
+    enemy_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::combat::request_attack(ctx, enemy_guid, target_guid)
+        .map(|_| ())
+        .map_err(|refusal| format!("enemy attack refused: {refusal:?}"))
+}
+
+#[reducer]
+pub fn playerbots_fixture_roles_despawn(
+    ctx: &ReducerContext,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::creatures::despawn_creature_entity(ctx, target_guid);
+    Ok(())
+}
+
+/// Apply one of the core's seeded control probes through the real aura pipeline.
+#[reducer]
+pub fn playerbots_fixture_roles_control(
+    ctx: &ReducerContext,
+    caster_guid: u64,
+    target_guid: u64,
+    spell_id: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if !(50_020..=50_023).contains(&spell_id) {
+        return Err("role fixture control spell must be 50020 through 50023".to_string());
+    }
+    let caster = crate::helpers::live_entity(ctx, caster_guid)?;
+    crate::spell::cast_triggered(ctx, caster_guid, spell_id, caster.level as u8, target_guid)
+}
+
+/// Begin a real cast bar for the seeded control probe. This catches the interval before the aura
+/// lands, when damage assistance would break the incoming control.
+#[reducer]
+pub fn playerbots_fixture_roles_begin_control(
+    ctx: &ReducerContext,
+    caster_guid: u64,
+    target_guid: u64,
+    spell_id: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if !(50_020..=50_023).contains(&spell_id) {
+        return Err("role fixture control spell must be 50020 through 50023".to_string());
+    }
+    let mut spell = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(spell_id)
+        .ok_or("control fixture spell missing")?;
+    spell.cast_time_ms = 5_000;
+    ctx.db.game_spell().spell_id().update(spell);
+    crate::spell::learn_spell(ctx, caster_guid, spacetimedb::Identity::ZERO, spell_id);
+    crate::actor::request_cast(ctx, caster_guid, spell_id, target_guid)
+        .map(|_| ())
+        .map_err(|refusal| format!("control cast refused: {refusal:?}"))
+}
+
+#[reducer]
+pub fn playerbots_fixture_roles_clear_control(
+    ctx: &ReducerContext,
+    caster_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if let Some(cast) = crate::spell::pending_cast(ctx, caster_guid) {
+        crate::spell::cancel_cast_attempt(ctx, caster_guid, cast.scheduled_id);
+    }
+    let auras = ctx.db.game_aura();
+    for aura in auras.by_target().filter(&target_guid).collect::<Vec<_>>() {
+        if aura.eff_kind == crate::spell::A_CONTROL {
+            auras.id().delete(aura.id);
+        }
+    }
+    Ok(())
+}
+
+/// Place the stronger member of the Fortitude family through the same stacking chokepoint as a
+/// player cast, so maintenance can prove that rank-family satisfaction prevents a weaker recast.
+#[reducer]
+pub fn playerbots_fixture_roles_stronger_fortitude(
+    ctx: &ReducerContext,
+    caster_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let caster = crate::helpers::live_entity(ctx, caster_guid)?;
+    crate::spell::cast_triggered(ctx, caster_guid, 21_562, caster.level as u8, target_guid)
+}
+
+/// Add one source-derived, level-valid Priest trainer offering and arm its normal profile action.
+/// This private fixture row proves the trainer Gate without claiming imported catalogue coverage.
+#[reducer]
+pub fn playerbots_fixture_roles_prepare_fortitude(
+    ctx: &ReducerContext,
+    priest_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(priest_guid)
+        .next()
+        .ok_or("role fixture Priest missing")?;
+    if (bot.class, bot.role) != (super::class::PRIEST, super::ROLE_HEALER) {
+        return Err("Fortitude fixture requires a Priest healer".to_string());
+    }
+    if ctx.db.game_spell().spell_id().find(1243).is_none() {
+        return Err("seed Fortitude spell header missing".to_string());
+    }
+    provision_kit_spell(ctx, &bot, 1243);
+    provision_trainer(ctx, ROLES_PRIEST_TRAINER, super::class::PRIEST)?;
+    provision_offering(ctx, ROLES_FORTITUDE_OFFERING, ROLES_PRIEST_TRAINER, 1243, 1);
+    set_provision_action(ctx, priest_guid, |action| {
+        action == super::provisioning::ProvisionAction::Spell(1243)
+    })
+}
+
+/// Give the level-5 Priest a named fixture mana pool for the real 30-power Lesser Heal Gate.
+/// The value is synthetic and makes no claim about an imported class-stat curve.
+#[reducer]
+pub fn playerbots_fixture_roles_priest_mana(
+    ctx: &ReducerContext,
+    priest_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(priest_guid)
+        .next()
+        .ok_or("role fixture Priest missing")?;
+    if bot.class != super::class::PRIEST {
+        return Err("mana fixture requires a Priest".to_string());
+    }
+    let mut priest = crate::helpers::live_entity(ctx, priest_guid)?;
+    priest.max_power = 100;
+    priest.power = 100;
+    ctx.db.game_world_entity().guid().update(priest);
     Ok(())
 }
 

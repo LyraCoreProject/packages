@@ -10,6 +10,25 @@
     "heal_target": "named ally, with explicit self still admitted",
     "creature_source_entry": 51000,
     "companion_unrelated_creature_entry": 5090302,
+    "starter_role_creature_entries": [5098001, 5098002, 5098003],
+    "starter_role_level": 5,
+    "starter_role_priest_mana": {
+      "power": 100,
+      "source": "synthetic private resource Gate fixture"
+    },
+    "starter_role_control_spells": [50020, 50021, 50022, 50023],
+    "starter_role_fortitude_trainer": {
+      "trainer_entry": 5098200,
+      "offering_id": 5098201,
+      "spell": 1243,
+      "required_level": 1,
+      "source": "private source-derived trainer row"
+    },
+    "starter_role_capabilities": {
+      "warrior": [78, 2457],
+      "priest": [585, 2050],
+      "mage": [133, 168]
+    },
     "item_source": "first starter item held by the seeded role-1 bot"
   },
   "imported_content": null,
