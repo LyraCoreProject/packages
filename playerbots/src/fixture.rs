@@ -390,11 +390,7 @@ pub fn playerbots_fixture_companion_mixed_heals(
     ctx.db.game_spell().spell_id().delete(CHANNEL_HEAL);
     ctx.db.game_spell().insert(channel);
     let effects = ctx.db.game_spell_effect();
-    for row in effects
-        .by_spell()
-        .filter(&CHANNEL_HEAL)
-        .collect::<Vec<_>>()
-    {
+    for row in effects.by_spell().filter(&CHANNEL_HEAL).collect::<Vec<_>>() {
         effects.id().delete(row.id);
     }
     for mut effect in effects.by_spell().filter(&HEAL).collect::<Vec<_>>() {
@@ -409,8 +405,16 @@ pub fn playerbots_fixture_companion_mixed_heals(
         CHANNEL_HEAL,
     );
     let rotations = ctx.db.pkg_playerbots_rotation();
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(character_guid)
+        .next()
+        .ok_or("companion bot missing")?;
     let mut supported = rotations
-        .iter()
+        .by_class_role()
+        .filter((bot.class, bot.role))
         .find(|row| row.spell_id == HEAL)
         .ok_or("supported heal rotation missing")?;
     supported.priority = 1;

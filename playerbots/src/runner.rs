@@ -1040,7 +1040,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         ));
     } else {
         strategies.push(strategy(Trigger::LowHealth, survival));
-        if party.is_none() {
+        if party.is_none() || bot.role != super::ROLE_HEALER {
             strategies.push(strategy(Trigger::Wounded, recovery));
         }
         strategies.push(strategy(Trigger::Attacked, defense));
