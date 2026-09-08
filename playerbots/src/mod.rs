@@ -749,7 +749,7 @@ fn spawn_batch(
 fn spawn_spot(ctx: &ReducerContext, at: (f32, f32, f32), index: usize) -> (f32, f32, f32) {
     let (dx, dy) = scatter_offset(index);
     let (x, y) = (at.0 + dx, at.1 + dy);
-    (x, y, crate::terrain::snap_z(ctx, SPAWN_MAP_ID, x, y, at.2))
+    (x, y, crate::terrain::snap_z(ctx, SPAWN_MAP_ID, 0, x, y, at.2))
 }
 
 /// The furthest a scattered bot stands from the named point.

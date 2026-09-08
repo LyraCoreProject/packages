@@ -2403,6 +2403,7 @@ fn walk_toward(
     let (lx, ly) = crate::nav::nav_step(
         ctx,
         me.map_id,
+        me.instance_id,
         (me.x, me.y),
         (dest.0, dest.1),
         step,
