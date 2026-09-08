@@ -267,6 +267,7 @@ jobs:
           manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
           PY
           echo "PLAYERBOTS_COMPANION_PRECEDING_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_PB002_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
@@ -283,6 +284,7 @@ jobs:
                 -p lyracore-module --features=debug_reducers
               cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
+                --test playerbots_provisioning \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs

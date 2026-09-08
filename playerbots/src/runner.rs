@@ -21,6 +21,7 @@ const HISTORY_LIMIT: usize = 8;
 const RECOVERY_SCAN_LIMIT: usize = 24;
 const FAILURE_LIMIT: usize = 4;
 const CATALOG_REVISION: u64 = 1;
+const DEFENSE_PRIORITY: i32 = 600;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Controller {
@@ -151,6 +152,7 @@ pub enum RunnerOutcome {
     Refused(Failure),
     Cancelled,
     Frozen,
+    Provisioning,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -980,7 +982,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             .as_ref()
             .map_or(Action::Hold, |target| Action::Attack(target.guid)),
         Reason::Defense,
-        600,
+        DEFENSE_PRIORITY,
     );
     if threat.is_none() {
         defense.readiness = Readiness::Refused;
@@ -989,7 +991,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         let mut close = node(
             Action::Move(MoveTarget::Entity(target.guid)),
             Reason::Defense,
-            600,
+            DEFENSE_PRIORITY,
         );
         if ((target.x - me.x).powi(2) + (target.y - me.y).powi(2)).sqrt() <= 4.0 {
             close.readiness = Readiness::Complete;
@@ -1145,6 +1147,30 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 return;
             }
             state.foreground = None;
+        }
+    }
+    if bot.controller == Controller::Cohort
+        && state.foreground.is_none()
+        && chosen.is_none_or(|candidate| candidate.priority < DEFENSE_PRIORITY)
+    {
+        match super::provisioning::reconcile_due(ctx, bot, now) {
+            super::provisioning::ReconcileStep::Ready
+            | super::provisioning::ReconcileStep::Recorded => {}
+            super::provisioning::ReconcileStep::Worked => {
+                let candidate = Candidate {
+                    id: decision::CandidateId {
+                        action: Action::Hold,
+                        reason: Reason::Provisioning,
+                        objective: state.objective_sequence,
+                    },
+                    priority: 0,
+                };
+                state.chosen = Some(candidate);
+                state.candidate_order = vec![candidate];
+                state.last_outcome = RunnerOutcome::Provisioning;
+                state.save(ctx);
+                return;
+            }
         }
     }
     state.chosen = chosen;

@@ -22,9 +22,11 @@ mod actions;
 mod companion;
 mod decision;
 mod goals;
+mod provisioning;
 mod runner;
-pub(crate) use runner::*;
 pub(crate) use actions::*;
+pub(crate) use provisioning::*;
+pub(crate) use runner::*;
 #[cfg(feature = "debug_reducers")]
 mod fixture;
 pub(crate) use goals::*;
@@ -617,8 +619,8 @@ pub(crate) fn role_personality_defaults(role: u8) -> (u8, u8) {
     }
 }
 
-/// Create one bot Character of `(class, role)`, place it at `at` on `map_id`, teach it its kit, and
-/// register it on the roster. Returns the new Character's guid.
+/// Create one bot Character of `(class, role)`, place it at `at` on `map_id`, and register it on the
+/// roster. Provisioning is armed here; the first admitted Cohort runner pass teaches its kit.
 fn spawn_one(
     ctx: &ReducerContext,
     class: u8,
@@ -677,10 +679,6 @@ fn spawn_one(
     let entity = crate::creatures::build_player_entity(ctx, &character, Identity::ZERO);
     ctx.db.game_world_entity().insert(entity);
 
-    for spell_id in kit_for(ctx, class, role) {
-        crate::spell::learn_spell(ctx, guid, Identity::ZERO, spell_id);
-    }
-
     let (flee_at_pct, heal_at_pct) = role_personality_defaults(role);
     ctx.db
         .pkg_playerbots_personality()
@@ -690,7 +688,7 @@ fn spawn_one(
             flee_at_pct,
             heal_at_pct,
         });
-    ctx.db.pkg_playerbots_bot().insert(PlayerbotsBot {
+    let bot = ctx.db.pkg_playerbots_bot().insert(PlayerbotsBot {
         id: 0,
         character_guid: guid,
         account_id,
@@ -708,6 +706,12 @@ fn spawn_one(
         scheduler_lag_micros: 0,
     });
     crate::actor::set_sessionless_action_consent(ctx, guid, true);
+    provisioning::arm_spawn(
+        ctx,
+        &bot,
+        level as u32,
+        ctx.timestamp.to_micros_since_unix_epoch(),
+    );
     Ok(guid)
 }
 

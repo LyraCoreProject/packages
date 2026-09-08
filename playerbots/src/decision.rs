@@ -37,6 +37,7 @@ pub enum Reason {
     CastingPosition,
     Resurrection,
     PartyUnavailable,
+    Provisioning,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
