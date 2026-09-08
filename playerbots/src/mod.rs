@@ -23,12 +23,16 @@ mod companion;
 mod decision;
 mod goals;
 mod provisioning;
+mod quest_catalog;
 mod runner;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;
+pub(crate) use quest_catalog::*;
 pub(crate) use runner::*;
 #[cfg(feature = "debug_reducers")]
 mod fixture;
+#[cfg(feature = "debug_reducers")]
+mod quest_catalog_fixture;
 pub(crate) use goals::*;
 
 use crate::package_config::game_package_config;
@@ -376,6 +380,7 @@ pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
     for (key, value) in CONFIG_DEFAULTS {
         crate::package_config::ensure_package_config_default(ctx, PACKAGE, key, value);
     }
+    quest_catalog::ensure_catalog(ctx);
     if ctx.db.pkg_playerbots_kit().count() > 0 {
         return;
     }

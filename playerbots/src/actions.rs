@@ -10,6 +10,7 @@ pub enum ActionKind {
     Move,
     AcceptQuest,
     TurnInQuest,
+    UseGameObject,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -220,6 +221,29 @@ pub(super) fn turn_in_quest(
         quest,
         ActionKind::TurnInQuest,
         crate::actor::request_turn_in_quest(ctx, guid, giver, quest, reward),
+    )
+}
+
+#[cfg_attr(
+    not(feature = "debug_reducers"),
+    allow(
+        dead_code,
+        reason = "the catalog executor is driven by its durable debug_reducers fixture"
+    )
+)]
+pub(super) fn use_gameobject(
+    ctx: &ReducerContext,
+    guid: u64,
+    go_guid: u64,
+    quest: u32,
+) -> Result<(), crate::actor::ActionRefusal> {
+    interaction(
+        ctx,
+        guid,
+        go_guid,
+        quest,
+        ActionKind::UseGameObject,
+        crate::actor::request_use_gameobject(ctx, guid, go_guid),
     )
 }
 

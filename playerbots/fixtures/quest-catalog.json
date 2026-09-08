@@ -1,0 +1,29 @@
+{
+  "fixture": "playerbots-quest-catalog-v1",
+  "catalog": "northshire-elwynn-supported-v1",
+  "catalog_revision": 1,
+  "blueprint_revision": "classicdb:d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+  "reference_source_revision": "unknown",
+  "observed_content_revision": "computed from staged quest, relation, objective, loot, item, and spawn rows",
+  "starter_classes": [
+    { "class": 1, "name": "warrior", "seed": 783001 },
+    { "class": 5, "name": "priest", "seed": 783005 },
+    { "class": 8, "name": "mage", "seed": 783008 }
+  ],
+  "quest_order": [783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45],
+  "synthetic_destinations": {
+    "creature_6": "0xf130000006000001",
+    "creature_299": "0xf13000012b000001",
+    "gameobject_55": "0xf110000000000037",
+    "gameobject_56": "0xf110000000000038",
+    "gameobject_161557": "0xf110000000027715"
+  },
+  "source_inspection": {
+    "path": ".import/classic-db-full.sql",
+    "size_bytes": 73294017,
+    "sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+    "imported_world_run": false,
+    "client_geometry": null
+  },
+  "provenance": "Private Standalone rows shaped from the inspected ClassicDB schema. Coordinates, item drops, and action outcomes in this fixture are synthetic."
+}

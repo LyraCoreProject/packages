@@ -45,6 +45,7 @@ pub struct Destination {
 pub enum ObjectiveKind {
     ReturnHome,
     Companion,
+    Quest,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -636,82 +637,130 @@ fn objective(
     state: &mut PlayerbotsRunner,
     now: i64,
 ) {
-    let (kind, leader_guid, mut destination) = if let Some(party) = party {
-        let destination = party.destination().or_else(|| {
-            state
-                .objective
-                .as_ref()
-                .filter(|objective| {
-                    objective.kind == ObjectiveKind::Companion
-                        && state.companion_leader_guid == Some(party.leader_guid)
-                })
-                .map(|objective| objective.destination.clone())
-        });
-        (
-            ObjectiveKind::Companion,
-            Some(party.leader_guid),
-            destination.unwrap_or(Destination {
-                map_id: me.map_id,
-                instance_id: me.instance_id,
-                x: me.x,
-                y: me.y,
-                z: me.z,
-                geometry_revision: geometry_revision(ctx, me.map_id),
-            }),
-        )
-    } else {
-        (
-            ObjectiveKind::ReturnHome,
-            None,
-            Destination {
-                map_id: bot.home_map,
-                instance_id: 0,
-                x: bot.home_x,
-                y: bot.home_y,
-                z: bot.home_z,
-                geometry_revision: geometry_revision(ctx, bot.home_map),
-            },
-        )
-    };
-    destination.geometry_revision = geometry_revision(ctx, destination.map_id);
     state.deferred_destinations.retain(|d| d.until_micros > now);
-    let same_identity = state.objective.as_ref().is_some_and(|objective| {
-        objective.kind == kind
-            && (kind != ObjectiveKind::Companion || state.companion_leader_guid == leader_guid)
-    });
-    let replace = !same_identity
-        || (kind == ObjectiveKind::ReturnHome
-            && state
-                .objective
-                .as_ref()
-                .is_none_or(|objective| objective.destination != destination));
-    if replace {
-        state.objective_sequence = state.objective_sequence.saturating_add(1);
-        state.objective = Some(Objective {
-            identity: state.objective_sequence,
-            kind,
-            destination,
-            stage: ObjectiveStage::Travelling,
-            deadline_micros: if kind == ObjectiveKind::Companion {
-                i64::MAX
-            } else {
-                now.saturating_add(OBJECTIVE_LIFETIME)
-            },
-            last_verified_progress_micros: None,
-            started_micros: now,
-            catalog_revision: CATALOG_REVISION,
+    let admission = if party.is_none() {
+        super::quest_catalog::reconcile_active(ctx, bot.character_guid)
+    } else {
+        None
+    };
+    if let Some(admission) = admission {
+        let destination = Destination {
+            map_id: admission.destination.map_id,
+            instance_id: admission.destination.instance_id,
+            x: admission.destination.x,
+            y: admission.destination.y,
+            z: admission.destination.z,
+            geometry_revision: None,
+        };
+        let changed = !super::quest_catalog::retained_matches(ctx, bot.character_guid, &admission)
+            || state.objective.as_ref().is_none_or(|objective| {
+                objective.kind != ObjectiveKind::Quest
+                    || objective.destination != destination
+                    || objective.catalog_revision != super::quest_catalog::CATALOG_REVISION
+            });
+        if changed {
+            state.objective_sequence = state.objective_sequence.saturating_add(1);
+            let identity = state.objective_sequence;
+            state.objective = Some(Objective {
+                identity,
+                kind: ObjectiveKind::Quest,
+                destination,
+                stage: ObjectiveStage::Travelling,
+                deadline_micros: now.saturating_add(OBJECTIVE_LIFETIME),
+                last_verified_progress_micros: None,
+                started_micros: now,
+                catalog_revision: super::quest_catalog::CATALOG_REVISION,
+            });
+            super::quest_catalog::retain(ctx, bot.character_guid, identity, admission);
+            state.companion_leader_guid = None;
+            state.companion_heal_target_guid = None;
+            state.retry_count = 0;
+            state.last_stall_check_micros = now;
+        }
+    } else {
+        if state
+            .objective
+            .as_ref()
+            .is_some_and(|objective| objective.kind == ObjectiveKind::Quest)
+        {
+            super::quest_catalog::clear_retained(ctx, bot.character_guid);
+        }
+        let (kind, leader_guid, mut destination) = if let Some(party) = party {
+            let destination = party.destination().or_else(|| {
+                state
+                    .objective
+                    .as_ref()
+                    .filter(|objective| {
+                        objective.kind == ObjectiveKind::Companion
+                            && state.companion_leader_guid == Some(party.leader_guid)
+                    })
+                    .map(|objective| objective.destination.clone())
+            });
+            (
+                ObjectiveKind::Companion,
+                Some(party.leader_guid),
+                destination.unwrap_or(Destination {
+                    map_id: me.map_id,
+                    instance_id: me.instance_id,
+                    x: me.x,
+                    y: me.y,
+                    z: me.z,
+                    geometry_revision: geometry_revision(ctx, me.map_id),
+                }),
+            )
+        } else {
+            (
+                ObjectiveKind::ReturnHome,
+                None,
+                Destination {
+                    map_id: bot.home_map,
+                    instance_id: 0,
+                    x: bot.home_x,
+                    y: bot.home_y,
+                    z: bot.home_z,
+                    geometry_revision: geometry_revision(ctx, bot.home_map),
+                },
+            )
+        };
+        destination.geometry_revision = geometry_revision(ctx, destination.map_id);
+        let same_identity = state.objective.as_ref().is_some_and(|objective| {
+            objective.kind == kind
+                && (kind != ObjectiveKind::Companion || state.companion_leader_guid == leader_guid)
         });
-        state.companion_leader_guid = leader_guid;
-        state.companion_heal_target_guid = None;
-        state.retry_count = 0;
-        state.last_stall_check_micros = now;
-    } else if kind == ObjectiveKind::Companion {
-        if let Some(objective) = &mut state.objective {
-            objective.destination = destination;
+        let replace = !same_identity
+            || (kind == ObjectiveKind::ReturnHome
+                && state
+                    .objective
+                    .as_ref()
+                    .is_none_or(|objective| objective.destination != destination));
+        if replace {
+            state.objective_sequence = state.objective_sequence.saturating_add(1);
+            state.objective = Some(Objective {
+                identity: state.objective_sequence,
+                kind,
+                destination,
+                stage: ObjectiveStage::Travelling,
+                deadline_micros: if kind == ObjectiveKind::Companion {
+                    i64::MAX
+                } else {
+                    now.saturating_add(OBJECTIVE_LIFETIME)
+                },
+                last_verified_progress_micros: None,
+                started_micros: now,
+                catalog_revision: CATALOG_REVISION,
+            });
+            state.companion_leader_guid = leader_guid;
+            state.companion_heal_target_guid = None;
+            state.retry_count = 0;
+            state.last_stall_check_micros = now;
+        } else if kind == ObjectiveKind::Companion {
+            if let Some(objective) = &mut state.objective {
+                objective.destination = destination;
+            }
         }
     }
     if let Some(o) = &mut state.objective {
-        if o.kind == ObjectiveKind::ReturnHome
+        if o.kind != ObjectiveKind::Companion
             && o.stage == ObjectiveStage::Deferred
             && !state
                 .deferred_destinations
@@ -723,7 +772,7 @@ fn objective(
             state.retry_count = 0;
             state.last_stall_check_micros = now;
         }
-        if o.kind == ObjectiveKind::ReturnHome && o.stage == ObjectiveStage::Deferred {
+        if o.kind != ObjectiveKind::Companion && o.stage == ObjectiveStage::Deferred {
             if let Some(deferred) = state
                 .deferred_destinations
                 .iter()
@@ -905,6 +954,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
         return;
     };
+    let quest_objective = state
+        .objective
+        .as_ref()
+        .is_some_and(|objective| objective.kind == ObjectiveKind::Quest);
+    let quest_wait = super::quest_catalog::active_wait_until(ctx, me.guid);
     let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
     let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
     let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
@@ -914,7 +968,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 o.stage = ObjectiveStage::Completed;
             } else if o.stage == ObjectiveStage::Completed {
                 o.stage = ObjectiveStage::Travelling;
-                if o.kind == ObjectiveKind::ReturnHome {
+                if o.kind != ObjectiveKind::Companion {
                     o.deadline_micros = now.saturating_add(OBJECTIVE_LIFETIME);
                 }
                 state.last_stall_check_micros = now;
@@ -1001,7 +1055,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if party.is_none() {
         defense.continuers.push(travel_action.clone());
     }
-    let mut survival = if partition_ok && !at_destination {
+    let mut survival = if !quest_objective && partition_ok && !at_destination {
         node(Action::Move(MoveTarget::Home), Reason::Survival, 900)
     } else {
         node(Action::Hold, Reason::Survival, 900)
@@ -1061,7 +1115,14 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             strategies.push(selection.strategy);
         } else {
             companion_heal_target = None;
-            strategies.push(strategy(Trigger::Away, travel_action));
+            if quest_objective || quest_wait.is_some_and(|until| until > now) {
+                strategies.push(strategy(
+                    Trigger::Always,
+                    node(Action::Hold, Reason::Quest, 110),
+                ));
+            } else {
+                strategies.push(strategy(Trigger::Away, travel_action));
+            }
         }
     }
     strategies.push(strategy(
