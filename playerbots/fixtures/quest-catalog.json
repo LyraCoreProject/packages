@@ -11,6 +11,13 @@
     { "class": 8, "name": "mage", "seed": 783008 }
   ],
   "quest_order": [783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45],
+  "caught_refusals": [
+    "inventory-full take preserves carried inventory and GameObject loot"
+  ],
+  "held_admission": [
+    "provided delivery item destroyed after accept waits with missing capability",
+    "provided delivery item banked after accept waits with missing capability"
+  ],
   "synthetic_destinations": {
     "creature_6": "0xf130000006000001",
     "creature_299": "0xf13000012b000001",

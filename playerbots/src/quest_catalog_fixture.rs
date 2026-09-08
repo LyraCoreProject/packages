@@ -17,6 +17,7 @@ const FIXTURE_REVISION: &str = "playerbots-synthetic-quest-catalog-v1";
 const CHEST_ENTRY: u32 = 161557;
 const CHEST_LOOT: u32 = 10119;
 const DIRECT_GO_QUEST: u32 = 3904;
+const INVENTORY_FILLER: u32 = 51119;
 
 const QUESTS: &[(u32, u32, u32, u32, u32)] = &[
     (783, 1, 0, 823, 197),
@@ -498,7 +499,7 @@ pub fn playerbots_quest_fixture_take_creature_loot(
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     let guid = creature_guid(creature_entry);
-    crate::actor::open_creature_loot(ctx, character_guid, guid)?;
+    super::actions::open_creature_loot(ctx, character_guid, guid, 33).map_err(String::from)?;
     let slots: Vec<_> = ctx
         .db
         .game_corpse_loot()
@@ -510,7 +511,7 @@ pub fn playerbots_quest_fixture_take_creature_loot(
         return Err("creature produced no loot".to_string());
     }
     for slot in slots {
-        crate::actor::take_loot(ctx, character_guid, guid, slot)?;
+        super::actions::take_loot(ctx, character_guid, guid, slot, 33).map_err(String::from)?;
     }
     Ok(())
 }
@@ -538,8 +539,96 @@ pub fn playerbots_quest_fixture_use_gameobject(
             return Err("GameObject produced no loot".to_string());
         }
         for slot in slots {
-            crate::actor::take_loot(ctx, character_guid, guid, slot)?;
+            super::actions::take_loot(ctx, character_guid, guid, slot, DIRECT_GO_QUEST)
+                .map_err(String::from)?;
         }
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_quest_fixture_fill_inventory(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let source_entry = ctx
+        .db
+        .game_item_instance()
+        .by_owner_guid()
+        .filter(character_guid)
+        .next()
+        .ok_or("starter item missing")?
+        .entry;
+    clone_item(ctx, INVENTORY_FILLER, source_entry)?;
+    let templates = ctx.db.game_item_template();
+    let mut filler = templates
+        .entry()
+        .find(INVENTORY_FILLER)
+        .ok_or("inventory filler template missing")?;
+    filler.max_stack = 1;
+    templates.entry().update(filler);
+    for _ in 0..64 {
+        if !crate::items::has_free_slot(ctx, character_guid) {
+            return Ok(());
+        }
+        crate::items::grant_item(ctx, character_guid, INVENTORY_FILLER, 1)?;
+    }
+    Err("fixture did not fill bounded inventory space".to_string())
+}
+
+#[reducer]
+pub fn playerbots_quest_fixture_try_take_gameobject_loot(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let guid = gameobject_guid(CHEST_ENTRY);
+    let slot = ctx
+        .db
+        .game_corpse_loot()
+        .by_corpse()
+        .filter(guid)
+        .next()
+        .ok_or("GameObject produced no loot")?
+        .slot;
+    let refusal = super::actions::take_loot(ctx, character_guid, guid, slot, DIRECT_GO_QUEST)
+        .expect_err("full inventory accepted GameObject loot");
+    if refusal.kind != crate::actor::ActionRefusalKind::InventoryFull {
+        return Err(format!("expected inventory-full refusal, got {refusal}"));
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_quest_fixture_clear_filler_and_take_gameobject_loot(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let items = ctx.db.game_item_instance();
+    for item in items
+        .by_owner_guid()
+        .filter(character_guid)
+        .filter(|item| item.entry == INVENTORY_FILLER)
+        .collect::<Vec<_>>()
+    {
+        items.guid().delete(item.guid);
+    }
+    let guid = gameobject_guid(CHEST_ENTRY);
+    let slots: Vec<_> = ctx
+        .db
+        .game_corpse_loot()
+        .by_corpse()
+        .filter(guid)
+        .map(|row| row.slot)
+        .collect();
+    if slots.is_empty() {
+        return Err("GameObject produced no loot".to_string());
+    }
+    for slot in slots {
+        super::actions::take_loot(ctx, character_guid, guid, slot, DIRECT_GO_QUEST)
+            .map_err(String::from)?;
     }
     Ok(())
 }
@@ -816,6 +905,31 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
             "expected quest 5261 after quest 7 became unsupported, got {}",
             selected.quest_entry
         ));
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_quest_fixture_lose_provided_item(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    bank_item: bool,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let items = ctx.db.game_item_instance();
+    let mut item = items
+        .by_owner_guid()
+        .filter(character_guid)
+        .find(|item| item.entry == 11125)
+        .ok_or("provided delivery item missing")?;
+    if bank_item {
+        item.slot = 39;
+        items.guid().update(item);
+    } else {
+        items.guid().delete(item.guid);
+    }
+    if quest_catalog::reconcile_active(ctx, character_guid).is_some() {
+        return Err("held quest remained admitted without its provided item".to_string());
     }
     Ok(())
 }

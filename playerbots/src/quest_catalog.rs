@@ -64,6 +64,7 @@ pub enum MissingCapability {
     Transport,
     ComplexGameObject,
     UnknownObjective,
+    MissingProvidedItem,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
@@ -929,63 +930,130 @@ fn objective_rows(ctx: &ReducerContext, quest_entry: u32) -> Vec<PlayerbotsCatal
     rows
 }
 
-fn usable_source_destinations(
+fn source_gate(
     ctx: &ReducerContext,
     catalog: &PlayerbotsCatalogObjective,
-) -> Vec<CatalogDestination> {
-    let entries: Vec<_> = catalog
-        .source_entries
-        .iter()
-        .copied()
-        .filter(|entry| match catalog.executor {
-            ObjectiveExecutor::Attack => true,
-            ObjectiveExecutor::CreatureLoot => ctx
-                .db
-                .game_creature_loot()
-                .by_creature()
-                .filter(entry)
-                .any(|loot| {
-                    loot.item_entry == catalog.target_entry && loot.chance_bp > 0 && loot.count > 0
-                }),
-            ObjectiveExecutor::GameObjectLoot => ctx
-                .db
-                .game_gameobject_template()
-                .entry()
-                .find(entry)
-                .is_some_and(|template| {
-                    template.type_id == crate::gameobject::go_type::CHEST
-                        && template.lock_id == 0
-                        && ctx
-                            .db
-                            .game_gameobject_loot()
-                            .by_loot()
-                            .filter(template.data1)
-                            .any(|loot| {
-                                loot.item_entry == catalog.target_entry
-                                    && loot.chance_bp > 0
-                                    && loot.count > 0
-                            })
-                }),
-            ObjectiveExecutor::SimpleGameObject => ctx
-                .db
-                .game_gameobject_template()
-                .entry()
-                .find(entry)
-                .is_some_and(|template| {
-                    template.type_id == crate::gameobject::go_type::GOOBER && template.lock_id == 0
-                }),
-            ObjectiveExecutor::Talk | ObjectiveExecutor::ProvidedItem => false,
-        })
-        .collect();
+) -> Result<Option<CatalogDestination>, AdmissionRefusal> {
+    let mut entries = Vec::new();
+    match catalog.executor {
+        ObjectiveExecutor::Talk | ObjectiveExecutor::ProvidedItem => return Ok(None),
+        ObjectiveExecutor::Attack => entries.extend(catalog.source_entries.iter().copied()),
+        ObjectiveExecutor::CreatureLoot => {
+            entries.extend(catalog.source_entries.iter().copied().filter(|entry| {
+                ctx.db
+                    .game_creature_loot()
+                    .by_creature()
+                    .filter(entry)
+                    .any(|loot| {
+                        loot.item_entry == catalog.target_entry
+                            && loot.chance_bp > 0
+                            && loot.count > 0
+                    })
+            }));
+            if entries.is_empty() {
+                return Err(missing(
+                    MissingCapability::MissingLootSource,
+                    "no catalog creature drops the required item",
+                ));
+            }
+        }
+        ObjectiveExecutor::GameObjectLoot => {
+            let mut has_template = false;
+            let mut has_simple_chest = false;
+            for entry in catalog.source_entries.iter().copied() {
+                let Some(template) = ctx.db.game_gameobject_template().entry().find(entry) else {
+                    continue;
+                };
+                has_template = true;
+                let simple =
+                    template.type_id == crate::gameobject::go_type::CHEST && template.lock_id == 0;
+                has_simple_chest |= simple;
+                if simple
+                    && ctx
+                        .db
+                        .game_gameobject_loot()
+                        .by_loot()
+                        .filter(template.data1)
+                        .any(|loot| {
+                            loot.item_entry == catalog.target_entry
+                                && loot.chance_bp > 0
+                                && loot.count > 0
+                        })
+                {
+                    entries.push(entry);
+                }
+            }
+            if entries.is_empty() {
+                return Err(if has_template && !has_simple_chest {
+                    missing(
+                        MissingCapability::ComplexGameObject,
+                        "GameObject loot source requires unsupported behavior",
+                    )
+                } else {
+                    missing(
+                        MissingCapability::MissingLootSource,
+                        "no simple chest source drops the required item",
+                    )
+                });
+            }
+        }
+        ObjectiveExecutor::SimpleGameObject => {
+            entries.extend(catalog.source_entries.iter().copied().filter(|entry| {
+                ctx.db
+                    .game_gameobject_template()
+                    .entry()
+                    .find(entry)
+                    .is_some_and(|template| {
+                        template.type_id == crate::gameobject::go_type::GOOBER
+                            && template.lock_id == 0
+                    })
+            }));
+            if entries.is_empty() {
+                return Err(missing(
+                    MissingCapability::ComplexGameObject,
+                    "GameObject requires unsupported behavior",
+                ));
+            }
+        }
+    }
     source_destinations(ctx, catalog.source_kind, &entries)
+        .into_iter()
+        .next()
+        .map(Some)
+        .ok_or_else(|| {
+            missing(
+                MissingCapability::MissingSourceDestination,
+                match catalog.executor {
+                    ObjectiveExecutor::Attack => "kill target has no stored destination",
+                    ObjectiveExecutor::CreatureLoot => {
+                        "creature drop source has no stored destination"
+                    }
+                    ObjectiveExecutor::GameObjectLoot => {
+                        "GameObject drop source has no imported spawn"
+                    }
+                    ObjectiveExecutor::SimpleGameObject => {
+                        "GameObject objective has no imported spawn"
+                    }
+                    ObjectiveExecutor::Talk | ObjectiveExecutor::ProvidedItem => unreachable!(),
+                },
+            )
+        })
 }
 
-fn validate_executor(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum AdmissionKind {
+    Available,
+    Held,
+}
+
+fn executor_gate(
     ctx: &ReducerContext,
+    character_guid: u64,
+    admission_kind: AdmissionKind,
     quest: &PlayerbotsCatalogQuest,
     catalog: &PlayerbotsCatalogObjective,
     core: Option<&crate::QuestObjective>,
-) -> Result<(), AdmissionRefusal> {
+) -> Result<Option<CatalogDestination>, AdmissionRefusal> {
     match catalog.kind {
         CatalogObjectiveKind::ExploreAreaTrigger => {
             return Err(missing(
@@ -1030,6 +1098,7 @@ fn validate_executor(
                     "talk-only entry does not name the talk executor",
                 ));
             }
+            Ok(None)
         }
         CatalogObjectiveKind::KillCreature => {
             let Some(core) = core else {
@@ -1048,12 +1117,7 @@ fn validate_executor(
                     "kill objective differs from the catalog",
                 ));
             }
-            if usable_source_destinations(ctx, catalog).is_empty() {
-                return Err(missing(
-                    MissingCapability::MissingSourceDestination,
-                    "kill target has no stored destination",
-                ));
-            }
+            source_gate(ctx, catalog)
         }
         CatalogObjectiveKind::CollectItem => {
             let Some(core) = core else {
@@ -1104,88 +1168,19 @@ fn validate_executor(
                             "acceptance no longer supplies the required item",
                         ));
                     }
+                    if admission_kind == AdmissionKind::Held
+                        && crate::items::item_count(ctx, character_guid, catalog.target_entry)
+                            < catalog.required_count
+                    {
+                        return Err(missing(
+                            MissingCapability::MissingProvidedItem,
+                            "provided delivery item is no longer carried",
+                        ));
+                    }
+                    Ok(None)
                 }
-                ObjectiveExecutor::CreatureLoot => {
-                    let source_ok = catalog.source_entries.iter().any(|entry| {
-                        ctx.db
-                            .game_creature_loot()
-                            .by_creature()
-                            .filter(entry)
-                            .any(|loot| {
-                                loot.item_entry == catalog.target_entry
-                                    && loot.chance_bp > 0
-                                    && loot.count > 0
-                            })
-                    });
-                    if !source_ok {
-                        return Err(missing(
-                            MissingCapability::MissingLootSource,
-                            "no catalog creature drops the required item",
-                        ));
-                    }
-                    if usable_source_destinations(ctx, catalog).is_empty() {
-                        return Err(missing(
-                            MissingCapability::MissingSourceDestination,
-                            "creature drop source has no stored destination",
-                        ));
-                    }
-                }
-                ObjectiveExecutor::GameObjectLoot => {
-                    let has_template = catalog.source_entries.iter().any(|entry| {
-                        ctx.db
-                            .game_gameobject_template()
-                            .entry()
-                            .find(entry)
-                            .is_some()
-                    });
-                    let has_simple_chest = catalog.source_entries.iter().any(|entry| {
-                        ctx.db
-                            .game_gameobject_template()
-                            .entry()
-                            .find(entry)
-                            .is_some_and(|template| {
-                                template.type_id == crate::gameobject::go_type::CHEST
-                                    && template.lock_id == 0
-                            })
-                    });
-                    let source_ok = catalog.source_entries.iter().any(|entry| {
-                        ctx.db
-                            .game_gameobject_template()
-                            .entry()
-                            .find(entry)
-                            .is_some_and(|template| {
-                                template.type_id == crate::gameobject::go_type::CHEST
-                                    && template.lock_id == 0
-                                    && ctx
-                                        .db
-                                        .game_gameobject_loot()
-                                        .by_loot()
-                                        .filter(template.data1)
-                                        .any(|loot| {
-                                            loot.item_entry == catalog.target_entry
-                                                && loot.chance_bp > 0
-                                                && loot.count > 0
-                                        })
-                            })
-                    });
-                    if !source_ok {
-                        if has_template && !has_simple_chest {
-                            return Err(missing(
-                                MissingCapability::ComplexGameObject,
-                                "GameObject loot source requires unsupported behavior",
-                            ));
-                        }
-                        return Err(missing(
-                            MissingCapability::MissingLootSource,
-                            "no simple chest source drops the required item",
-                        ));
-                    }
-                    if usable_source_destinations(ctx, catalog).is_empty() {
-                        return Err(missing(
-                            MissingCapability::MissingSourceDestination,
-                            "GameObject drop source has no imported spawn",
-                        ));
-                    }
+                ObjectiveExecutor::CreatureLoot | ObjectiveExecutor::GameObjectLoot => {
+                    source_gate(ctx, catalog)
                 }
                 _ => {
                     return Err(missing(
@@ -1212,38 +1207,16 @@ fn validate_executor(
                     "GameObject objective differs from the catalog",
                 ));
             }
-            let simple = catalog.source_entries.iter().any(|entry| {
-                ctx.db
-                    .game_gameobject_template()
-                    .entry()
-                    .find(entry)
-                    .is_some_and(|template| {
-                        template.type_id == crate::gameobject::go_type::GOOBER
-                            && template.lock_id == 0
-                    })
-            });
-            if !simple {
-                return Err(missing(
-                    MissingCapability::ComplexGameObject,
-                    "GameObject requires unsupported behavior",
-                ));
-            }
-            if usable_source_destinations(ctx, catalog).is_empty() {
-                return Err(missing(
-                    MissingCapability::MissingSourceDestination,
-                    "GameObject objective has no imported spawn",
-                ));
-            }
+            source_gate(ctx, catalog)
         }
     }
-    Ok(())
 }
 
 fn inspect(
     ctx: &ReducerContext,
     character_guid: u64,
     quest_entry: u32,
-    check_accept_gates: bool,
+    admission_kind: AdmissionKind,
 ) -> Result<QuestAdmission, AdmissionRefusal> {
     ensure_catalog(ctx);
     let quest = ctx
@@ -1290,7 +1263,7 @@ fn inspect(
         .guid()
         .find(character_guid)
         .ok_or_else(|| AdmissionRefusal::Ineligible("Character is not in the world".to_string()))?;
-    if check_accept_gates {
+    if admission_kind == AdmissionKind::Available {
         crate::quest::accept_gates(ctx, &character, &template)
             .map_err(AdmissionRefusal::Ineligible)?;
     }
@@ -1391,15 +1364,24 @@ fn inspect(
             "core objective count differs from the catalog",
         ));
     }
+    let mut gated = Vec::with_capacity(catalog.len());
     for catalog_objective in &catalog {
         let core_objective = core
             .iter()
             .find(|objective| objective.obj_index == catalog_objective.objective_index);
-        validate_executor(ctx, &quest, catalog_objective, core_objective)?;
+        let source = executor_gate(
+            ctx,
+            character_guid,
+            admission_kind,
+            &quest,
+            catalog_objective,
+            core_objective,
+        )?;
+        gated.push((catalog_objective, source));
     }
-    let selected = catalog
+    let (selected, source) = gated
         .iter()
-        .find(|objective| {
+        .find(|(objective, _)| {
             core.iter()
                 .find(|core| core.obj_index == objective.objective_index)
                 .is_none_or(|core| {
@@ -1417,14 +1399,13 @@ fn inspect(
                     count < core.required_count
                 })
         })
-        .or_else(|| catalog.first())
+        .or_else(|| gated.first())
         .ok_or_else(|| {
             missing(
                 MissingCapability::ObjectiveMismatch,
                 "catalog has no objective classification",
             )
         })?;
-    let source = usable_source_destinations(ctx, selected).into_iter().next();
     let destination = if talk_only || selected.executor == ObjectiveExecutor::ProvidedItem {
         actual_ender.clone()
     } else {
@@ -1444,7 +1425,7 @@ fn inspect(
             target_entry: selected.target_entry,
             required_count: selected.required_count,
             executor: selected.executor,
-            source,
+            source: source.clone(),
         },
         actual_ender,
         destination,
@@ -1465,7 +1446,7 @@ pub(super) fn admit_available(
     character_guid: u64,
     quest_entry: u32,
 ) -> Result<QuestAdmission, AdmissionRefusal> {
-    inspect(ctx, character_guid, quest_entry, true)
+    inspect(ctx, character_guid, quest_entry, AdmissionKind::Available)
 }
 
 pub(super) fn admit_held(
@@ -1484,7 +1465,7 @@ pub(super) fn admit_held(
             "quest is not active".to_string(),
         ));
     }
-    inspect(ctx, character_guid, quest_entry, false)
+    inspect(ctx, character_guid, quest_entry, AdmissionKind::Held)
 }
 
 pub(super) fn reconcile_active(
@@ -1707,6 +1688,8 @@ pub(super) fn live_creature_target(
     character_guid: u64,
     entry: u32,
 ) -> Option<crate::WorldEntity> {
+    // Fixture-only. PB-007 must replace this by-entry scan with a partition-indexed bounded query
+    // before live target selection enters the production runner.
     let character = ctx.db.game_world_entity().guid().find(character_guid)?;
     ctx.db
         .game_world_entity()
