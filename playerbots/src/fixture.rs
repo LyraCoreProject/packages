@@ -1063,6 +1063,18 @@ pub fn playerbots_fixture_runner_pass_once(ctx: &ReducerContext, guid: u64) -> R
     runner_park_for(ctx, guid)
 }
 
+/// Select controlled companion behavior without opening a scheduler gap before the fixture's first
+/// explicit runner pass.
+#[reducer]
+pub fn playerbots_fixture_runner_select_cohort(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    super::runner::playerbots_select_controller(ctx, guid, super::Controller::Cohort)?;
+    runner_park_for(ctx, guid)
+}
+
 #[reducer]
 pub fn playerbots_fixture_runner_survival(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
