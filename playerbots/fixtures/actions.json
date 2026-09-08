@@ -7,7 +7,9 @@
     "revision": "playerbots-seeded-actions-v1",
     "provenance": "core seeded templates and reserved fixture rows",
     "heal_source_spell": 2050,
+    "heal_target": "named ally, with explicit self still admitted",
     "creature_source_entry": 51000,
+    "companion_unrelated_creature_entry": 5090302,
     "item_source": "first starter item held by the seeded role-1 bot"
   },
   "imported_content": null,
@@ -16,7 +18,8 @@
     "provenance": "synthetic walk and obstruction arrays",
     "client_geometry": null,
     "blocked": "3 by 3 navigation cells, walk bytes 0, obs bytes 20, base_z 50",
-    "partial": "9 cells along y, one nonwalkable x sub-cell at 1210, other walk bits 1, obs bytes 255"
+    "partial": "9 cells along y, one nonwalkable x sub-cell at 1210, other walk bits 1, obs bytes 255",
+    "companion_wall": "synthetic three-cell wall at x 1205, matching nonwalkable and 4-yard obstruction columns; no extracted client geometry"
   },
   "spacetimedb": "2.7.1",
   "rust": "1.93.0",

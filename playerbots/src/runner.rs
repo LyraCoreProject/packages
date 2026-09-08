@@ -43,6 +43,7 @@ pub struct Destination {
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ObjectiveKind {
     ReturnHome,
+    Companion,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +190,9 @@ pub struct PlayerbotsRunner {
     pub transitions: u32,
     pub route_expansions: u32,
     pub route_budget: u32,
+    /// The stable party leader identity. A moving leader only refreshes the companion destination.
+    #[default(None::<u64>)]
+    pub companion_leader_guid: Option<u64>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -360,6 +364,7 @@ impl PlayerbotsRunner {
             transitions: 0,
             route_expansions: 0,
             route_budget: 0,
+            companion_leader_guid: None,
         }
     }
 
@@ -603,37 +608,90 @@ fn distance(me: &crate::WorldEntity, dest: &Destination) -> f32 {
     ((me.x - dest.x).powi(2) + (me.y - dest.y).powi(2) + (me.z - dest.z).powi(2)).sqrt()
 }
 
-fn objective(ctx: &ReducerContext, bot: &PlayerbotsBot, state: &mut PlayerbotsRunner, now: i64) {
-    let destination = Destination {
-        map_id: bot.home_map,
-        instance_id: 0,
-        x: bot.home_x,
-        y: bot.home_y,
-        z: bot.home_z,
-        geometry_revision: geometry_revision(ctx, bot.home_map),
+fn objective(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+    me: &crate::WorldEntity,
+    party: Option<&super::companion::Party>,
+    state: &mut PlayerbotsRunner,
+    now: i64,
+) {
+    let (kind, leader_guid, mut destination) = if let Some(party) = party {
+        let destination = party.destination().or_else(|| {
+            state
+                .objective
+                .as_ref()
+                .filter(|objective| {
+                    objective.kind == ObjectiveKind::Companion
+                        && state.companion_leader_guid == Some(party.leader_guid)
+                })
+                .map(|objective| objective.destination.clone())
+        });
+        (
+            ObjectiveKind::Companion,
+            Some(party.leader_guid),
+            destination.unwrap_or(Destination {
+                map_id: me.map_id,
+                instance_id: me.instance_id,
+                x: me.x,
+                y: me.y,
+                z: me.z,
+                geometry_revision: geometry_revision(ctx, me.map_id),
+            }),
+        )
+    } else {
+        (
+            ObjectiveKind::ReturnHome,
+            None,
+            Destination {
+                map_id: bot.home_map,
+                instance_id: 0,
+                x: bot.home_x,
+                y: bot.home_y,
+                z: bot.home_z,
+                geometry_revision: geometry_revision(ctx, bot.home_map),
+            },
+        )
     };
+    destination.geometry_revision = geometry_revision(ctx, destination.map_id);
     state.deferred_destinations.retain(|d| d.until_micros > now);
-    if state
-        .objective
-        .as_ref()
-        .is_none_or(|o| o.destination != destination)
-    {
+    let same_identity = state.objective.as_ref().is_some_and(|objective| {
+        objective.kind == kind
+            && (kind != ObjectiveKind::Companion || state.companion_leader_guid == leader_guid)
+    });
+    let replace = !same_identity
+        || (kind == ObjectiveKind::ReturnHome
+            && state
+                .objective
+                .as_ref()
+                .is_none_or(|objective| objective.destination != destination));
+    if replace {
         state.objective_sequence = state.objective_sequence.saturating_add(1);
         state.objective = Some(Objective {
             identity: state.objective_sequence,
-            kind: ObjectiveKind::ReturnHome,
+            kind,
             destination,
             stage: ObjectiveStage::Travelling,
-            deadline_micros: now.saturating_add(OBJECTIVE_LIFETIME),
+            deadline_micros: if kind == ObjectiveKind::Companion {
+                i64::MAX
+            } else {
+                now.saturating_add(OBJECTIVE_LIFETIME)
+            },
             last_verified_progress_micros: None,
             started_micros: now,
             catalog_revision: CATALOG_REVISION,
         });
+        state.companion_leader_guid = leader_guid;
         state.retry_count = 0;
         state.last_stall_check_micros = now;
+    } else if kind == ObjectiveKind::Companion {
+        if let Some(objective) = &mut state.objective {
+            objective.destination = destination;
+        }
     }
     if let Some(o) = &mut state.objective {
-        if o.stage == ObjectiveStage::Deferred
+        if o.kind == ObjectiveKind::ReturnHome
+            && o.stage == ObjectiveStage::Deferred
             && !state
                 .deferred_destinations
                 .iter()
@@ -644,7 +702,7 @@ fn objective(ctx: &ReducerContext, bot: &PlayerbotsBot, state: &mut PlayerbotsRu
             state.retry_count = 0;
             state.last_stall_check_micros = now;
         }
-        if o.stage == ObjectiveStage::Deferred {
+        if o.kind == ObjectiveKind::ReturnHome && o.stage == ObjectiveStage::Deferred {
             if let Some(deferred) = state
                 .deferred_destinations
                 .iter()
@@ -791,26 +849,30 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     };
+    let party = super::companion::human_led_party(ctx, me.guid);
     let prior_objective = state.objective_sequence;
-    objective(ctx, bot, &mut state, now);
+    objective(ctx, bot, &me, party.as_ref(), &mut state, now);
     if bot.controller == Controller::Cohort {
         if prior_objective != state.objective_sequence && state.foreground.is_some() {
             stop(ctx, me.guid, &mut state);
         }
         observe(ctx, &me, &mut state, now);
     }
-    let Some(home) = state.objective.as_ref().map(|o| o.destination.clone()) else {
+    let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
         return;
     };
-    let partition_ok = (home.map_id, home.instance_id) == (me.map_id, me.instance_id);
-    let at_home = partition_ok && distance(&me, &home) <= 2.05;
+    let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
+    let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
+    let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
     if bot.controller == Controller::Cohort {
         if let Some(o) = &mut state.objective {
-            if at_home {
+            if at_destination {
                 o.stage = ObjectiveStage::Completed;
             } else if o.stage == ObjectiveStage::Completed {
                 o.stage = ObjectiveStage::Travelling;
-                o.deadline_micros = now.saturating_add(OBJECTIVE_LIFETIME);
+                if o.kind == ObjectiveKind::ReturnHome {
+                    o.deadline_micros = now.saturating_add(OBJECTIVE_LIFETIME);
+                }
                 state.last_stall_check_micros = now;
             }
         }
@@ -833,29 +895,29 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         RecoveryLookup::Spell(row) => Some(row),
         RecoveryLookup::Pending | RecoveryLookup::Missing => None,
     };
-    let restricted = me.dead || crate::helpers::live_entity(ctx, me.guid).is_err();
+    let restricted = crate::helpers::live_entity(ctx, me.guid).is_err();
     let facts = decision::Facts {
         now,
         restricted,
         low_health,
         wounded: u64::from(me.health) * 100 < u64::from(me.max_health) * 50,
         attacked: threat.is_some(),
-        away: !at_home,
+        away: !at_destination,
     };
     let node = |action, reason, priority| {
         let mut node = ActionNode::ready(action, reason, priority);
         node.candidate.id.objective = state.objective_sequence;
         node
     };
-    let mut home_action = node(Action::Move(MoveTarget::Home), Reason::ReturnHome, 100);
-    home_action.readiness = if !partition_ok {
+    let mut travel_action = node(Action::Move(MoveTarget::Home), Reason::ReturnHome, 100);
+    travel_action.readiness = if !partition_ok {
         Readiness::Refused
     } else if state.next_eligible_micros > now {
         Readiness::NotBefore(state.next_eligible_micros)
     } else {
         Readiness::Ready
     };
-    home_action
+    travel_action
         .alternatives
         .push(node(Action::Hold, Reason::ReturnHome, 100));
     let mut recovery = node(
@@ -892,35 +954,28 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
         defense.prerequisites.push(close);
     }
-    defense.continuers.push(home_action.clone());
-    let mut survival = if partition_ok && !at_home {
+    if party.is_none() {
+        defense.continuers.push(travel_action.clone());
+    }
+    let mut survival = if partition_ok && !at_destination {
         node(Action::Move(MoveTarget::Home), Reason::Survival, 900)
     } else {
         node(Action::Hold, Reason::Survival, 900)
     };
+    if at_destination {
+        survival.readiness = Readiness::Complete;
+    }
     if let Some(deferred) = state
         .deferred_destinations
         .iter()
-        .find(|d| d.destination == home)
+        .find(|d| d.destination == destination)
     {
         survival.readiness = Readiness::NotBefore(deferred.until_micros);
         survival
             .alternatives
             .push(node(Action::Hold, Reason::Survival, 900));
     }
-    let strategies: Vec<_> = [
-        (
-            Trigger::Restricted,
-            node(Action::Hold, Reason::Restricted, 1000),
-        ),
-        (Trigger::LowHealth, survival),
-        (Trigger::Wounded, recovery),
-        (Trigger::Attacked, defense),
-        (Trigger::Away, home_action),
-        (Trigger::Always, node(Action::Hold, Reason::Idle, 0)),
-    ]
-    .into_iter()
-    .map(|(trigger, mut n)| {
+    let strategy = |trigger, mut n: ActionNode| {
         if state.retry_candidate == Some(n.candidate.id) && state.next_eligible_micros > now {
             n.readiness = Readiness::NotBefore(state.next_eligible_micros);
         }
@@ -930,8 +985,40 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             defaults: vec![],
             priority_adjustment: 0,
         }
-    })
-    .collect();
+    };
+    let mut strategies = vec![strategy(
+        Trigger::Restricted,
+        node(Action::Hold, Reason::Restricted, 1000),
+    )];
+    if me.dead {
+        strategies.push(strategy(
+            Trigger::Always,
+            node(Action::Resurrect, Reason::Resurrection, 1000),
+        ));
+    } else {
+        strategies.push(strategy(Trigger::LowHealth, survival));
+        if party.is_none() {
+            strategies.push(strategy(Trigger::Wounded, recovery));
+        }
+        strategies.push(strategy(Trigger::Attacked, defense));
+        if let Some(party) = party.as_ref() {
+            strategies.push(super::companion::strategy(
+                ctx,
+                bot,
+                &me,
+                party,
+                spell,
+                !low_health || at_destination,
+                state.objective_sequence,
+            ));
+        } else {
+            strategies.push(strategy(Trigger::Away, travel_action));
+        }
+    }
+    strategies.push(strategy(
+        Trigger::Always,
+        node(Action::Hold, Reason::Idle, 0),
+    ));
     let decision = decision::choose(&facts, &strategies, decision::LIMITS);
     state.candidate_order = decision.order;
     state.transitions = decision.transitions as u32;
@@ -947,7 +1034,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if let Some(deadline) = state
         .objective
         .as_ref()
-        .filter(|o| o.stage == ObjectiveStage::Travelling && now >= o.deadline_micros)
+        .filter(|o| {
+            o.kind == ObjectiveKind::ReturnHome
+                && o.stage == ObjectiveStage::Travelling
+                && now >= o.deadline_micros
+        })
         .map(|o| o.deadline_micros)
     {
         if let Some(foreground) = state.foreground.clone() {
@@ -1004,7 +1095,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     }
     state.chosen = chosen;
     if let Some(candidate) = chosen {
-        execute(ctx, &me, &home, candidate, &mut state, now);
+        execute(ctx, &me, &destination, candidate, &mut state, now);
     } else if let Some(reason) = decision.refusals.first() {
         state.failure(Failure::Decision(*reason), now);
     }
@@ -1015,7 +1106,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
 fn execute(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
-    home: &Destination,
+    objective_destination: &Destination,
     candidate: Candidate,
     state: &mut PlayerbotsRunner,
     now: i64,
@@ -1027,7 +1118,10 @@ fn execute(
                 stop(ctx, me.guid, state);
             }
             if candidate.id.reason == Reason::ReturnHome
-                && (home.map_id, home.instance_id) != (me.map_id, me.instance_id)
+                && (
+                    objective_destination.map_id,
+                    objective_destination.instance_id,
+                ) != (me.map_id, me.instance_id)
                 && state
                     .objective
                     .as_ref()
@@ -1049,27 +1143,32 @@ fn execute(
         }
         Action::Move(target) => {
             let destination = match target {
-                MoveTarget::Home => Some(home.clone()),
-                MoveTarget::Entity(guid) => {
-                    ctx.db
-                        .game_world_entity()
-                        .guid()
-                        .find(guid)
-                        .map(|e| Destination {
-                            map_id: e.map_id,
-                            instance_id: e.instance_id,
-                            x: e.x,
-                            y: e.y,
-                            z: e.z,
-                            geometry_revision: geometry_revision(ctx, e.map_id),
-                        })
-                }
+                MoveTarget::Home => Some(objective_destination.clone()),
+                MoveTarget::Entity(guid) | MoveTarget::CastingPosition(guid) => ctx
+                    .db
+                    .game_world_entity()
+                    .guid()
+                    .find(guid)
+                    .map(|e| Destination {
+                        map_id: e.map_id,
+                        instance_id: e.instance_id,
+                        x: e.x,
+                        y: e.y,
+                        z: e.z,
+                        geometry_revision: geometry_revision(ctx, e.map_id),
+                    }),
             };
             let Some(dest) =
                 destination.filter(|d| (d.map_id, d.instance_id) == (me.map_id, me.instance_id))
             else {
                 state.failure(Failure::DestinationUnavailable, now);
-                defer(state, now);
+                if state
+                    .objective
+                    .as_ref()
+                    .is_some_and(|objective| objective.kind == ObjectiveKind::ReturnHome)
+                {
+                    defer(state, now);
+                }
                 return;
             };
             if candidate.id.reason == Reason::Survival {
@@ -1080,7 +1179,13 @@ fn execute(
                 state.last_stall_check_micros = now;
                 if state.retry_count >= 3 {
                     stop(ctx, me.guid, state);
-                    defer(state, now);
+                    if state
+                        .objective
+                        .as_ref()
+                        .is_some_and(|objective| objective.kind == ObjectiveKind::ReturnHome)
+                    {
+                        defer(state, now);
+                    }
                     return;
                 }
             }
@@ -1170,6 +1275,21 @@ fn execute(
             match super::actions::attack(ctx, me.guid, target) {
                 Ok(_) => state.last_outcome = RunnerOutcome::Accepted,
                 Err(reason) => state.failure(Failure::ActionRefused(reason.kind), now),
+            }
+        }
+        Action::Resurrect => {
+            stop(ctx, me.guid, state);
+            let result = if me.player_flags & lyracore_shared::constants::player_flags::GHOST != 0 {
+                crate::actor::spirit_res(ctx, me.guid)
+            } else {
+                crate::actor::repop(ctx, me.guid)
+            };
+            match result {
+                Ok(()) => state.last_outcome = RunnerOutcome::Accepted,
+                Err(_) => state.failure(
+                    Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
+                    now,
+                ),
             }
         }
     }

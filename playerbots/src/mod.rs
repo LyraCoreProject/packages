@@ -19,6 +19,7 @@
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
 mod actions;
+mod companion;
 mod decision;
 mod goals;
 mod runner;

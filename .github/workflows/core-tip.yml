@@ -120,6 +120,10 @@ jobs:
       RUSTUP_TOOLCHAIN: 1.93.0
       SPACETIME_VERSION: 2.7.1
       SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      CARGO_BUILD_JOBS: 2
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
     steps:
       - name: Check out Packages
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -179,12 +183,39 @@ jobs:
             --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-preceding.wasm"
           echo "PLAYERBOTS_PRECEDING_WASM=$RUNNER_TEMP/playerbots-preceding.wasm" >> "$GITHUB_ENV"
+      - name: Check out the merged PB-002 Module source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: e6a755db0a150bbf73ad97b972fe829f20f6816c
+          path: preceding-pb002-core
+          persist-credentials: false
+      - name: Check out the merged PB-002 Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 155c9e401afb06d5731acedf8fc35a81dbe4aaa6
+          path: preceding-pb002-collection
+          persist-credentials: false
+      - name: Build the merged PB-002 Wasm for populated companion migration
+        working-directory: preceding-pb002-core
+        run: |
+          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/preceding-pb002-core/target"
+          cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-pb002-core/Cargo.toml" -p lyracore-module
+          "$GITHUB_WORKSPACE/preceding-pb002-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-pb002-core" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-pb002-core/Cargo.toml" \
+            --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-pb002-preceding.wasm"
+          echo "PLAYERBOTS_COMPANION_PRECEDING_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
       - name: Run the real Module and Package action fixture
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/lyracore/target
         run: |
           cargo clean --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" -p lyracore-module
           ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-            -p lyracore-module --test playerbots_rewrite -- --ignored --test-threads=1
+            -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
+            -- --ignored --test-threads=1
       - name: Upload fixture inputs and Standalone logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
