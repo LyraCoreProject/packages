@@ -236,8 +236,6 @@ pub fn playerbots_fixture_companion_stage(
     companion_unit(ctx, leader_guid, 1220.0, 1200.0, 100)?;
     companion_unit(ctx, ally_guid, 1222.0, 1200.0, 100)?;
     companion_creature(ctx, 5_090_302, 1204.0, 1204.0, 50.0, None)?;
-    crate::spell::learn_spell(ctx, companion_guid, spacetimedb::Identity::ZERO, HEAL);
-    crate::spell::learn_spell(ctx, leader_guid, spacetimedb::Identity::ZERO, HEAL);
     let rotations = ctx.db.pkg_playerbots_rotation();
     for row in rotations
         .by_class_role()
@@ -326,16 +324,6 @@ pub fn playerbots_fixture_companion_forget_heal(
     {
         ctx.db.game_player_spell().id().delete(spell.id);
     }
-    Ok(())
-}
-
-#[reducer]
-pub fn playerbots_fixture_companion_learn_heal(
-    ctx: &ReducerContext,
-    guid: u64,
-) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::spell::learn_spell(ctx, guid, spacetimedb::Identity::ZERO, HEAL);
     Ok(())
 }
 
@@ -996,7 +984,6 @@ pub fn playerbots_fixture_runner_stage(
     personality.flee_at_pct = 0;
     ctx.db.pkg_playerbots_personality().id().update(personality);
     if healing {
-        crate::spell::learn_spell(ctx, guid, spacetimedb::Identity::ZERO, HEAL);
         let rows = ctx.db.pkg_playerbots_rotation();
         for row in rows
             .by_class_role()
