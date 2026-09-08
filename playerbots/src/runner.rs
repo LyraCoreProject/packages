@@ -249,8 +249,8 @@ crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_recove
 fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
     let scans = ctx.db.pkg_playerbots_recovery_scan();
     let existing = scans.character_guid().find(bot.character_guid);
+    let replacing = existing.is_some();
     let mut scan = existing
-        .clone()
         .filter(|s| (s.class, s.role) == (bot.class, bot.role))
         .unwrap_or(PlayerbotsRecoveryScan {
             character_guid: bot.character_guid,
@@ -322,7 +322,7 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
             }
         },
     };
-    if existing.is_some() {
+    if replacing {
         scans.character_guid().update(scan);
     } else {
         scans.insert(scan);

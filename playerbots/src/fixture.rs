@@ -753,7 +753,7 @@ pub fn playerbots_fixture_runner_wide_recovery(
         rotations.insert(super::PlayerbotsRotation {
             id: 0,
             spell_id,
-            ..heal.clone()
+            ..heal
         });
     }
     rotations.insert(super::PlayerbotsRotation { id: 0, ..heal });
