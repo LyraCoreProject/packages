@@ -1,5 +1,6 @@
 //! Synthetic private-Shard staging for the catalog and its callable executors.
 
+use super::pkg_playerbots_bot;
 use super::quest_catalog::{
     self, pkg_playerbots_catalog_objective, pkg_playerbots_quest_catalog, AdmissionRefusal,
     CatalogEntityKind, CatalogObjectiveKind, ObjectiveExecutor, PlayerbotsCatalogObjective,
