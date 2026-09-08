@@ -5,7 +5,7 @@ use super::quest_catalog::{
     CatalogEntityKind, CatalogObjectiveKind, ObjectiveExecutor, PlayerbotsCatalogObjective,
     CATALOG_REVISION,
 };
-use crate::import_meta::game_import_meta;
+use crate::import_meta::game_import_meta; // package-api: exempt operator fixture refuses imported content before staging
 use crate::{
     game_character_quest, game_corpse_loot, game_creature_loot, game_creature_quest,
     game_creature_spawn, game_creature_template, game_gameobject, game_gameobject_loot,
