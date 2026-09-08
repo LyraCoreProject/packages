@@ -8,8 +8,7 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
 };
 use crate::{
-    game_character, game_character_quest, game_creature_spline, game_player_spell, game_threat,
-    game_world_entity,
+    game_character_quest, game_creature_spline, game_player_spell, game_threat, game_world_entity,
 };
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
@@ -1097,11 +1096,7 @@ crate::game_hook!(on_group_invite, fn playerbots_auto_accept(ctx, payload) {
     {
         return;
     }
-    let inviter = ctx
-        .db
-        .game_character()
-        .guid()
-        .find(payload.inviter_guid)
+    let inviter = crate::helpers::character_by_guid(ctx, payload.inviter_guid)
         .map(|character| character.name)
         .unwrap_or_else(|| payload.inviter_guid.to_string());
     match crate::actor::accept_group_invite(ctx, payload.target_guid) {
