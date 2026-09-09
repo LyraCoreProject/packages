@@ -10,10 +10,10 @@ use super::{
 };
 use crate::transfer::game_bot_transfer_intent;
 use crate::{
-    game_areatrigger_teleport, game_character, game_character_quest, game_corpse_loot,
-    game_creature_loot, game_creature_quest, game_creature_spline, game_creature_template,
-    game_group, game_group_member, game_instance, game_melee_attack, game_quest_event_requirement,
-    game_quest_objective, game_quest_template, game_threat, game_world_entity,
+    game_character, game_character_quest, game_corpse_loot, game_creature_loot,
+    game_creature_quest, game_creature_spline, game_creature_template, game_group,
+    game_group_member, game_melee_attack, game_quest_event_requirement, game_quest_objective,
+    game_quest_template, game_threat, game_world_entity,
 };
 
 /// How long a bot waits between decisions. The tick pass fires every half second; a bot that
@@ -100,7 +100,6 @@ const BOT_QUEST_LOG_LIMIT: usize = 3;
 
 /// The party a bot is in: who leads it and who else is in it.
 struct Party {
-    group_id: u64,
     leader_guid: u64,
     members: Vec<u64>,
 }
@@ -187,13 +186,9 @@ pub(super) fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
                 return;
             }
         }
-        // Nobody to follow on this Shard: the party crossed a boundary, this bot was left behind
-        // by one, or its party is gone. All three are answered by a crossing of its own.
-        None => {
-            if cross_shards(ctx, &me, bot, party.as_ref(), now) {
-                return;
-            }
-        }
+        // The runner handles a missing local leader through the same AreaTrigger and Transfer
+        // checkpoint path as Cohort control before legacy goals run.
+        None => {}
     }
 
     let engaged = combat_target(ctx, &me, party.as_ref());
@@ -711,7 +706,6 @@ fn party_of(ctx: &ReducerContext, guid: u64) -> Option<Party> {
         .map(|row| row.character_guid)
         .collect();
     Some(Party {
-        group_id: group.group_id,
         leader_guid: group.leader_guid,
         members,
     })
@@ -950,130 +944,16 @@ pub(crate) fn plan_crossing(
     }
 }
 
-/// Act on [`plan_crossing`]. Returns `true` when it took the tick.
-///
-/// Waiting takes the tick too. A bot holding still for a few seconds while it finds out whether it
-/// has been left behind is honest about not knowing, and it keeps the wait on one clock: the goal
-/// row measures how long the bot has held ONE goal, so a bot that went back to fighting between
-/// ticks would restart its wait every time.
-fn cross_shards(
-    ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    bot: &PlayerbotsBot,
-    party: Option<&Party>,
-    now: i64,
-) -> bool {
-    let here = (me.map_id, me.instance_id);
-    let home = (bot.home_map, 0);
-    let destination = party_destination(ctx, party);
-    let plan = plan_crossing(
-        here,
-        destination.as_ref().map(|d| (d.map_id, d.instance_id)),
-        home,
-        held_for(ctx, bot.character_guid, goal::STRANDED, now),
-    );
-    match plan {
-        Crossing::Stay => false,
-        Crossing::Wait => {
-            record_goal(ctx, bot.character_guid, goal::STRANDED, now);
-            true
-        }
-        Crossing::Join(_) => {
-            let destination = destination.expect("Join is only planned from a known destination");
-            cross(
-                ctx,
-                bot.character_guid,
-                destination,
-                "following the party",
-                now,
-            );
-            true
-        }
-        Crossing::GoHome => {
-            cross(
-                ctx,
-                bot.character_guid,
-                crate::transfer::Destination {
-                    map_id: bot.home_map,
-                    instance_id: 0,
-                    x: bot.home_x,
-                    y: bot.home_y,
-                    z: bot.home_z,
-                    o: 0.0,
-                },
-                "the party is gone from this Shard",
-                now,
-            );
-            true
-        }
-    }
+pub(super) fn legacy_stranded_for(ctx: &ReducerContext, character_guid: u64, now: i64) -> i64 {
+    held_for(ctx, character_guid, goal::STRANDED, now)
 }
 
-/// Ask for one crossing. The Character row is what the Gateway reads to decide where the bot is
-/// bound, and the core writer moves it and records the Intent in one transaction — so nothing here
-/// may touch the bot's position afterwards, or the Intent reads as stale and the crossing is
-/// refused.
-fn cross(
-    ctx: &ReducerContext,
-    bot_guid: u64,
-    destination: crate::transfer::Destination,
-    reason: &str,
-    now: i64,
-) {
-    match crate::transfer::emit_bot_transfer_intent(ctx, bot_guid, destination, reason, 0) {
-        Ok(_) => {
-            spacetimedb::log::info!(
-                "playerbots: bot {bot_guid} crosses to map {} instance {} ({reason})",
-                destination.map_id,
-                destination.instance_id
-            );
-            record_goal(ctx, bot_guid, goal::IN_TRANSIT, now);
-        }
-        Err(refusal) => {
-            spacetimedb::log::warn!(
-                "playerbots: bot {bot_guid} Transfer Intent refused: {refusal}"
-            );
-        }
-    }
+pub(super) fn record_legacy_wait(ctx: &ReducerContext, character_guid: u64, now: i64) {
+    record_goal(ctx, character_guid, goal::STRANDED, now);
 }
 
-/// Where this bot's party went, as a place a Transfer can be aimed at.
-///
-/// Both halves have to be known. The instance row says WHICH dungeon; the portal that targets that
-/// map says where inside it a party lands, which is the one point on a dungeon map the imported
-/// game data guarantees a follower can stand. An instance nothing can land in is not a destination,
-/// and a bot facing one is treated as having no party here at all — it waits, then goes home.
-fn party_destination(
-    ctx: &ReducerContext,
-    party: Option<&Party>,
-) -> Option<crate::transfer::Destination> {
-    let party = party?;
-    let instance = ctx
-        .db
-        .game_instance()
-        .by_party()
-        .filter(&party.group_id)
-        .find(|instance| !instance.reset_requested)?;
-    let (x, y, z, o) = portal_into(ctx, instance.map_id)?;
-    Some(crate::transfer::Destination {
-        map_id: instance.map_id,
-        instance_id: instance.instance_id,
-        x,
-        y,
-        z,
-        o,
-    })
-}
-
-/// Where the portal into `map_id` puts whoever walks through it. `game_areatrigger_teleport` records
-/// each portal by its TARGET, so the rows that name this map are exactly the ways in, and they all
-/// land in the same doorway.
-fn portal_into(ctx: &ReducerContext, map_id: u32) -> Option<(f32, f32, f32, f32)> {
-    ctx.db
-        .game_areatrigger_teleport()
-        .iter()
-        .find(|portal| portal.target_map == map_id)
-        .map(|portal| (portal.x, portal.y, portal.z, portal.o))
+pub(super) fn record_legacy_transfer(ctx: &ReducerContext, character_guid: u64, now: i64) {
+    record_goal(ctx, character_guid, goal::IN_TRANSIT, now);
 }
 
 // ---- fighting --------------------------------------------------------------------------------
@@ -2273,8 +2153,8 @@ fn pick_salt(ctx: &ReducerContext, character_guid: u64) -> u64 {
 /// Returns `true` when it acted, so the caller stops thinking about this tick.
 ///
 /// SHARD BOUNDARY: the caller resolved `leader` out of THIS Shard's tables. A leader who has crossed
-/// to another Shard has no row here at all, so this is never reached for one — [`cross_shards`]
-/// answers that case instead.
+/// to another Shard has no row here at all, so this is never reached for one. The runner
+/// handles that case through its typed AreaTrigger path before legacy goals run.
 fn follow_across_partitions(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,

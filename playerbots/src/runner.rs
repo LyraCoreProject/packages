@@ -516,6 +516,48 @@ pub(super) fn legacy_controls(ctx: &ReducerContext, guid: u64) -> bool {
         && crate::actor::sessionless_action_gate(ctx, guid).is_ok()
 }
 
+enum LegacyPass {
+    Goals,
+    Wait,
+    Transfer { return_home: bool },
+}
+
+fn legacy_pass(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+    state: &PlayerbotsRunner,
+    now: i64,
+) -> LegacyPass {
+    if state.transfer_checkpoint.is_some() {
+        return LegacyPass::Transfer {
+            return_home: state
+                .transfer_checkpoint
+                .is_some_and(|checkpoint| checkpoint.purpose.is_none()),
+        };
+    }
+    let Some(me) = super::goals::body(ctx, bot, now) else {
+        return LegacyPass::Goals;
+    };
+    let party = match super::companion::party(ctx, bot.character_guid, false) {
+        Ok(party) => party,
+        Err(_) => return LegacyPass::Transfer { return_home: false },
+    };
+    let remote = party
+        .as_ref()
+        .and_then(super::companion::Party::leader_partition);
+    match super::goals::plan_crossing(
+        (me.map_id, me.instance_id),
+        remote.map(|partition| (partition.map_id, partition.instance_id)),
+        (bot.home_map, 0),
+        super::goals::legacy_stranded_for(ctx, bot.character_guid, now),
+    ) {
+        super::goals::Crossing::Stay => LegacyPass::Goals,
+        super::goals::Crossing::Wait => LegacyPass::Wait,
+        super::goals::Crossing::Join(_) => LegacyPass::Transfer { return_home: false },
+        super::goals::Crossing::GoHome => LegacyPass::Transfer { return_home: true },
+    }
+}
+
 pub(super) fn pass(ctx: &ReducerContext) {
     super::ensure_defaults(ctx);
     let now = ctx.timestamp.to_micros_since_unix_epoch();
@@ -546,14 +588,33 @@ pub(super) fn pass(ctx: &ReducerContext) {
             state.save(ctx);
         } else {
             match bot.controller {
-                Controller::Legacy => {
-                    state.save(ctx);
-                    super::goals::think(ctx, &bot, now);
-                }
-                Controller::RecordOnly => run(ctx, &bot, state, now),
+                Controller::Legacy => match legacy_pass(ctx, &bot, &state, now) {
+                    LegacyPass::Goals => {
+                        state.save(ctx);
+                        super::goals::think(ctx, &bot, now);
+                    }
+                    LegacyPass::Wait => {
+                        if state.foreground.is_some() {
+                            stop(ctx, bot.character_guid, &mut state);
+                        }
+                        state.chosen = Some(Candidate {
+                            id: decision::CandidateId {
+                                action: Action::Hold,
+                                reason: Reason::Transfer,
+                                objective: state.objective_sequence,
+                            },
+                            priority: 700,
+                        });
+                        state.last_outcome = RunnerOutcome::Waiting;
+                        super::goals::record_legacy_wait(ctx, bot.character_guid, now);
+                        state.save(ctx);
+                    }
+                    LegacyPass::Transfer { return_home } => run(ctx, &bot, state, now, return_home),
+                },
+                Controller::RecordOnly => run(ctx, &bot, state, now, false),
                 Controller::Cohort => {
                     let _ = super::goals::body(ctx, &bot, now);
-                    run(ctx, &bot, state, now);
+                    run(ctx, &bot, state, now, false);
                 }
                 Controller::Frozen => {
                     state.save(ctx);
@@ -718,7 +779,9 @@ fn objective(
     now: i64,
 ) -> bool {
     state.deferred_destinations.retain(|d| d.until_micros > now);
-    let admission = if party.is_none() {
+    let admission = if bot.controller == Controller::Legacy {
+        None
+    } else if party.is_none() {
         match super::quest_catalog::reconcile_active(ctx, bot.character_guid) {
             super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
             super::quest_catalog::ReconcileResult::Missing => None,
@@ -1081,7 +1144,14 @@ fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut Playerbots
     }
 }
 
-fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, now: i64) {
+fn run(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+    mut state: PlayerbotsRunner,
+    now: i64,
+    return_home: bool,
+) {
+    let owns_runner = matches!(bot.controller, Controller::Legacy | Controller::Cohort);
     let Some(me) = ctx.db.game_world_entity().guid().find(bot.character_guid) else {
         state.chosen = Some(Candidate {
             id: decision::CandidateId {
@@ -1096,7 +1166,13 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         return;
     };
     super::transfer::begin_arrival(&mut state, &me, now);
-    let mut party = match super::companion::human_led_party(ctx, me.guid) {
+    let mut party = match if return_home {
+        Ok(None)
+    } else if bot.controller == Controller::Legacy {
+        super::companion::party(ctx, me.guid, false)
+    } else {
+        super::companion::human_led_party(ctx, me.guid)
+    } {
         Ok(party) => party,
         Err(unavailable) => {
             spacetimedb::log::error!(
@@ -1105,7 +1181,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 unavailable.group_id,
                 unavailable.reason
             );
-            if bot.controller == Controller::Cohort {
+            if owns_runner {
                 stop(ctx, me.guid, &mut state);
             }
             if super::transfer::arrival_expired(&state, now) {
@@ -1250,7 +1326,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
 
     let arrival = state.transfer_checkpoint;
     let arriving = arrival.is_some();
-    if bot.controller == Controller::Cohort {
+    if owns_runner {
         let mut recovery = state.recovery.take().unwrap_or_default();
         let deferred = recovery.observe(ctx, &me, &mut state, now);
         state.recovery = Some(recovery);
@@ -1299,7 +1375,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             return;
         }
         super::transfer::Arrival::Invalid(failure) => {
-            if bot.controller == Controller::Cohort {
+            if owns_runner {
                 stop(ctx, me.guid, &mut state);
             }
             state.transfer_checkpoint = None;
@@ -1308,7 +1384,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             return;
         }
     }
-    if bot.controller == Controller::Cohort {
+    if owns_runner {
         if prior_objective != state.objective_sequence && state.foreground.is_some() {
             stop(ctx, me.guid, &mut state);
         }
@@ -1324,7 +1400,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     };
     let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
         if quest_read_limited {
-            if bot.controller == Controller::Cohort {
+            if owns_runner {
                 if let Some(recovery) = &mut state.recovery {
                     recovery.activate(None, now);
                 }
@@ -1349,7 +1425,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let mut retained_quest = quest_objective
         .then(|| super::quest_catalog::retained(ctx, me.guid))
         .flatten();
-    if bot.controller == Controller::Cohort {
+    if owns_runner {
         if let Some(retained) = retained_quest.as_mut() {
             super::quest_loop::invalidate_safe_position(ctx, &me, retained);
         }
@@ -1387,7 +1463,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
     let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
     let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
-    if bot.controller == Controller::Cohort {
+    if owns_runner && state.transfer_checkpoint.is_none() {
         if let Some(o) = &mut state.objective {
             if at_destination {
                 o.stage = ObjectiveStage::Completed;
@@ -1557,15 +1633,26 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             strategies.push(strategy(Trigger::Wounded, recovery));
         }
         strategies.push(strategy(Trigger::Attacked, defense));
-        if let Some(party) = party.as_ref() {
-            if let Some(partition) = party.leader_partition().filter(|partition| {
+        let transfer_partition = party
+            .as_ref()
+            .and_then(super::companion::Party::leader_partition)
+            .filter(|partition| {
                 (partition.map_id, partition.instance_id) != (me.map_id, me.instance_id)
-            }) {
-                strategies.push(strategy(
-                    Trigger::Always,
-                    super::transfer::candidate(ctx, &me, partition, state.objective_sequence),
-                ));
-            }
+            })
+            .or_else(|| {
+                (party.is_none() && !partition_ok).then_some(crate::group::PartyPartitionFacts {
+                    map_id: destination.map_id,
+                    instance_id: destination.instance_id,
+                    locator_revision: 0,
+                })
+            });
+        if let Some(partition) = transfer_partition {
+            strategies.push(strategy(
+                Trigger::Always,
+                super::transfer::candidate(ctx, &me, partition, state.objective_sequence),
+            ));
+        }
+        if let Some(party) = party.as_ref() {
             let selection = super::companion::strategy(
                 ctx,
                 bot,
@@ -2268,6 +2355,16 @@ fn execute(
                     super::transfer::normalize(
                         ctx, state, me, transfer, intent_id, generation, now,
                     );
+                    if ctx
+                        .db
+                        .pkg_playerbots_bot()
+                        .by_character()
+                        .filter(me.guid)
+                        .next()
+                        .is_some_and(|bot| bot.controller == Controller::Legacy)
+                    {
+                        super::goals::record_legacy_transfer(ctx, me.guid, now);
+                    }
                     state.last_outcome = RunnerOutcome::Waiting;
                 }
                 Err(refusal) => {
@@ -2378,7 +2475,7 @@ pub(super) fn fixture_refuse_quest_candidate(
 
 crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payload) {
     let Some(bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.caster_guid).next() else { return; };
-    if bot.controller != Controller::Cohort { return; }
+    if !matches!(bot.controller, Controller::Legacy | Controller::Cohort) { return; }
     let Some(mut state) = ctx.db.pkg_playerbots_runner().character_guid().find(payload.caster_guid) else { return; };
     let Some(fg) = &state.foreground else { return; };
     let Running::Cast(handle) = &fg.running else { return; };

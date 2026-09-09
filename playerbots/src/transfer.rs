@@ -132,16 +132,21 @@ fn checkpoint_purpose(
                 .map_or(0, |until| until.saturating_sub(now).max(0)),
         });
     }
+    let objective = state
+        .objective
+        .as_ref()
+        .filter(|objective| objective.kind == super::runner::ObjectiveKind::Quest)?;
     let retained = ctx
         .db
         .pkg_playerbots_quest_objective()
         .character_guid()
-        .find(state.character_guid)?;
+        .find(state.character_guid)
+        .filter(|retained| retained.runner_objective_identity == objective.identity)?;
     let attempt = state.recovery.as_ref().and_then(|recovery| {
-        recovery
-            .attempts
-            .iter()
-            .find(|attempt| attempt.objective == retained.runner_objective_identity)
+        recovery.attempts.iter().find(|attempt| {
+            attempt.objective == retained.runner_objective_identity
+                && attempt.reason == Reason::Quest
+        })
     });
     Some(TransferPurpose::Quest {
         quest: retained.quest_entry,
