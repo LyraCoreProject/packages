@@ -47,6 +47,7 @@ pub struct CommandRecord {
     pub at_micros: i64,
     pub source_identity: spacetimedb::Identity,
     pub intent_id: u64,
+    pub issuer_guid: u64,
     pub order: CompanionOrder,
     pub outcome: crate::actor::CommandOutcome,
 }
@@ -163,6 +164,7 @@ pub(crate) fn apply_command(
         at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
         source_identity: admitted.source_identity,
         intent_id: admitted.intent_id,
+        issuer_guid: admitted.issuer_guid,
         order: order.clone(),
         outcome,
     });
@@ -246,6 +248,7 @@ pub(crate) fn record_runtime_outcome(
         at_micros: ctx.timestamp.to_micros_since_unix_epoch(),
         source_identity,
         intent_id,
+        issuer_guid: state.issuer_guid,
         order: state.order.clone(),
         outcome,
     });
