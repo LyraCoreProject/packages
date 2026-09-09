@@ -352,6 +352,32 @@ pub fn playerbots_fixture_orders_drive(
     runner_park_for(ctx, bot_guid)
 }
 
+fn fixture_group_partitions(
+    ctx: &ReducerContext,
+    group_id: u64,
+    members: &[u64],
+) -> Result<Vec<crate::group::GroupMemberPartition>, String> {
+    let partitions = ctx.db.game_group_member_partition();
+    members
+        .iter()
+        .enumerate()
+        .map(|(index, character_guid)| {
+            partitions.character_guid().delete(*character_guid);
+            let entity = crate::helpers::live_entity(ctx, *character_guid)?;
+            Ok(crate::group::GroupMemberPartition {
+                character_guid: *character_guid,
+                group_id,
+                membership_revision: index as u64 + 1,
+                member_active: true,
+                map_id: entity.map_id,
+                instance_id: entity.instance_id,
+                locator_revision: 1,
+                state: crate::group::PartyPartitionState::Known,
+            })
+        })
+        .collect()
+}
+
 #[reducer]
 pub fn playerbots_fixture_prepare(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
@@ -600,6 +626,8 @@ pub fn playerbots_fixture_companion_stage(
     personality.flee_at_pct = 0;
     personality.heal_at_pct = 80;
     ctx.db.pkg_playerbots_personality().id().update(personality);
+    let members = vec![leader_guid, companion_guid, ally_guid];
+    let partitions = fixture_group_partitions(ctx, COMPANION_GROUP, &members)?;
     crate::group::sync_group_mirror(
         ctx,
         COMPANION_GROUP,
@@ -607,11 +635,12 @@ pub fn playerbots_fixture_companion_stage(
         0,
         2,
         0,
-        vec![leader_guid, companion_guid, ally_guid],
+        members,
         crate::SessionActor {
             guid: leader_guid,
             ownership: None,
         },
+        partitions,
     )?;
     Ok(())
 }
@@ -688,6 +717,8 @@ pub fn playerbots_fixture_roles_stage(
         entity.health = 1_000;
         ctx.db.game_world_entity().guid().update(entity);
     }
+    let members = vec![leader_guid, warrior_guid, priest_guid, mage_guid];
+    let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;
     crate::group::sync_group_mirror(
         ctx,
         ROLES_GROUP,
@@ -695,11 +726,12 @@ pub fn playerbots_fixture_roles_stage(
         0,
         2,
         0,
-        vec![leader_guid, warrior_guid, priest_guid, mage_guid],
+        members,
         crate::SessionActor {
             guid: leader_guid,
             ownership: None,
         },
+        partitions,
     )?;
     for guid in [warrior_guid, priest_guid, mage_guid] {
         super::runner::playerbots_select_controller(ctx, guid, super::Controller::Cohort)?;

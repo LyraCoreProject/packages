@@ -624,6 +624,7 @@ mod tests {
                 dead: false,
                 target_guid: 0,
             }),
+            partition: None,
         }
     }
 
