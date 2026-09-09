@@ -9,6 +9,24 @@ pub enum Action {
     Cast(CastAction),
     Attack(u64),
     Resurrect,
+    AcceptQuest(QuestInteraction),
+    TurnInQuest(QuestInteraction),
+    LootCreature(QuestLoot),
+    UseGameObject(QuestInteraction),
+    LootGameObject(QuestLoot),
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QuestInteraction {
+    pub target: u64,
+    pub quest: u32,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct QuestLoot {
+    pub target: u64,
+    pub quest: u32,
+    pub slot: u8,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -22,6 +40,7 @@ pub enum MoveTarget {
     Home,
     Entity(u64),
     CastingPosition(u64),
+    GameObject(u64),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

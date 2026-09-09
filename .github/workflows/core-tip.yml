@@ -115,7 +115,7 @@ jobs:
   playerbots-durable:
     needs: firewall
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       RUSTUP_TOOLCHAIN: 1.93.0
       SPACETIME_VERSION: 2.7.1
@@ -372,7 +372,7 @@ jobs:
               cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
                 --test playerbots_provisioning --test playerbots_quest_catalog \
-                --test playerbots_roles \
+                --test playerbots_roles --test playerbots_quest_loops \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
