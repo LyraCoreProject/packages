@@ -1,6 +1,6 @@
 //! Finite attempts at useful work. Dispatch and route planning do not establish progress.
 
-use super::decision::{Action, Candidate, CastAction, MoveTarget, Reason};
+use super::decision::{Action, Candidate, CastAction, MoveTarget, QuestInteraction, Reason};
 use super::runner::{Destination, PlayerbotsRunner};
 use crate::{game_gameobject, game_world_entity};
 use spacetimedb::ReducerContext;
@@ -17,7 +17,7 @@ pub enum Work {
     Fight(u64),
     Heal(u64),
     Buff(CastAction),
-    QuestInteraction { target: u64, quest: u32 },
+    QuestInteraction(QuestInteraction),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -79,19 +79,22 @@ fn work(candidate: Candidate, state: &PlayerbotsRunner) -> Option<Work> {
             | Action::Move(MoveTarget::CastingPosition(target)) => Some(Work::Fight(target)),
             Action::Move(MoveTarget::Home) => Some(Work::Destination(candidate.id.objective)),
             Action::AcceptQuest(step) | Action::TurnInQuest(step) | Action::UseGameObject(step) => {
-                Some(Work::QuestInteraction {
+                Some(Work::QuestInteraction(QuestInteraction {
                     target: step.target,
                     quest: step.quest,
-                })
+                }))
             }
             Action::LootCreature(step) | Action::LootGameObject(step) => {
-                Some(Work::QuestInteraction {
+                Some(Work::QuestInteraction(QuestInteraction {
                     target: step.target,
                     quest: step.quest,
-                })
+                }))
             }
             Action::Move(MoveTarget::GameObject(target)) => {
-                Some(Work::QuestInteraction { target, quest: 0 })
+                Some(Work::QuestInteraction(QuestInteraction {
+                    target,
+                    quest: 0,
+                }))
             }
             Action::Hold | Action::Resurrect | Action::Move(MoveTarget::RecoveryPosition(_)) => {
                 None
@@ -105,7 +108,7 @@ fn target(work: Work) -> Option<u64> {
         Work::Destination(_) => None,
         Work::Follow(guid) | Work::Fight(guid) | Work::Heal(guid) => Some(guid),
         Work::Buff(cast) => Some(cast.target),
-        Work::QuestInteraction { target, .. } => Some(target),
+        Work::QuestInteraction(step) => Some(step.target),
     }
 }
 
