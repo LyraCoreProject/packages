@@ -2331,9 +2331,10 @@ fn execute(
                 ctx,
                 me,
                 (dest.x, dest.y, dest.z),
-                if matches!(target, MoveTarget::RecoveryPosition(_)) {
-                    0.25
-                } else if matches!(target, MoveTarget::AreaTrigger(_)) {
+                if matches!(
+                    target,
+                    MoveTarget::RecoveryPosition(_) | MoveTarget::AreaTrigger(_)
+                ) {
                     0.25
                 } else if target == MoveTarget::Home {
                     2.0

@@ -411,12 +411,14 @@ pub(super) fn restore_recovery(
         return None;
     }
     recovery.restore_transfer_attempt(
-        checkpoint.objective_identity,
-        reason,
-        member_guid,
-        stalled_micros,
-        approach,
-        deferred_micros,
+        super::recovery::TransferAttemptRestore {
+            objective: checkpoint.objective_identity,
+            reason,
+            member_guid,
+            stalled_micros,
+            approach,
+            deferred_micros,
+        },
         now,
     )
 }

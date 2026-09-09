@@ -72,6 +72,7 @@ fn locator(character_guid: u64, map_id: u32, instance_id: u64, now: i64) -> crat
 /// Stage the Realm-owned party roster and settled member partitions used by the private Gateway
 /// process. The World Shard fixtures stage their own mirrors separately.
 #[reducer]
+#[allow(clippy::too_many_arguments)] // The fixture carries four identities and both partitions.
 pub fn playerbots_transfer_gateway_realm_stage(
     ctx: &ReducerContext,
     companion_guid: u64,
@@ -85,7 +86,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     let character_guids = [companion_guid, leader_guid, priest_guid, mage_guid];
-    if character_guids.iter().any(|guid| *guid == 0)
+    if character_guids.contains(&0)
         || character_guids
             .iter()
             .enumerate()

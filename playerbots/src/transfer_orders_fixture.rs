@@ -11,6 +11,7 @@ use spacetimedb::{reducer, ReducerContext, ScheduleAt, Table, TimeDuration};
 const GROUP: u64 = 5_098_000;
 const INSTANCE: u64 = 5_098_078;
 const SOURCE: (f32, f32, f32) = (-11208.5, 1685.34, 25.7612);
+#[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
 const LANDING: (f32, f32, f32, f32) = (-14.5732, -385.475, 62.4561, 1.5708);
 
 fn place_body(
