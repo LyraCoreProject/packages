@@ -136,7 +136,7 @@ jobs:
         with:
           repository: LyraCoreProject/LyraCore
           # Replace with the final PB-009 Core head before opening the Package PR.
-          ref: e6959b53fb60fb431c22cb69be6d571fafe7d090
+          ref: 1df0d14906c8f788f3c29e9a8c8521bd2dcbbf6c
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
