@@ -464,6 +464,11 @@ pub(super) struct CompanionSelection {
     pub read_failure: Option<RoleReadError>,
 }
 
+struct HealingSelection {
+    candidate: Option<ActionNode>,
+    target: Option<u64>,
+}
+
 fn healing(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
@@ -473,8 +478,9 @@ fn healing(
     objective: u64,
     retained_target: Option<u64>,
     fallback: &ActionNode,
-) -> Result<Option<(ActionNode, u64)>, RoleReadError> {
+) -> Result<HealingSelection, RoleReadError> {
     let rows = rotation_rows(ctx, bot, &[cond::ALLY_HP_BELOW_PCT])?;
+    let mut selected_target = None;
     for row in rows {
         let heal_at_pct = row.threshold_pct.min(personality_heal_at);
         let Some(target) = wounded_ally(
@@ -485,6 +491,9 @@ fn healing(
         ) else {
             continue;
         };
+        if selected_target.is_none() {
+            selected_target = Some(target);
+        }
         let mut heal = cast_node(
             ctx,
             me,
@@ -499,10 +508,16 @@ fn healing(
         );
         heal.alternatives.push(fallback.clone());
         if heal.readiness != Readiness::Refused {
-            return Ok(Some((heal, target)));
+            return Ok(HealingSelection {
+                candidate: Some(heal),
+                target: Some(target),
+            });
         }
     }
-    Ok(None)
+    Ok(HealingSelection {
+        candidate: None,
+        target: selected_target,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -537,12 +552,15 @@ pub(super) fn strategy(
             &follow,
         )?
     } else {
-        None
+        HealingSelection {
+            candidate: None,
+            target: None,
+        }
     };
-    let heal_target = healing.as_ref().map(|(_, target)| *target);
+    let heal_target = healing.target;
     let fight_target = fight_target(party, me, bot.role, retained_fight_target);
     let mut candidates = Vec::with_capacity(5);
-    if let Some((heal, _)) = healing {
+    if let Some(heal) = healing.candidate {
         candidates.push(heal);
     }
     if let Some(target) = fight_target {
