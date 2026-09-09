@@ -1,7 +1,9 @@
 //! Deterministic staging for private, per-test durable databases.
 //! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
-use super::{pkg_playerbots_bot, pkg_playerbots_kit, PlayerbotsBot};
+use super::{
+    pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_kit, PlayerbotsBot,
+};
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
 use crate::spell::stacking::{game_spell_group, SpellGroup};
