@@ -407,7 +407,7 @@ fn buff_target(
     }
     let mut target = None;
     for member in &party.members {
-        let Some(unit) = member.unit.as_ref().filter(|unit| eligible(unit)) else {
+        let Some(_unit) = member.unit.as_ref().filter(|unit| eligible(unit)) else {
             continue;
         };
         if buff_missing(ctx, member.character_guid, row.spell_id, me.level as u8)? {

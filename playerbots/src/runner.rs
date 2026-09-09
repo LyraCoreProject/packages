@@ -1020,9 +1020,10 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         attacked: threat.is_some(),
         away: !at_destination,
     };
+    let objective_sequence = state.objective_sequence;
     let node = |action, reason, priority| {
         let mut node = ActionNode::ready(action, reason, priority);
-        node.candidate.id.objective = state.objective_sequence;
+        node.candidate.id.objective = objective_sequence;
         node
     };
     let mut travel_action = node(Action::Move(MoveTarget::Home), Reason::ReturnHome, 100);
@@ -1091,9 +1092,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             .alternatives
             .push(node(Action::Hold, Reason::Survival, 900));
     }
+    let retry_candidate = state.retry_candidate;
+    let next_eligible_micros = state.next_eligible_micros;
     let strategy = |trigger, mut n: ActionNode| {
-        if state.retry_candidate == Some(n.candidate.id) && state.next_eligible_micros > now {
-            n.readiness = Readiness::NotBefore(state.next_eligible_micros);
+        if retry_candidate == Some(n.candidate.id) && next_eligible_micros > now {
+            n.readiness = Readiness::NotBefore(next_eligible_micros);
         }
         Strategy {
             trigger,

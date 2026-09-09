@@ -4,9 +4,10 @@
 use super::{pkg_playerbots_bot, pkg_playerbots_kit, PlayerbotsBot};
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
+use crate::spell::stacking::{game_spell_group, SpellGroup};
 use crate::{
-    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect,
-    game_spell_group, game_threat, game_world_entity,
+    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect, game_threat,
+    game_world_entity,
 };
 use crate::{
     game_creature_spawn, game_creature_template, game_group, game_quest_objective,
@@ -487,13 +488,14 @@ pub fn playerbots_fixture_roles_overflow(
                     proc_family_name: 0,
                     proc_family_flags: 0,
                     proc_charges: 0,
+                    proc_icd_ms: 0,
                     proc_ready_micros: 0,
                 });
             }
         }
         2 => {
             for index in 0..63 {
-                ctx.db.game_spell_group().insert(crate::spell::SpellGroup {
+                ctx.db.game_spell_group().insert(SpellGroup {
                     id: 0,
                     group_id: 2,
                     spell_id: 5_098_700 + index,
@@ -1017,6 +1019,19 @@ pub fn playerbots_fixture_companion_wall(
         return Err("synthetic wall did not block line of sight".to_string());
     }
     runner_due_for(ctx, caster_guid)
+}
+
+/// Stage the companion wall while keeping the role runner parked and the ally healthy.
+#[reducer]
+pub fn playerbots_fixture_roles_buff_wall(
+    ctx: &ReducerContext,
+    caster_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_companion_wall(ctx, caster_guid, target_guid)?;
+    companion_unit(ctx, target_guid, 1210.0, 1200.0, 100)?;
+    runner_park_for(ctx, caster_guid)
 }
 
 #[reducer]
