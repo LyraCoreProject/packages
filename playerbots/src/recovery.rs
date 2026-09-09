@@ -335,7 +335,13 @@ impl Recovery {
         }
         let advanced = movement_progress(ctx, me, state).is_some_and(|(route, advanced)| {
             attempt.route = Some(route);
-            advanced && attempt.position.is_none()
+            advanced
+                && state.foreground.as_ref().is_some_and(|foreground| {
+                    !matches!(
+                        foreground.candidate.id.action,
+                        Action::Move(MoveTarget::RecoveryPosition(_))
+                    )
+                })
         });
         if advanced {
             attempt.stalled_micros = 0;
