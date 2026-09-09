@@ -485,8 +485,8 @@ Between fights, rotation rows can name a self or party buff. The same core cast 
 spellbook, level, resource, range, and line of sight before the action runs. Missing range or line of
 sight retains the buff target while the bot repairs its position. Active exact auras and equally
 strong or stronger members of an exclusive buff family satisfy the row, so the bot does not refresh
-them. Oversized or ambiguous aura, family, threat, enemy, pending-cast, and rotation reads hold or
-use the role's declared fallback instead of choosing from a partial scan.
+them. Oversized or ambiguous aura, family, threat, enemy, pending-cast, and rotation reads hold and
+record their typed Party or role read failure instead of choosing from a partial scan.
 An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
 control. A membership whose parent Group is unavailable holds the existing objective and records the
 typed failure. The existing Legacy policy remains available under its explicit selector.

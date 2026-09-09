@@ -6,13 +6,13 @@ use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
 use crate::{
     game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect,
-    game_world_entity,
+    game_spell_group, game_threat, game_world_entity,
 };
 use crate::{
     game_creature_spawn, game_creature_template, game_group, game_quest_objective,
     game_quest_template,
 };
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, ReducerContext, Table, TimeDuration};
 
 const HEAL: u32 = 5_090_100;
 const CHANNEL_HEAL: u32 = 5_090_104;
@@ -401,6 +401,158 @@ pub fn playerbots_fixture_roles_move(
     companion_unit(ctx, guid, x, y, 100)
 }
 
+/// Narrow Taunt's curated header for the short-range movement repair probe.
+#[reducer]
+pub fn playerbots_fixture_roles_short_taunt(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut taunt = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(355)
+        .ok_or("role fixture Taunt header missing")?;
+    if taunt.name != "Taunt" || taunt.spell_level != 10 {
+        return Err("role fixture requires the reconciled curated Taunt header".to_string());
+    }
+    taunt.range_yd = 8;
+    ctx.db.game_spell().spell_id().update(taunt);
+    Ok(())
+}
+
+/// Stage one oversized role read. Reserved ids let the paired clear reducer restore this fixture.
+#[reducer]
+pub fn playerbots_fixture_roles_overflow(
+    ctx: &ReducerContext,
+    guid: u64,
+    kind: u8,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("role fixture bot missing")?;
+    playerbots_fixture_roles_clear_overflow(ctx)?;
+    match kind {
+        0 => {
+            let rows = ctx.db.pkg_playerbots_rotation();
+            let existing = rows.by_class_role().filter((bot.class, bot.role)).count();
+            for index in existing..13 {
+                rows.insert(super::PlayerbotsRotation {
+                    id: 0,
+                    class: bot.class,
+                    role: bot.role,
+                    priority: 250,
+                    spell_id: 5_098_500 + index as u32,
+                    condition: super::cond::ALWAYS,
+                    threshold_pct: 0,
+                });
+            }
+        }
+        1 => {
+            let now = ctx.timestamp;
+            let expires_at = now
+                .checked_add(TimeDuration::from_micros(3_600_000_000))
+                .unwrap_or(now);
+            for index in 0..65 {
+                ctx.db.game_aura().insert(crate::Aura {
+                    id: 0,
+                    target_guid: guid,
+                    caster_guid: guid,
+                    spell_id: 5_098_600 + index,
+                    slot: index as u8,
+                    level: 1,
+                    flags: 0,
+                    applied_at: now,
+                    expires_at,
+                    effect_id: 0,
+                    eff_kind: 0,
+                    amount: 0,
+                    eff_p0: 0,
+                    eff_p0_kind: 0,
+                    eff_p1: 0,
+                    period_ms: 0,
+                    amount_remaining: 0,
+                    stacks: 1,
+                    next_tick_micros: 0,
+                    channel_target: 0,
+                    enters_combat: false,
+                    proc_flags: 0,
+                    proc_chance: 0,
+                    proc_ppm: 0.0,
+                    proc_ex: 0,
+                    proc_school_mask: 0,
+                    proc_family_name: 0,
+                    proc_family_flags: 0,
+                    proc_charges: 0,
+                    proc_ready_micros: 0,
+                });
+            }
+        }
+        2 => {
+            for index in 0..63 {
+                ctx.db.game_spell_group().insert(crate::spell::SpellGroup {
+                    id: 0,
+                    group_id: 2,
+                    spell_id: 5_098_700 + index,
+                });
+            }
+        }
+        3 => {
+            for index in 0..25 {
+                ctx.db.game_threat().insert(crate::ThreatEntry {
+                    id: 0,
+                    creature_guid: 5_098_800 + index,
+                    source_guid: guid,
+                    threat: 1,
+                });
+            }
+        }
+        _ => return Err("unknown role overflow fixture kind".to_string()),
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_roles_clear_overflow(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let rotations = ctx.db.pkg_playerbots_rotation();
+    for row in rotations
+        .iter()
+        .filter(|row| (5_098_500..5_098_600).contains(&row.spell_id) && row.priority == 250)
+        .collect::<Vec<_>>()
+    {
+        rotations.id().delete(row.id);
+    }
+    let auras = ctx.db.game_aura();
+    for row in auras
+        .iter()
+        .filter(|row| (5_098_600..5_098_665).contains(&row.spell_id))
+        .collect::<Vec<_>>()
+    {
+        auras.id().delete(row.id);
+    }
+    let groups = ctx.db.game_spell_group();
+    for row in groups
+        .iter()
+        .filter(|row| (5_098_700..5_098_763).contains(&row.spell_id))
+        .collect::<Vec<_>>()
+    {
+        groups.id().delete(row.id);
+    }
+    let threats = ctx.db.game_threat();
+    for row in threats
+        .iter()
+        .filter(|row| (5_098_800..5_098_825).contains(&row.creature_guid))
+        .collect::<Vec<_>>()
+    {
+        threats.id().delete(row.id);
+    }
+    Ok(())
+}
+
 #[reducer]
 pub fn playerbots_fixture_roles_engage(
     ctx: &ReducerContext,
@@ -766,7 +918,8 @@ pub fn playerbots_fixture_companion_client_cast(
     caster_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::gw::gw_cast_at( // package-api: exempt fixture proves client and bot cast Gate parity
+    crate::gw::gw_cast_at(
+        // package-api: exempt fixture proves client and bot cast Gate parity
         ctx,
         crate::SessionActor {
             guid: caster_guid,

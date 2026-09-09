@@ -12,6 +12,13 @@ use spacetimedb::ReducerContext;
 const MELEE_RANGE_YD: f32 = 4.0;
 const ROTATION_LIMIT: usize = 12;
 
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RoleReadError {
+    RotationLimit,
+    BuffAuraLimit,
+    BuffFamilyUnavailable,
+}
+
 pub(super) struct Party {
     pub leader_guid: u64,
     pub leader: Option<crate::group::PartyUnitFacts>,
@@ -246,7 +253,7 @@ fn rotation_rows(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
     conditions: &[u8],
-) -> Result<Vec<PlayerbotsRotation>, ()> {
+) -> Result<Vec<PlayerbotsRotation>, RoleReadError> {
     let rows: Vec<_> = ctx
         .db
         .pkg_playerbots_rotation()
@@ -255,7 +262,7 @@ fn rotation_rows(
         .take(ROTATION_LIMIT + 1)
         .collect();
     if rows.len() > ROTATION_LIMIT {
-        return Err(());
+        return Err(RoleReadError::RotationLimit);
     }
     let mut rows: Vec<_> = rows
         .into_iter()
@@ -273,9 +280,8 @@ pub(super) fn combat_spell(
     caster_guid: u64,
     target_guid: u64,
     conditions: &[u8],
-) -> Option<u32> {
-    rotation_rows(ctx, bot, conditions)
-        .ok()?
+) -> Result<Option<u32>, RoleReadError> {
+    Ok(rotation_rows(ctx, bot, conditions)?
         .into_iter()
         .find(|row| {
             match crate::actor::cast_readiness(ctx, caster_guid, row.spell_id, target_guid) {
@@ -287,7 +293,7 @@ pub(super) fn combat_spell(
                 ),
             }
         })
-        .map(|row| row.spell_id)
+        .map(|row| row.spell_id))
 }
 
 fn fight(
@@ -296,12 +302,10 @@ fn fight(
     me: &crate::WorldEntity,
     target: &crate::group::PartyEnemyFacts,
     objective: u64,
-) -> ActionNode {
+) -> Result<ActionNode, RoleReadError> {
     if bot.role == ROLE_TANK {
         let fallback = melee_fight(me, target, objective);
-        let Ok(rows) = rotation_rows(ctx, bot, &[cond::ENEMY_ON_ALLY, cond::ALWAYS]) else {
-            return fallback;
-        };
+        let rows = rotation_rows(ctx, bot, &[cond::ENEMY_ON_ALLY, cond::ALWAYS])?;
         for row in rows {
             if row.condition == cond::ENEMY_ON_ALLY
                 && (!target.attacking_party || target.current_target_guid == Some(me.guid))
@@ -322,10 +326,10 @@ fn fight(
             );
             cast.alternatives.push(fallback.clone());
             if cast.readiness != Readiness::Refused {
-                return cast;
+                return Ok(cast);
             }
         }
-        return fallback;
+        return Ok(fallback);
     }
     if matches!(bot.role, ROLE_HEALER | ROLE_DPS) {
         if let Some(spell) = combat_spell(
@@ -334,7 +338,7 @@ fn fight(
             me.guid,
             target.guid,
             &[cond::ALWAYS, cond::TANK_ENGAGED],
-        ) {
+        )? {
             let mut cast = cast_node(
                 ctx,
                 me,
@@ -349,10 +353,28 @@ fn fight(
             );
             cast.alternatives
                 .push(node(Action::Hold, Reason::DamageFight, 650, objective));
-            return cast;
+            return Ok(cast);
         }
     }
-    node(Action::Hold, Reason::DamageFight, 650, objective)
+    Ok(node(Action::Hold, Reason::DamageFight, 650, objective))
+}
+
+fn buff_missing(
+    ctx: &ReducerContext,
+    target_guid: u64,
+    spell_id: u32,
+    caster_level: u8,
+) -> Result<bool, RoleReadError> {
+    match crate::spell::buff_status(ctx, target_guid, spell_id, caster_level) {
+        crate::spell::BuffStatus::Missing => Ok(true),
+        crate::spell::BuffStatus::Satisfied => Ok(false),
+        crate::spell::BuffStatus::Unavailable(crate::spell::BuffUnavailableReason::AuraLimit) => {
+            Err(RoleReadError::BuffAuraLimit)
+        }
+        crate::spell::BuffStatus::Unavailable(crate::spell::BuffUnavailableReason::Family) => {
+            Err(RoleReadError::BuffFamilyUnavailable)
+        }
+    }
 }
 
 fn buff_target(
@@ -361,43 +383,40 @@ fn buff_target(
     party: &Party,
     row: &PlayerbotsRotation,
     retained: Option<u64>,
-) -> Option<u64> {
-    let needs_buff = |guid: u64, unit: &crate::group::PartyUnitFacts| {
-        !unit.dead
-            && (unit.map_id, unit.instance_id) == (me.map_id, me.instance_id)
-            && crate::spell::buff_status(ctx, guid, row.spell_id, me.level as u8)
-                == crate::spell::BuffStatus::Missing
-    };
+) -> Result<Option<u64>, RoleReadError> {
     if row.condition == cond::SELF_MISSING_AURA {
-        return (crate::spell::buff_status(ctx, me.guid, row.spell_id, me.level as u8)
-            == crate::spell::BuffStatus::Missing)
-            .then_some(me.guid);
+        return Ok(buff_missing(ctx, me.guid, row.spell_id, me.level as u8)?.then_some(me.guid));
     }
     if row.condition != cond::ALLY_MISSING_AURA {
-        return None;
+        return Ok(None);
     }
-    if let Some(retained) = retained.filter(|guid| {
-        party.members.iter().any(|member| {
-            member.character_guid == *guid
-                && member
-                    .unit
-                    .as_ref()
-                    .is_some_and(|unit| needs_buff(*guid, unit))
-        })
-    }) {
-        return Some(retained);
+    let eligible = |unit: &crate::group::PartyUnitFacts| {
+        !unit.dead && (unit.map_id, unit.instance_id) == (me.map_id, me.instance_id)
+    };
+    if let Some(retained) = retained {
+        if let Some(unit) = party
+            .members
+            .iter()
+            .find(|member| member.character_guid == retained)
+            .and_then(|member| member.unit.as_ref())
+        {
+            if eligible(unit) && buff_missing(ctx, retained, row.spell_id, me.level as u8)? {
+                return Ok(Some(retained));
+            }
+        }
     }
-    party
-        .members
-        .iter()
-        .filter_map(|member| {
-            member
-                .unit
-                .as_ref()
-                .filter(|unit| needs_buff(member.character_guid, unit))
-                .map(|_| member.character_guid)
-        })
-        .min()
+    let mut target = None;
+    for member in &party.members {
+        let Some(unit) = member.unit.as_ref().filter(|unit| eligible(unit)) else {
+            continue;
+        };
+        if buff_missing(ctx, member.character_guid, row.spell_id, me.level as u8)? {
+            target = Some(target.map_or(member.character_guid, |current: u64| {
+                current.min(member.character_guid)
+            }));
+        }
+    }
+    Ok(target)
 }
 
 fn maintenance(
@@ -407,16 +426,14 @@ fn maintenance(
     party: &Party,
     objective: u64,
     retained: Option<u64>,
-) -> Option<(ActionNode, u64)> {
-    let Ok(rows) = rotation_rows(
+) -> Result<Option<(ActionNode, u64)>, RoleReadError> {
+    let rows = rotation_rows(
         ctx,
         bot,
         &[cond::SELF_MISSING_AURA, cond::ALLY_MISSING_AURA],
-    ) else {
-        return None;
-    };
+    )?;
     for row in rows {
-        let Some(target) = buff_target(ctx, me, party, &row, retained) else {
+        let Some(target) = buff_target(ctx, me, party, &row, retained)? else {
             continue;
         };
         let mut cast = cast_node(
@@ -433,10 +450,10 @@ fn maintenance(
         );
         cast.alternatives.push(follow(party, me, objective));
         if cast.readiness != Readiness::Refused {
-            return Some((cast, target));
+            return Ok(Some((cast, target)));
         }
     }
-    None
+    Ok(None)
 }
 
 pub(super) struct CompanionSelection {
@@ -455,8 +472,8 @@ fn healing(
     objective: u64,
     retained_target: Option<u64>,
     fallback: &ActionNode,
-) -> Option<(ActionNode, u64)> {
-    let rows = rotation_rows(ctx, bot, &[cond::ALLY_HP_BELOW_PCT]).ok()?;
+) -> Result<Option<(ActionNode, u64)>, RoleReadError> {
+    let rows = rotation_rows(ctx, bot, &[cond::ALLY_HP_BELOW_PCT])?;
     for row in rows {
         let heal_at_pct = row.threshold_pct.min(personality_heal_at);
         let Some(target) = wounded_ally(
@@ -481,10 +498,10 @@ fn healing(
         );
         heal.alternatives.push(fallback.clone());
         if heal.readiness != Readiness::Refused {
-            return Some((heal, target));
+            return Ok(Some((heal, target)));
         }
     }
-    None
+    Ok(None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -498,7 +515,7 @@ pub(super) fn strategy(
     retained_heal_target: Option<u64>,
     retained_fight_target: Option<u64>,
     retained_buff_target: Option<u64>,
-) -> CompanionSelection {
+) -> Result<CompanionSelection, RoleReadError> {
     let follow = follow(party, me, objective);
     let personality_heal_at = ctx
         .db
@@ -517,7 +534,7 @@ pub(super) fn strategy(
             objective,
             retained_heal_target,
             &follow,
-        )
+        )?
     } else {
         None
     };
@@ -528,12 +545,12 @@ pub(super) fn strategy(
         candidates.push(heal);
     }
     if let Some(target) = fight_target {
-        candidates.push(fight(ctx, bot, me, target, objective));
+        candidates.push(fight(ctx, bot, me, target, objective)?);
     } else if !party.enemies.is_empty() {
         candidates.push(node(Action::Hold, Reason::CrowdControl, 750, objective));
     }
     let maintenance = if party.enemies.is_empty() {
-        maintenance(ctx, bot, me, party, objective, retained_buff_target)
+        maintenance(ctx, bot, me, party, objective, retained_buff_target)?
     } else {
         None
     };
@@ -542,7 +559,7 @@ pub(super) fn strategy(
         candidates.push(buff);
     }
     candidates.push(follow);
-    CompanionSelection {
+    Ok(CompanionSelection {
         strategy: Strategy {
             trigger: Trigger::Always,
             candidates,
@@ -552,7 +569,7 @@ pub(super) fn strategy(
         heal_target,
         fight_target: fight_target.map(|target| target.guid),
         buff_target,
-    }
+    })
 }
 
 #[cfg(test)]
