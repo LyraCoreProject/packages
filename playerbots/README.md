@@ -523,10 +523,20 @@ them. A completed cast records dispatched effects, and does not complete the ret
 One foreground action retains the controller generation and partition. A higher-priority action
 cancels incompatible work before starting. Pending casts retain the core scheduled identity and
 refresh its current due time after direct-damage pushback. After a movement request, arrival requires a later position
-observation. Ten seconds without movement records a failure; three failed intervals defer the
-same return-home destination for 30 seconds. Companion movement keeps the leader identity and
-retries from current durable party facts instead. Deferred keys include map, instance and optional
-navigation coverage generation. A coverage change invalidates the prior destination decision.
+observation. Recovery Attempts keep the useful purpose through movement prerequisites and approach
+changes. Ten seconds without progress selects a side approach; twenty selects the opposite side;
+thirty defers that work for thirty seconds. Follow retains the leader identity while coordinates
+change. Attack admission and recovery side steps do not reset a stalled fight. Observed movement
+along the owned Core leg counts even when a Partial route first moves away from its goal.
+
+Four Recovery Attempts fit in retained memory, with at most three ordinary attempts so a heal can
+still start. A failed fight leaves another eligible target available. Tactical healing and defense
+clear their own stalled work without extending an unrelated objective's clock. Navigation Inputs
+include modes, active generations and the revision of successful terrain or navigation imports.
+Changed inputs invalidate failure evidence. Unknown route coverage records missing imported
+coverage; it does not claim a verified obstacle. Controlled quest targets produce a named wait,
+and an incomplete target or aura read cancels obsolete quest combat before the next decision.
+
 
 The selector allows at most 24 candidates, depth four, 16 transitions and one route request with
 4096 expansions per decision. These limits also apply to prerequisites, alternatives and continuers.
@@ -536,7 +546,9 @@ position is required. Cast carries its spell and target; Attack carries its targ
 string registry.
 
 The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the roster and adds
-runner, recovery scan and scheduler tables. Existing goals and action observations keep their schema and meaning.
+runner, recovery scan and scheduler tables. Finite recovery adds a nullable Recovery field to the
+runner and a Core navigation import revision table. Existing goals and action observations keep their
+schema and meaning.
 The roster selector travels with the Character; runner observations and foreground work do not.
 The Character delete operation removes the runner and recovery scan rows. Production publication still requires the
 schema review described in LyraCore's `docs/danger-zones.md`.

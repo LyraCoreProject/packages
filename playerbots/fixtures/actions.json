@@ -66,7 +66,18 @@
       "priest": [585, 2050],
       "mage": [133, 168]
     },
-    "item_source": "first starter item held by the seeded role-1 bot"
+    "item_source": "first starter item held by the seeded role-1 bot",
+    "finite_recovery": {
+      "approach_change_seconds": 10,
+      "second_approach_seconds": 20,
+      "attempt_limit_seconds": 30,
+      "deferral_seconds": 30,
+      "ordinary_attempt_limit": 3,
+      "total_attempt_limit": 4,
+      "quest_control_target_limit": 12,
+      "quest_control_aura_limit": 64,
+      "navigation_revision": "Successful Core terrain/navigation imports; mode and active generation changes invalidate prior evidence."
+    }
   },
   "imported_content": null,
   "geometry": {
@@ -75,7 +86,8 @@
     "client_geometry": null,
     "blocked": "3 by 3 navigation cells, walk bytes 0, obs bytes 20, base_z 50",
     "partial": "9 cells along y, one nonwalkable x sub-cell at 1210, other walk bits 1, obs bytes 255",
-    "companion_wall": "synthetic three-cell wall at x 1205, matching nonwalkable and 4-yard obstruction columns; no extracted client geometry"
+    "companion_wall": "synthetic three-cell wall at x 1205, matching nonwalkable and 4-yard obstruction columns; no extracted client geometry",
+    "finite_recovery_partial": "The existing far wall at x+10 plus a U around the Character, sampled every 0.25 yard along x offsets -4..2 and y offsets -4..4. East, north and south edges are nonwalkable; the open west edge requires an initial move away from the eastward leader. Synthetic navigation only."
   },
   "spacetimedb": "2.7.1",
   "rust": "1.93.0",
