@@ -732,13 +732,13 @@ fn objective(
         let (kind, leader_guid, mut destination) = if let Some(party) = party {
             let destination = order
                 .and_then(|state| match &state.order {
-                    super::orders::CompanionOrder::Stay {
+                    super::orders::CompanionOrder::Stay(super::orders::StayOrder {
                         map_id,
                         instance_id,
                         x,
                         y,
                         z,
-                    } => Some(Destination {
+                    }) => Some(Destination {
                         map_id: *map_id,
                         instance_id: *instance_id,
                         x: *x,
@@ -1021,17 +1021,17 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if order.as_ref().is_some_and(|order| {
         matches!(
             &order.order,
-            super::orders::CompanionOrder::Stay {
+            super::orders::CompanionOrder::Stay(super::orders::StayOrder {
                 map_id,
                 instance_id,
                 ..
-            } if (*map_id, *instance_id) != (me.map_id, me.instance_id)
+            }) if (*map_id, *instance_id) != (me.map_id, me.instance_id)
         ) || party.as_ref().is_none_or(|party| {
             party.group_id != order.group_id
                 || party.leader_guid != order.issuer_guid
                 || party.leader_guid
                     != match &order.order {
-                        super::orders::CompanionOrder::Follow { leader_guid } => *leader_guid,
+                        super::orders::CompanionOrder::Follow(follow) => follow.leader_guid,
                         _ => party.leader_guid,
                     }
         })
@@ -1044,19 +1044,19 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     }
     if let (Some(party), Some(order)) = (party.as_mut(), order.as_ref()) {
         match &order.order {
-            super::orders::CompanionOrder::Assist { member_guid } => {
+            super::orders::CompanionOrder::Assist(assist) => {
                 party.fight_constraint = Some(
                     party
                         .members
                         .iter()
-                        .find(|member| member.character_guid == *member_guid)
+                        .find(|member| member.character_guid == assist.member_guid)
                         .and_then(|member| member.unit.as_ref())
                         .map_or(u64::MAX, |member| member.target_guid),
                 );
             }
-            super::orders::CompanionOrder::Target { target_guid } => {
-                party.fight_constraint = Some(*target_guid);
-                match crate::actor::companion_target_facts(ctx, me.guid, *target_guid) {
+            super::orders::CompanionOrder::Target(target) => {
+                party.fight_constraint = Some(target.target_guid);
+                match crate::actor::companion_target_facts(ctx, me.guid, target.target_guid) {
                     Ok(target) => party.enemies.push(crate::group::PartyEnemyFacts {
                         guid: target.guid,
                         map_id: target.map_id,
@@ -1077,8 +1077,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                     Err(outcome) => super::orders::record_runtime_outcome(ctx, me.guid, outcome),
                 }
             }
-            super::orders::CompanionOrder::Follow { .. }
-            | super::orders::CompanionOrder::Stay { .. } => {}
+            super::orders::CompanionOrder::Follow(_) | super::orders::CompanionOrder::Stay(_) => {}
         }
     }
 
@@ -1537,7 +1536,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     }
     let stay = order
         .as_ref()
-        .is_some_and(|order| matches!(&order.order, super::orders::CompanionOrder::Stay { .. }));
+        .is_some_and(|order| matches!(&order.order, super::orders::CompanionOrder::Stay(_)));
     if stay
         && chosen.is_some_and(|candidate| {
             matches!(candidate.id.action, Action::Move(_))
