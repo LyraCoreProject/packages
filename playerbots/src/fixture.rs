@@ -5,6 +5,7 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_kit, PlayerbotsBot,
 };
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
+use crate::game_group_member_partition;
 use crate::nav::game_nav_chunk;
 use crate::spell::stacking::{game_spell_group, SpellGroup};
 use crate::{
