@@ -131,12 +131,12 @@ jobs:
         with:
           path: collection
           persist-credentials: false
-      - name: Check out the PB-009 Core candidate
+      - name: Check out merged PB-009 Core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
           # Merged PB-009 Core supplies the companion command relay and durable fixture corrections.
-          ref: 2f2b1f35dde90e52dd3b0d3e16d44bb3ffe41a2d
+          ref: e025ab7696f557ff10a88a1bb33710e3066aedc3
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
