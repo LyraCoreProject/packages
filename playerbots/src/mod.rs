@@ -24,6 +24,7 @@ mod decision;
 mod goals;
 mod provisioning;
 mod quest_catalog;
+mod quest_loop;
 mod runner;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;
@@ -33,6 +34,8 @@ pub(crate) use runner::*;
 mod fixture;
 #[cfg(feature = "debug_reducers")]
 mod quest_catalog_fixture;
+#[cfg(feature = "debug_reducers")]
+pub(crate) use quest_catalog_fixture::*;
 pub(crate) use goals::*;
 
 use crate::package_config::game_package_config;

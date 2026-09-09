@@ -9,7 +9,10 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
 };
-use crate::{game_character_quest, game_creature_spline, game_spell, game_world_entity};
+use crate::{
+    game_character_quest, game_creature_spline, game_gameobject, game_melee_attack, game_spell,
+    game_world_entity,
+};
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
 pub const BATCH_LIMIT: usize = 16;
@@ -79,6 +82,9 @@ pub enum Failure {
     PartyFactsUnavailable,
     PartyReadUnavailable(crate::group::PartyFactsUnavailableReason),
     RoleFactsUnavailable(super::companion::RoleReadError),
+    QuestTargetMissing,
+    QuestReadLimit,
+    QuestRespawn,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -648,10 +654,17 @@ fn objective(
     party: Option<&super::companion::Party>,
     state: &mut PlayerbotsRunner,
     now: i64,
-) {
+) -> bool {
     state.deferred_destinations.retain(|d| d.until_micros > now);
     let admission = if party.is_none() {
-        super::quest_catalog::reconcile_active(ctx, bot.character_guid)
+        match super::quest_catalog::reconcile_active(ctx, bot.character_guid) {
+            super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
+            super::quest_catalog::ReconcileResult::Missing => None,
+            super::quest_catalog::ReconcileResult::ReadLimit => {
+                state.failure(Failure::QuestReadLimit, now);
+                return true;
+            }
+        }
     } else {
         None
     };
@@ -798,6 +811,7 @@ fn objective(
             }
         }
     }
+    false
 }
 
 fn defer(state: &mut PlayerbotsRunner, now: i64) {
@@ -961,20 +975,73 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
     };
     let prior_objective = state.objective_sequence;
-    objective(ctx, bot, &me, party.as_ref(), &mut state, now);
+    let quest_read_limited = objective(ctx, bot, &me, party.as_ref(), &mut state, now);
     if bot.controller == Controller::Cohort {
         if prior_objective != state.objective_sequence && state.foreground.is_some() {
             stop(ctx, me.guid, &mut state);
         }
         observe(ctx, &me, &mut state, now);
     }
+    let quest_unavailable = Candidate {
+        id: decision::CandidateId {
+            action: Action::Hold,
+            reason: Reason::Quest,
+            objective: state.objective_sequence,
+        },
+        priority: 110,
+    };
     let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
+        if quest_read_limited {
+            if bot.controller == Controller::Cohort {
+                stop(ctx, me.guid, &mut state);
+            }
+            state.chosen = Some(quest_unavailable);
+            state.retry_candidate = Some(quest_unavailable.id);
+            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            state.last_outcome = if bot.controller == Controller::RecordOnly {
+                RunnerOutcome::Recorded
+            } else {
+                RunnerOutcome::Refused(Failure::QuestReadLimit)
+            };
+            state.save(ctx);
+        }
         return;
     };
     let quest_objective = state
         .objective
         .as_ref()
         .is_some_and(|objective| objective.kind == ObjectiveKind::Quest);
+    let mut retained_quest = quest_objective
+        .then(|| super::quest_catalog::retained(ctx, me.guid))
+        .flatten();
+    if bot.controller == Controller::Cohort {
+        if let Some(retained) = retained_quest.as_mut() {
+            super::quest_loop::invalidate_safe_position(ctx, &me, retained);
+        }
+    }
+    let quest_plan = (!quest_read_limited)
+        .then(|| retained_quest.as_ref())
+        .flatten()
+        .map(|retained| super::quest_loop::plan(ctx, &me, retained));
+    if bot.controller == Controller::Cohort
+        && matches!(
+            quest_plan,
+            Some(super::quest_loop::QuestPlan::Attack { .. })
+        )
+        && !me.dead
+        && me.combat_until_ms <= (now.max(0) as u64 / 1000)
+        && state.defense_target.is_none()
+        && state
+            .foreground
+            .as_ref()
+            .is_none_or(|foreground| foreground.candidate.id.reason != Reason::Survival)
+    {
+        if let Some(retained) = retained_quest.as_mut() {
+            if let Some(safe) = super::quest_loop::observe_safe_position(ctx, &me, retained) {
+                retained.safe_position = Some(safe);
+            }
+        }
+    }
     let quest_wait = super::quest_catalog::active_wait_until(ctx, me.guid);
     let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
     let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
@@ -1073,12 +1140,28 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if party.is_none() {
         defense.continuers.push(travel_action.clone());
     }
-    let mut survival = if !quest_objective && partition_ok && !at_destination {
+    let safe_destination = retained_quest.as_ref().and_then(|retained| {
+        super::quest_loop::safe_position(&me, retained).map(|safe| Destination {
+            map_id: safe.map_id,
+            instance_id: safe.instance_id,
+            x: safe.x,
+            y: safe.y,
+            z: safe.z,
+            geometry_revision: geometry_revision(ctx, safe.map_id),
+        })
+    });
+    let at_safe_destination = safe_destination.as_ref().is_none_or(|safe| {
+        (safe.map_id, safe.instance_id) == (me.map_id, me.instance_id)
+            && distance(&me, safe) <= 2.05
+    });
+    let mut survival = if partition_ok
+        && ((!quest_objective && !at_destination) || (quest_objective && !at_safe_destination))
+    {
         node(Action::Move(MoveTarget::Home), Reason::Survival, 900)
     } else {
         node(Action::Hold, Reason::Survival, 900)
     };
-    if at_destination {
+    if (!quest_objective && at_destination) || (quest_objective && at_safe_destination) {
         survival.readiness = Readiness::Complete;
     }
     if let Some(deferred) = state
@@ -1170,7 +1253,48 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             companion_heal_target = None;
             companion_fight_target = None;
             companion_buff_target = None;
-            if quest_objective || quest_wait.is_some_and(|until| until > now) {
+            if let Some(plan) = quest_plan {
+                let unavailable = node(Action::Hold, Reason::Quest, 110);
+                if state.retry_candidate == Some(unavailable.candidate.id)
+                    && state.next_eligible_micros > now
+                {
+                    strategies.push(strategy(Trigger::Always, unavailable));
+                } else {
+                    match super::quest_loop::strategy(
+                        ctx,
+                        bot,
+                        &me,
+                        plan,
+                        state.objective_sequence,
+                        !at_destination,
+                        travel_action.clone(),
+                    ) {
+                        Ok(quest_strategy) => {
+                            if state.retry_candidate == Some(unavailable.candidate.id) {
+                                state.retry_candidate = None;
+                                state.retry_count = 0;
+                            }
+                            strategies.push(strategy(Trigger::Always, quest_strategy));
+                        }
+                        Err(read_error) => {
+                            spacetimedb::log::error!(
+                                "quest combat rotation unavailable for {}: {:?}",
+                                me.guid,
+                                read_error
+                            );
+                            state.failure(Failure::QuestReadLimit, now);
+                            state.retry_candidate = Some(unavailable.candidate.id);
+                            state.next_eligible_micros =
+                                now.saturating_add(if state.retry_count >= 3 {
+                                    DEFER_INTERVAL
+                                } else {
+                                    INTERVAL * i64::from(state.retry_count)
+                                });
+                            strategies.push(strategy(Trigger::Always, unavailable));
+                        }
+                    }
+                }
+            } else if quest_objective || quest_wait.is_some_and(|until| until > now) {
                 strategies.push(strategy(
                     Trigger::Always,
                     node(Action::Hold, Reason::Quest, 110),
@@ -1192,7 +1316,10 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     state.transitions = decision.transitions as u32;
     state.route_expansions = 0;
     state.route_budget = decision.route_expansions;
-    let chosen = decision.chosen;
+    let mut chosen = decision.chosen;
+    if quest_read_limited && chosen.is_none_or(|candidate| candidate.priority <= 110) {
+        chosen = Some(quest_unavailable);
+    }
     if bot.controller == Controller::RecordOnly {
         state.chosen = chosen;
         state.last_outcome = RunnerOutcome::Recorded;
@@ -1202,10 +1329,32 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let party_holds_control = party
         .as_ref()
         .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
+    let stale_quest_attack = quest_read_limited
+        && ctx
+            .db
+            .game_melee_attack()
+            .attacker_guid()
+            .find(me.guid)
+            .is_some_and(|attack| {
+                !chosen.is_some_and(|candidate| {
+                    candidate.id.reason == Reason::Defense
+                        && candidate.id.action == Action::Attack(attack.target_guid)
+                })
+            });
     if party_holds_control
+        || stale_quest_attack
         || (previous_fight_target.is_some() && previous_fight_target != companion_fight_target)
     {
         let _ = crate::actor::stop_attack(ctx, me.guid);
+    }
+    if quest_read_limited && chosen == Some(quest_unavailable) {
+        stop(ctx, me.guid, &mut state);
+        state.chosen = chosen;
+        state.retry_candidate = Some(quest_unavailable.id);
+        state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+        state.last_outcome = RunnerOutcome::Refused(Failure::QuestReadLimit);
+        state.save(ctx);
+        return;
     }
     if let Some(deadline) = state
         .objective
@@ -1342,6 +1491,25 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
     }
     state.chosen = chosen;
+    if let (Some(reason), Some(candidate)) =
+        (quest_plan.and_then(super::quest_loop::wait_reason), chosen)
+    {
+        if candidate.id.reason == Reason::Quest && candidate.id.action == Action::Hold {
+            state.failure(
+                match reason {
+                    super::quest_loop::WaitReason::MissingTarget => Failure::QuestTargetMissing,
+                    super::quest_loop::WaitReason::ReadLimit => Failure::QuestReadLimit,
+                    super::quest_loop::WaitReason::Respawn => Failure::QuestRespawn,
+                },
+                now,
+            );
+            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            state.next_eligible_micros =
+                state.next_eligible_micros.max(now.saturating_add(INTERVAL));
+            state.save(ctx);
+            return;
+        }
+    }
     if let Some(candidate) = chosen {
         execute(ctx, &me, &destination, candidate, &mut state, now);
     } else if let Some(reason) = decision.refusals.first() {
@@ -1393,7 +1561,27 @@ fn execute(
         }
         Action::Move(target) => {
             let destination = match target {
-                MoveTarget::Home => Some(objective_destination.clone()),
+                MoveTarget::Home => {
+                    if candidate.id.reason == Reason::Survival
+                        && state
+                            .objective
+                            .as_ref()
+                            .is_some_and(|objective| objective.kind == ObjectiveKind::Quest)
+                    {
+                        super::quest_catalog::retained(ctx, me.guid)
+                            .and_then(|retained| super::quest_loop::safe_position(me, &retained))
+                            .map(|safe| Destination {
+                                map_id: safe.map_id,
+                                instance_id: safe.instance_id,
+                                x: safe.x,
+                                y: safe.y,
+                                z: safe.z,
+                                geometry_revision: geometry_revision(ctx, safe.map_id),
+                            })
+                    } else {
+                        Some(objective_destination.clone())
+                    }
+                }
                 MoveTarget::Entity(guid) | MoveTarget::CastingPosition(guid) => ctx
                     .db
                     .game_world_entity()
@@ -1407,6 +1595,20 @@ fn execute(
                         z: e.z,
                         geometry_revision: geometry_revision(ctx, e.map_id),
                     }),
+                MoveTarget::GameObject(guid) => {
+                    ctx.db
+                        .game_gameobject()
+                        .guid()
+                        .find(guid)
+                        .map(|go| Destination {
+                            map_id: go.map_id,
+                            instance_id: go.instance_id,
+                            x: go.x,
+                            y: go.y,
+                            z: go.z,
+                            geometry_revision: geometry_revision(ctx, go.map_id),
+                        })
+                }
             };
             let Some(dest) =
                 destination.filter(|d| (d.map_id, d.instance_id) == (me.map_id, me.instance_id))
@@ -1560,7 +1762,76 @@ fn execute(
                 ),
             }
         }
+        action @ (Action::AcceptQuest(_)
+        | Action::TurnInQuest(_)
+        | Action::LootCreature(_)
+        | Action::UseGameObject(_)
+        | Action::LootGameObject(_)) => match super::quest_loop::execute(ctx, me.guid, action) {
+            super::quest_loop::StepResult::Completed => {
+                state.last_outcome = RunnerOutcome::Accepted;
+                state.retry_count = 0;
+                state.retry_candidate = None;
+                if let Some(objective) = &mut state.objective {
+                    objective.last_verified_progress_micros = Some(now);
+                }
+            }
+            super::quest_loop::StepResult::Waiting => {
+                state.last_outcome = RunnerOutcome::Waiting;
+            }
+            super::quest_loop::StepResult::Refused(reason) => {
+                if state.retry_candidate != Some(candidate.id) {
+                    state.retry_count = 0;
+                }
+                state.failure(Failure::ActionRefused(reason), now);
+                state.retry_candidate = Some(candidate.id);
+                state.next_eligible_micros = now.saturating_add(if state.retry_count >= 3 {
+                    DEFER_INTERVAL
+                } else {
+                    INTERVAL * i64::from(state.retry_count)
+                });
+            }
+        },
     }
+}
+
+#[cfg(feature = "debug_reducers")]
+pub(super) fn fixture_refuse_quest_candidate(
+    ctx: &ReducerContext,
+    guid: u64,
+    quest: u32,
+    target: u64,
+) -> Result<(), String> {
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    let mut state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let destination = state
+        .objective
+        .as_ref()
+        .map(|objective| objective.destination.clone())
+        .ok_or("runner objective missing")?;
+    let candidate = Candidate {
+        id: decision::CandidateId {
+            action: Action::AcceptQuest(decision::QuestInteraction { target, quest }),
+            reason: Reason::Quest,
+            objective: state.objective_sequence,
+        },
+        priority: 110,
+    };
+    state.chosen = Some(candidate);
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    execute(ctx, &me, &destination, candidate, &mut state, now);
+    if !matches!(
+        state.last_outcome,
+        RunnerOutcome::Refused(Failure::ActionRefused(_))
+    ) {
+        return Err("quest interaction was not refused".to_string());
+    }
+    state.save(ctx);
+    Ok(())
 }
 
 crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payload) {

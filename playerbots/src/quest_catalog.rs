@@ -14,6 +14,7 @@ pub const CATALOG_BLUEPRINT_REVISION: &str =
 const DESTINATION_LIMIT: usize = 128;
 const WAIT_MICROS: i64 = 30_000_000;
 const REFRESH_INTERVAL_MICROS: i64 = 30_000_000;
+pub(super) const CATALOG_WALK_LIMIT: usize = 16;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CatalogEntityKind {
@@ -165,6 +166,15 @@ pub struct RetainedQuestTarget {
     pub source: Option<CatalogDestination>,
 }
 
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+pub struct RetainedPosition {
+    pub map_id: u32,
+    pub instance_id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
 #[table(accessor = pkg_playerbots_quest_objective, public)]
 pub struct PlayerbotsQuestObjective {
     #[primary_key]
@@ -180,6 +190,10 @@ pub struct PlayerbotsQuestObjective {
     pub catalog_revision: u64,
     pub reference_source_revision: String,
     pub content_revision: String,
+    #[default(None::<CatalogWorkArea>)]
+    pub work_area: Option<CatalogWorkArea>,
+    #[default(None::<RetainedPosition>)]
+    pub safe_position: Option<RetainedPosition>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_quest_objective(ctx, character_guid) {
@@ -923,6 +937,13 @@ pub(super) struct QuestAdmission {
     pub destination: CatalogDestination,
     pub destination_evidence_revision: String,
     pub content_revision: String,
+    pub work_area: Option<CatalogWorkArea>,
+}
+
+pub(super) enum ReconcileResult {
+    Found(QuestAdmission),
+    Missing,
+    ReadLimit,
 }
 
 fn objective_rows(ctx: &ReducerContext, quest_entry: u32) -> Vec<PlayerbotsCatalogObjective> {
@@ -1385,6 +1406,7 @@ fn inspect(
         )?;
         gated.push((catalog_objective, source));
     }
+    let held = crate::quest::character_quest_row(ctx, character_guid, quest_entry);
     let (selected, source) = gated
         .iter()
         .find(|(objective, _)| {
@@ -1394,11 +1416,7 @@ fn inspect(
                     let count = if core.kind == crate::quest::objective_kind::COLLECT_ITEM {
                         crate::items::item_count(ctx, character_guid, core.target_entry)
                     } else {
-                        ctx.db
-                            .game_character_quest()
-                            .by_character()
-                            .filter(character_guid)
-                            .find(|row| row.quest_entry == quest_entry)
+                        held.as_ref()
                             .and_then(|row| row.counts.get(core.obj_index as usize).copied())
                             .unwrap_or(0)
                     };
@@ -1412,7 +1430,12 @@ fn inspect(
                 "catalog has no objective classification",
             )
         })?;
-    let destination = if talk_only || selected.executor == ObjectiveExecutor::ProvidedItem {
+    let complete = held
+        .as_ref()
+        .is_some_and(|row| crate::quest::quest_is_complete(ctx, row));
+    let destination = if admission_kind == AdmissionKind::Available {
+        start.clone()
+    } else if complete || talk_only || selected.executor == ObjectiveExecutor::ProvidedItem {
         actual_ender.clone()
     } else {
         source.clone().ok_or_else(|| {
@@ -1437,6 +1460,7 @@ fn inspect(
         destination,
         destination_evidence_revision: selected.destination_evidence_revision.clone(),
         content_revision: quest.content_revision,
+        work_area: selected.work_area.clone(),
     })
 }
 
@@ -1460,12 +1484,8 @@ pub(super) fn admit_held(
     character_guid: u64,
     quest_entry: u32,
 ) -> Result<QuestAdmission, AdmissionRefusal> {
-    let held = ctx
-        .db
-        .game_character_quest()
-        .by_character()
-        .filter(character_guid)
-        .any(|row| row.quest_entry == quest_entry && !row.rewarded && !row.failed);
+    let held = crate::quest::character_quest_row(ctx, character_guid, quest_entry)
+        .is_some_and(|row| !row.rewarded && !row.failed);
     if !held {
         return Err(AdmissionRefusal::Ineligible(
             "quest is not active".to_string(),
@@ -1474,10 +1494,7 @@ pub(super) fn admit_held(
     inspect(ctx, character_guid, quest_entry, AdmissionKind::Held)
 }
 
-pub(super) fn reconcile_active(
-    ctx: &ReducerContext,
-    character_guid: u64,
-) -> Option<QuestAdmission> {
+pub(super) fn reconcile_active(ctx: &ReducerContext, character_guid: u64) -> ReconcileResult {
     ensure_catalog(ctx);
     let reconsider = ctx
         .db
@@ -1492,26 +1509,33 @@ pub(super) fn reconcile_active(
         .character_guid()
         .find(character_guid)
         .map(|row| row.quest_entry);
-    let mut entries: Vec<_> = ctx
+    let mut active: Vec<_> = ctx
         .db
         .game_character_quest()
-        .by_character()
-        .filter(character_guid)
-        .filter(|quest| !quest.rewarded && !quest.failed)
-        .map(|quest| quest.quest_entry)
+        .by_character_active()
+        .filter((character_guid, false, false))
+        .take(crate::quest::MAX_QUEST_LOG_SIZE + 1)
         .collect();
-    entries.sort_by_key(|entry| {
+    if active.len() > crate::quest::MAX_QUEST_LOG_SIZE {
+        return ReconcileResult::ReadLimit;
+    }
+    let catalog = ctx.db.pkg_playerbots_catalog_quest();
+    let mut held: Vec<_> = active
+        .drain(..)
+        .filter_map(|row| catalog.quest_entry().find(row.quest_entry))
+        .filter(|quest| quest.catalog_revision == CATALOG_REVISION)
+        .map(|quest| (quest.quest_entry, quest.catalog_order))
+        .collect();
+    held.sort_by_key(|(entry, order)| {
         (
             u8::from(Some(*entry) != reconsider),
             u8::from(Some(*entry) != retained),
-            QUESTS
-                .iter()
-                .position(|quest| quest.entry == *entry)
-                .unwrap_or(usize::MAX),
+            *order,
+            *entry,
         )
     });
     let mut first_refusal = None;
-    for entry in entries {
+    for (entry, _) in held {
         match admit_held(ctx, character_guid, entry) {
             Ok(admission) => {
                 if let Some((considered, refusal)) = first_refusal.as_ref() {
@@ -1531,7 +1555,7 @@ pub(super) fn reconcile_active(
                         None,
                     );
                 }
-                return Some(admission);
+                return ReconcileResult::Found(admission);
             }
             Err(refusal @ AdmissionRefusal::Unsupported { .. }) => {
                 first_refusal.get_or_insert((entry, refusal));
@@ -1541,8 +1565,37 @@ pub(super) fn reconcile_active(
     }
     if let Some((entry, refusal)) = first_refusal.as_ref() {
         record_admission(ctx, character_guid, *entry, None, Some(refusal));
+        return ReconcileResult::Missing;
     }
-    None
+    let entries: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_quest()
+        .by_order()
+        .filter((CATALOG_REVISION, 0u16..=u16::MAX))
+        .take(CATALOG_WALK_LIMIT)
+        .map(|quest| quest.quest_entry)
+        .collect();
+    let mut available_refusal = None;
+    for entry in entries {
+        match admit_available(ctx, character_guid, entry) {
+            Ok(admission) => {
+                if let Some((considered, refusal)) = available_refusal.as_ref() {
+                    record_admission(ctx, character_guid, *considered, Some(entry), Some(refusal));
+                } else {
+                    record_admission(ctx, character_guid, entry, Some(entry), None);
+                }
+                return ReconcileResult::Found(admission);
+            }
+            Err(AdmissionRefusal::Ineligible(_)) => {}
+            Err(refusal @ AdmissionRefusal::Unsupported { .. }) => {
+                available_refusal.get_or_insert((entry, refusal));
+            }
+        }
+    }
+    if let Some((entry, refusal)) = available_refusal.as_ref() {
+        record_admission(ctx, character_guid, *entry, None, Some(refusal));
+    }
+    ReconcileResult::Missing
 }
 
 pub(super) fn retain(
@@ -1573,6 +1626,8 @@ pub(super) fn retain(
         catalog_revision: CATALOG_REVISION,
         reference_source_revision,
         content_revision: admission.content_revision,
+        work_area: admission.work_area,
+        safe_position: None,
     };
     let rows = ctx.db.pkg_playerbots_quest_objective();
     if rows.character_guid().find(character_guid).is_some() {
@@ -1611,6 +1666,7 @@ pub(super) fn retained_matches(
                 && row.catalog_revision == CATALOG_REVISION
                 && row.reference_source_revision == reference_source_revision
                 && row.content_revision == admission.content_revision
+                && row.work_area == admission.work_area
         })
 }
 
@@ -1621,6 +1677,16 @@ pub(super) fn clear_retained(ctx: &ReducerContext, character_guid: u64) {
         .delete(character_guid);
 }
 
+pub(super) fn retained(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Option<PlayerbotsQuestObjective> {
+    ctx.db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+}
+
 pub(super) fn active_wait_until(ctx: &ReducerContext, character_guid: u64) -> Option<i64> {
     let admission = ctx
         .db
@@ -1628,13 +1694,8 @@ pub(super) fn active_wait_until(ctx: &ReducerContext, character_guid: u64) -> Op
         .character_guid()
         .find(character_guid)
         .filter(|row| row.state == QuestAdmissionState::Waiting)?;
-    ctx.db
-        .game_character_quest()
-        .by_character()
-        .filter(character_guid)
-        .any(|quest| {
-            quest.quest_entry == admission.considered_quest && !quest.rewarded && !quest.failed
-        })
+    crate::quest::character_quest_row(ctx, character_guid, admission.considered_quest)
+        .is_some_and(|quest| !quest.rewarded && !quest.failed)
         .then_some(admission.wait_until_micros)
 }
 
@@ -1680,38 +1741,6 @@ pub(super) fn record_admission(
     } else {
         rows.insert(row);
     }
-}
-
-#[cfg_attr(
-    not(feature = "debug_reducers"),
-    allow(
-        dead_code,
-        reason = "live-target selection is driven by the durable catalog fixture"
-    )
-)]
-pub(super) fn live_creature_target(
-    ctx: &ReducerContext,
-    character_guid: u64,
-    entry: u32,
-) -> Option<crate::WorldEntity> {
-    // Fixture-only. PB-007 must replace this by-entry scan with a partition-indexed bounded query
-    // before live target selection enters the production runner.
-    let character = ctx.db.game_world_entity().guid().find(character_guid)?;
-    ctx.db
-        .game_world_entity()
-        .by_entry()
-        .filter(entry)
-        .filter(|target| {
-            !target.dead
-                && (target.map_id, target.instance_id) == (character.map_id, character.instance_id)
-        })
-        .min_by(|left, right| {
-            let left_distance = (left.x - character.x).powi(2) + (left.y - character.y).powi(2);
-            let right_distance = (right.x - character.x).powi(2) + (right.y - character.y).powi(2);
-            left_distance
-                .total_cmp(&right_distance)
-                .then_with(|| left.guid.cmp(&right.guid))
-        })
 }
 
 #[cfg(test)]
