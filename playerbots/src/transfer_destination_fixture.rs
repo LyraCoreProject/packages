@@ -5,9 +5,9 @@
 use super::decision::{Action, Reason};
 use super::quest_catalog::{
     pkg_playerbots_catalog_objective, pkg_playerbots_catalog_quest, pkg_playerbots_quest_catalog,
-    CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
-    ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, PlayerbotsQuestCatalog,
-    CATALOG_BLUEPRINT_REVISION, CATALOG_NAME, CATALOG_REVISION,
+    pkg_playerbots_quest_objective, CatalogDestination, CatalogEntityKind, CatalogObjectiveKind,
+    CatalogWorkArea, ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest,
+    PlayerbotsQuestCatalog, CATALOG_BLUEPRINT_REVISION, CATALOG_NAME, CATALOG_REVISION,
 };
 use super::runner::{pkg_playerbots_runner, ObjectiveKind};
 use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content before staging
@@ -98,7 +98,7 @@ fn stage_creature(
         respawn_secs: 60,
         life_seq: 1,
     };
-    let mut entity = crate::creatures::build_creature_entity(&spawn, &template, instance_id, 0);
+    let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, instance_id);
     ctx.db.game_creature_spawn().insert(spawn);
     entity.map_id = map_id;
     entity.instance_id = instance_id;
