@@ -41,6 +41,7 @@ pub enum MoveTarget {
     Entity(u64),
     CastingPosition(u64),
     GameObject(u64),
+    RecoveryPosition(u64),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -184,12 +185,19 @@ pub enum DecisionRefusal {
 pub struct Decision {
     pub order: Vec<Candidate>,
     pub chosen: Option<Candidate>,
+    pub purpose: Option<Candidate>,
     pub refusals: Vec<DecisionRefusal>,
     pub transitions: usize,
     pub route_expansions: u32,
 }
 
-struct Search {
+struct Resolved {
+    candidate: Candidate,
+    purpose: Candidate,
+}
+
+struct Search<'a> {
+    eligible: &'a dyn Fn(Candidate) -> bool,
     limits: Limits,
     visited: usize,
     transitions: usize,
@@ -198,7 +206,7 @@ struct Search {
     refusal_count: usize,
 }
 
-impl Search {
+impl Search<'_> {
     fn refuse(&mut self, reason: DecisionRefusal) {
         self.refusal_count += 1;
         if !self.refusals.contains(&reason) {
@@ -211,7 +219,8 @@ impl Search {
         node: &ActionNode,
         now: i64,
         path: &mut Vec<CandidateId>,
-    ) -> Option<Candidate> {
+        purpose: Option<Candidate>,
+    ) -> Option<Resolved> {
         if self.visited >= self.limits.candidates {
             self.refuse(DecisionRefusal::Candidates);
             return None;
@@ -231,40 +240,56 @@ impl Search {
             return None;
         }
         path.push(node.candidate.id);
-        let chosen = match node.readiness {
-            Readiness::Complete => self.first(&node.continuers, now, path),
-            Readiness::Refused => self.first(&node.alternatives, now, path),
-            Readiness::NotBefore(at) if at > now => self.first(&node.alternatives, now, path),
-            Readiness::Ready | Readiness::NotBefore(_) => {
-                let mut pending = None;
-                let mut refused = false;
-                for prerequisite in &node.prerequisites {
-                    let refusals_before = self.refusal_count;
-                    pending = self.resolve(prerequisite, now, path);
-                    if pending.is_none()
-                        && prerequisite.readiness == Readiness::Complete
-                        && self.refusal_count == refusals_before
-                    {
-                        continue;
-                    }
-                    refused = pending.is_none();
-                    break;
+        let purpose = purpose.unwrap_or(node.candidate);
+        let chosen = if !(self.eligible)(purpose) {
+            self.first(&node.alternatives, now, path, None)
+        } else {
+            match node.readiness {
+                Readiness::Complete => self.first(&node.continuers, now, path, None),
+                Readiness::Refused => self.first(&node.alternatives, now, path, None),
+                Readiness::NotBefore(at) if at > now => {
+                    self.first(&node.alternatives, now, path, None)
                 }
-                if refused {
-                    self.first(&node.alternatives, now, path)
-                } else if let Some(mut candidate) = pending {
-                    candidate.priority = candidate.priority.max(node.candidate.priority);
-                    Some(candidate)
-                } else if matches!(node.candidate.id.action, Action::Move(_))
-                    && self.limits.route_expansions < LEG_MAX_EXPANSIONS
-                {
-                    self.refuse(DecisionRefusal::RouteWork);
-                    self.first(&node.alternatives, now, path)
-                } else {
-                    if matches!(node.candidate.id.action, Action::Move(_)) {
-                        self.route_expansions = LEG_MAX_EXPANSIONS;
+                Readiness::Ready | Readiness::NotBefore(_) => {
+                    let mut pending = None;
+                    let mut refused = false;
+                    for prerequisite in &node.prerequisites {
+                        let refusals_before = self.refusal_count;
+                        pending = self.resolve(
+                            prerequisite,
+                            now,
+                            path,
+                            (purpose.id.action != Action::Hold).then_some(purpose),
+                        );
+                        if pending.is_none()
+                            && prerequisite.readiness == Readiness::Complete
+                            && self.refusal_count == refusals_before
+                        {
+                            continue;
+                        }
+                        refused = pending.is_none();
+                        break;
                     }
-                    Some(node.candidate)
+                    if refused {
+                        self.first(&node.alternatives, now, path, None)
+                    } else if let Some(mut candidate) = pending {
+                        candidate.candidate.priority =
+                            candidate.candidate.priority.max(node.candidate.priority);
+                        Some(candidate)
+                    } else if matches!(node.candidate.id.action, Action::Move(_))
+                        && self.limits.route_expansions < LEG_MAX_EXPANSIONS
+                    {
+                        self.refuse(DecisionRefusal::RouteWork);
+                        self.first(&node.alternatives, now, path, None)
+                    } else {
+                        if matches!(node.candidate.id.action, Action::Move(_)) {
+                            self.route_expansions = LEG_MAX_EXPANSIONS;
+                        }
+                        Some(Resolved {
+                            candidate: node.candidate,
+                            purpose,
+                        })
+                    }
                 }
             }
         };
@@ -277,9 +302,10 @@ impl Search {
         nodes: &[ActionNode],
         now: i64,
         path: &mut Vec<CandidateId>,
-    ) -> Option<Candidate> {
+        purpose: Option<Candidate>,
+    ) -> Option<Resolved> {
         for node in nodes {
-            if let Some(candidate) = self.resolve(node, now, path) {
+            if let Some(candidate) = self.resolve(node, now, path, purpose) {
                 return Some(candidate);
             }
             if self.visited >= self.limits.candidates || self.transitions >= self.limits.transitions
@@ -293,7 +319,12 @@ impl Search {
 
 /// Candidate identity includes its target, spell and trigger. Equal facts and time have no random input.
 /// Limits apply across all active Strategies, including failed prerequisite and fallback branches.
-pub fn choose(facts: &Facts, strategies: &[Strategy], limits: Limits) -> Decision {
+pub fn choose(
+    facts: &Facts,
+    strategies: &[Strategy],
+    limits: Limits,
+    eligible: impl Fn(Candidate) -> bool,
+) -> Decision {
     let mut roots = Vec::new();
     let mut overflow = false;
     'strategies: for strategy in strategies {
@@ -326,6 +357,7 @@ pub fn choose(facts: &Facts, strategies: &[Strategy], limits: Limits) -> Decisio
         })
         .collect();
     let mut search = Search {
+        eligible: &eligible,
         limits,
         visited: 0,
         transitions: 0,
@@ -337,10 +369,12 @@ pub fn choose(facts: &Facts, strategies: &[Strategy], limits: Limits) -> Decisio
         search.refuse(DecisionRefusal::Candidates);
     }
     let mut chosen = None;
+    let mut purpose = None;
     for (node, priority) in roots {
-        if let Some(mut candidate) = search.resolve(node, facts.now, &mut Vec::new()) {
-            candidate.priority = priority;
-            chosen = Some(candidate);
+        if let Some(mut resolved) = search.resolve(node, facts.now, &mut Vec::new(), None) {
+            resolved.candidate.priority = priority;
+            chosen = Some(resolved.candidate);
+            purpose = Some(resolved.purpose);
             break;
         }
         if search.visited >= limits.candidates || search.transitions >= limits.transitions {
@@ -353,6 +387,7 @@ pub fn choose(facts: &Facts, strategies: &[Strategy], limits: Limits) -> Decisio
     Decision {
         order,
         chosen,
+        purpose,
         refusals: search.refusals,
         transitions: search.transitions,
         route_expansions: search.route_expansions,
@@ -362,6 +397,59 @@ pub fn choose(facts: &Facts, strategies: &[Strategy], limits: Limits) -> Decisio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn deferred_follow_alternative_leaves_the_current_fight_eligible() {
+        let mut heal = ActionNode::ready(
+            Action::Cast(CastAction {
+                target: 7,
+                spell: 2050,
+            }),
+            Reason::Heal,
+            800,
+        );
+        heal.readiness = Readiness::Refused;
+        heal.alternatives.push(ActionNode::ready(
+            Action::Move(MoveTarget::Entity(9)),
+            Reason::Follow,
+            100,
+        ));
+        let attack = ActionNode::ready(Action::Attack(11), Reason::Defense, 600);
+        let result = choose(
+            &facts(),
+            &[strategy(vec![heal, attack.clone()])],
+            LIMITS,
+            |purpose| purpose.id.reason != Reason::Follow,
+        );
+        assert_eq!(result.chosen, Some(attack.candidate));
+        assert_eq!(result.purpose, Some(attack.candidate));
+    }
+
+    #[test]
+    fn a_casting_position_retains_the_spell_purpose_for_recovery() {
+        let mut buff = ActionNode::ready(
+            Action::Cast(CastAction {
+                target: 7,
+                spell: 1243,
+            }),
+            Reason::Buff,
+            250,
+        );
+        let position = ActionNode::ready(
+            Action::Move(MoveTarget::CastingPosition(7)),
+            Reason::BuffPosition,
+            250,
+        );
+        buff.prerequisites.push(position.clone());
+        let result = choose(
+            &facts(),
+            &[strategy(vec![buff.clone()])],
+            LIMITS,
+            |purpose| purpose.id.action == buff.candidate.id.action,
+        );
+        assert_eq!(result.chosen, Some(position.candidate));
+        assert_eq!(result.purpose, Some(buff.candidate));
+    }
 
     fn facts() -> Facts {
         Facts {
@@ -392,6 +480,7 @@ mod tests {
                 &facts(),
                 &[strategy(targets.into_iter().map(attack).collect())],
                 LIMITS,
+                |_| true,
             );
             assert_eq!(
                 result.order.iter().map(|c| c.id.action).collect::<Vec<_>>(),
@@ -418,12 +507,20 @@ mod tests {
         let mut f = facts();
         let strategies = [defense, survival];
         assert_eq!(
-            choose(&f, &strategies, LIMITS).chosen.unwrap().id.action,
+            choose(&f, &strategies, LIMITS, |_| true)
+                .chosen
+                .unwrap()
+                .id
+                .action,
             Action::Attack(11)
         );
         f.low_health = true;
         assert_eq!(
-            choose(&f, &strategies, LIMITS).chosen.unwrap().id.reason,
+            choose(&f, &strategies, LIMITS, |_| true)
+                .chosen
+                .unwrap()
+                .id
+                .reason,
             Reason::Survival
         );
     }
@@ -436,7 +533,7 @@ mod tests {
             Reason::Defense,
             1,
         ));
-        let result = choose(&facts(), &[strategy(vec![node.clone()])], LIMITS);
+        let result = choose(&facts(), &[strategy(vec![node.clone()])], LIMITS, |_| true);
         assert_eq!(
             result.chosen.unwrap(),
             Candidate {
@@ -455,7 +552,7 @@ mod tests {
             10,
         ));
         assert_eq!(
-            choose(&facts(), &[strategy(vec![node.clone()])], LIMITS)
+            choose(&facts(), &[strategy(vec![node.clone()])], LIMITS, |_| true)
                 .chosen
                 .unwrap()
                 .id
@@ -464,7 +561,7 @@ mod tests {
         );
         node.readiness = Readiness::Complete;
         assert_eq!(
-            choose(&facts(), &[strategy(vec![node])], LIMITS)
+            choose(&facts(), &[strategy(vec![node])], LIMITS, |_| true)
                 .chosen
                 .unwrap()
                 .id
@@ -484,7 +581,7 @@ mod tests {
         prerequisite.continuers.push(attack(3));
         let mut second = attack(2);
         second.prerequisites.push(prerequisite);
-        let result = choose(&facts(), &[strategy(vec![first, second])], LIMITS);
+        let result = choose(&facts(), &[strategy(vec![first, second])], LIMITS, |_| true);
         assert!(result.chosen.is_none());
         assert!(result.refusals.contains(&DecisionRefusal::Cycle));
     }
@@ -493,7 +590,7 @@ mod tests {
     fn cycles_refuse_boundedly() {
         let mut cycle = attack(11);
         cycle.prerequisites.push(attack(11));
-        assert!(choose(&facts(), &[strategy(vec![cycle])], LIMITS)
+        assert!(choose(&facts(), &[strategy(vec![cycle])], LIMITS, |_| true)
             .refusals
             .contains(&DecisionRefusal::Cycle));
     }
@@ -532,6 +629,7 @@ mod tests {
                     1,
                 )])],
                 limits,
+                |_| true,
             );
             assert!(result.chosen.is_none());
             assert!(result.refusals.contains(&refusal));
@@ -546,11 +644,13 @@ mod tests {
         fallback.readiness = Readiness::NotBefore(101);
         node.alternatives.push(fallback);
         let strategies = [strategy(vec![node])];
-        assert!(choose(&facts(), &strategies, LIMITS).chosen.is_none());
+        assert!(choose(&facts(), &strategies, LIMITS, |_| true)
+            .chosen
+            .is_none());
         let mut later = facts();
         later.now = 101;
         assert_eq!(
-            choose(&later, &strategies, LIMITS)
+            choose(&later, &strategies, LIMITS, |_| true)
                 .chosen
                 .unwrap()
                 .id
@@ -566,6 +666,7 @@ mod tests {
             &facts(),
             &[strategy(vec![attack(11), attack(22), high])],
             LIMITS,
+            |_| true,
         );
         assert_eq!(result.order.len(), 2);
         assert_eq!(result.order[0].priority, 100);
@@ -580,7 +681,7 @@ mod tests {
             prerequisite.readiness = Readiness::Complete;
             node.prerequisites.push(prerequisite);
         }
-        let result = choose(&facts(), &[strategy(vec![node])], LIMITS);
+        let result = choose(&facts(), &[strategy(vec![node])], LIMITS, |_| true);
         assert!(result.chosen.is_none());
         assert_eq!(result.transitions, LIMITS.transitions);
         assert!(result.refusals.contains(&DecisionRefusal::Transitions));
@@ -589,7 +690,7 @@ mod tests {
     fn a_strategy_can_lower_an_offers_priority() {
         let mut defense = strategy(vec![attack(11)]);
         defense.priority_adjustment = -40;
-        let result = choose(&facts(), &[defense], LIMITS);
+        let result = choose(&facts(), &[defense], LIMITS, |_| true);
         assert_eq!(result.order[0].priority, 10);
         assert_eq!(result.chosen.unwrap().priority, 10);
     }

@@ -5,8 +5,8 @@
 use super::pkg_playerbots_bot;
 use super::quest_catalog::{
     self, pkg_playerbots_catalog_objective, pkg_playerbots_catalog_quest,
-    pkg_playerbots_quest_catalog, pkg_playerbots_quest_objective, AdmissionRefusal,
-    CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
+    pkg_playerbots_catalog_seed, pkg_playerbots_quest_catalog, pkg_playerbots_quest_objective,
+    AdmissionRefusal, CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
     ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, CATALOG_REVISION,
     CATALOG_WALK_LIMIT,
 };
@@ -236,6 +236,145 @@ fn require_fixture(ctx: &ReducerContext) -> Result<(), String> {
     if ownership.revision != FIXTURE_REVISION {
         return Err("quest fixture ownership revision differs".to_string());
     }
+    Ok(())
+}
+
+/// Place the Character beside a real quest target inside blocked seeded navigation. Attack
+/// admission remains available, but the owning melee line-of-sight Gate prevents damage.
+#[reducer]
+pub fn playerbots_recovery_fixture_block_quest_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let target = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(creature_guid(6))
+        .ok_or("quest target missing")?;
+    super::fixture::playerbots_fixture_position(ctx, character_guid, target.x - 3.0)?;
+    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    block_navigation(ctx, &me)?;
+    if crate::nav::has_los(
+        ctx,
+        me.map_id,
+        me.instance_id,
+        (me.x, me.y, me.z),
+        (target.x, target.y, target.z),
+    ) {
+        return Err("fixture ray unexpectedly clear".to_string());
+    }
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
+fn block_navigation(ctx: &ReducerContext, me: &crate::WorldEntity) -> Result<(), String> {
+    let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
+    let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
+    use crate::nav::game_nav_chunk;
+    for x in cx.saturating_sub(1)..=cx.saturating_add(1).min(1023) {
+        for y in cy.saturating_sub(1)..=cy.saturating_add(1).min(1023) {
+            let key = lyracore_shared::terrain::cell_key(me.map_id, x, y);
+            ctx.db.game_nav_chunk().key().delete(key);
+            ctx.db.game_nav_chunk().insert(crate::nav::NavChunk {
+                key,
+                map_id: me.map_id,
+                cell_x: x,
+                cell_y: y,
+                base_z: me.z,
+                walk: vec![0; lyracore_shared::nav::WALK_BYTES],
+                obs: vec![20; lyracore_shared::nav::OBS_BYTES],
+            });
+        }
+    }
+    Ok(())
+}
+
+/// The near wall forces a first leg west, while the distant wall exhausts the bounded search east.
+#[reducer]
+pub fn playerbots_recovery_fixture_partial_route(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    super::fixture::playerbots_fixture_partial_route(ctx, character_guid)?;
+    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    use crate::nav::game_nav_chunk;
+    let mut chunks = std::collections::BTreeMap::new();
+    for x in -16..=8 {
+        for y in -16..=16 {
+            if x != 8 && y != -16 && y != 16 {
+                continue;
+            }
+            let (px, py) = (me.x + x as f32 * 0.25, me.y + y as f32 * 0.25);
+            let cx = lyracore_shared::terrain::cell_index(px).ok_or("fixture off grid")?;
+            let cy = lyracore_shared::terrain::cell_index(py).ok_or("fixture off grid")?;
+            let key = lyracore_shared::terrain::cell_key(me.map_id, cx, cy);
+            let chunk = chunks.entry(key).or_insert_with(|| {
+                ctx.db
+                    .game_nav_chunk()
+                    .key()
+                    .find(key)
+                    .unwrap_or(crate::nav::NavChunk {
+                        key,
+                        map_id: me.map_id,
+                        cell_x: cx,
+                        cell_y: cy,
+                        base_z: me.z,
+                        walk: vec![255; lyracore_shared::nav::WALK_BYTES],
+                        obs: vec![lyracore_shared::nav::OBS_NONE; lyracore_shared::nav::OBS_BYTES],
+                    })
+            });
+            let nx = lyracore_shared::nav::sub_index(px, cx, lyracore_shared::nav::WALK_DIM)
+                .ok_or("fixture off grid")?;
+            let ny = lyracore_shared::nav::sub_index(py, cy, lyracore_shared::nav::WALK_DIM)
+                .ok_or("fixture off grid")?;
+            lyracore_shared::nav::walk_set(&mut chunk.walk, nx, ny, false);
+        }
+    }
+    for (key, chunk) in chunks {
+        ctx.db.game_nav_chunk().key().delete(key);
+        ctx.db.game_nav_chunk().insert(chunk);
+    }
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_block_companion(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    block_navigation(ctx, &me)?;
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_exhaust_attempt(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    use super::runner::pkg_playerbots_runner;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut runner = rows
+        .character_guid()
+        .find(character_guid)
+        .ok_or("runner missing")?;
+    let recovery = runner.recovery.as_mut().ok_or("recovery missing")?;
+    let active = recovery.active.ok_or("no active recovery attempt")?;
+    let attempt = recovery
+        .attempts
+        .iter_mut()
+        .find(|attempt| attempt.work == active)
+        .ok_or("active recovery attempt missing")?;
+    attempt.stalled_micros = 30_000_000;
+    rows.character_guid().update(runner);
     Ok(())
 }
 
@@ -1550,7 +1689,10 @@ pub fn playerbots_quest_fixture_admit_accept(
                 Some(quest_entry),
                 None,
             );
-            super::actions::accept_quest(ctx, character_guid, admission.start.guid, quest_entry)
+            let giver = admission
+                .start
+                .ok_or("available quest has no current start giver")?;
+            super::actions::accept_quest(ctx, character_guid, giver.guid, quest_entry)
                 .map_err(Into::into)
         }
         Err(refusal) => {
@@ -1597,15 +1739,20 @@ pub fn playerbots_quest_fixture_kill(
     crate::helpers::require_operator(ctx)?;
     require_fixture(ctx)?;
     let character = crate::helpers::live_entity(ctx, character_guid)?;
-    let target = match super::quest_loop::live_creature_target(ctx, &character, creature_entry) {
-        super::quest_loop::LiveCreatureTarget::Found(target) => target,
-        super::quest_loop::LiveCreatureTarget::Missing => {
-            return Err("no live target".to_string());
-        }
-        super::quest_loop::LiveCreatureTarget::ReadLimit => {
-            return Err("live target read limit".to_string());
-        }
-    };
+    let target =
+        match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
+            super::quest_loop::LiveCreatureTarget::Found(target) => target,
+            super::quest_loop::LiveCreatureTarget::Missing => {
+                return Err("no live target".to_string());
+            }
+            super::quest_loop::LiveCreatureTarget::Deferred
+            | super::quest_loop::LiveCreatureTarget::Controlled => {
+                return Err("live target is temporarily ineligible".to_string());
+            }
+            super::quest_loop::LiveCreatureTarget::ReadLimit => {
+                return Err("live target read limit".to_string());
+            }
+        };
     super::actions::attack(ctx, character_guid, target.guid).map_err(String::from)?;
     let (amount, _) = crate::combat::fold_incoming_damage(ctx, character_guid, target.guid, 10_000);
     let damage = crate::combat::final_damage(ctx, target.guid, amount);
@@ -1942,7 +2089,10 @@ pub fn playerbots_quest_fixture_mixed_progress(
         return Err("banked collect item changed the selected objective".to_string());
     }
     quest_catalog::record_admission(ctx, character_guid, 7, Some(7), None);
-    super::actions::accept_quest(ctx, character_guid, admission.start.guid, 7).map_err(Into::into)
+    let giver = admission
+        .start
+        .ok_or("available quest has no current start giver")?;
+    super::actions::accept_quest(ctx, character_guid, giver.guid, 7).map_err(Into::into)
 }
 
 #[reducer]
@@ -2033,8 +2183,10 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
             }
         },
     )?;
-    super::actions::accept_quest(ctx, character_guid, alternative.start.guid, 5261)
-        .map_err(String::from)?;
+    let giver = alternative
+        .start
+        .ok_or("available quest has no current start giver")?;
+    super::actions::accept_quest(ctx, character_guid, giver.guid, 5261).map_err(String::from)?;
     let catalog = ctx.db.pkg_playerbots_catalog_objective();
     let id = u64::from(7u32) << 8;
     let previous = catalog.id().find(id).ok_or("catalog objective missing")?;
@@ -2274,11 +2426,15 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
     crate::helpers::require_operator(ctx)?;
     require_fixture(ctx)?;
     let character = crate::helpers::live_entity(ctx, character_guid)?;
-    match super::quest_loop::live_creature_target(ctx, &character, creature_entry) {
+    match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
         super::quest_loop::LiveCreatureTarget::Found(_) => {
             Err("live target still present".to_string())
         }
         super::quest_loop::LiveCreatureTarget::Missing => Ok(()),
+        super::quest_loop::LiveCreatureTarget::Deferred
+        | super::quest_loop::LiveCreatureTarget::Controlled => {
+            Err("live target still present".to_string())
+        }
         super::quest_loop::LiveCreatureTarget::ReadLimit => {
             Err("live target search reached its read limit".to_string())
         }
@@ -2306,4 +2462,255 @@ pub fn playerbots_quest_fixture_recheck_unchanged(ctx: &ReducerContext) -> Resul
     headers.revision().update(header);
     quest_catalog::ensure_catalog(ctx);
     Ok(())
+}
+
+/// Keep the existing no-prerequisite path to Quest 33, then fill every inventory slot. The runner
+/// must complete Quests 783 and 5261 through the Core before it can reach the loot refusal.
+#[reducer]
+pub fn playerbots_recovery_fixture_stage_full_bag(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_quest_loop_fixture_stage_named(ctx, character_guid)?;
+    require_fixture(ctx)?;
+    let objectives = ctx.db.pkg_playerbots_catalog_objective();
+    let removed: Vec<_> = objectives.by_quest().filter(7u32).take(5).collect();
+    if removed.len() > 4 {
+        return Err("Quest 7 fixture objectives exceed their read limit".to_string());
+    }
+    ctx.db
+        .pkg_playerbots_catalog_quest()
+        .quest_entry()
+        .delete(7);
+    for row in removed {
+        objectives.id().delete(row.id);
+    }
+    let headers = ctx.db.pkg_playerbots_quest_catalog();
+    let mut header = headers
+        .revision()
+        .find(CATALOG_REVISION)
+        .ok_or("quest catalog header missing")?;
+    header.quest_count = QUESTS.len().saturating_sub(1) as u32;
+    header.refresh_after_micros = i64::MAX;
+    headers.revision().update(header);
+    let seeds = ctx.db.pkg_playerbots_catalog_seed();
+    for class in [1, 5, 8] {
+        let mut seed = seeds
+            .class()
+            .find(class)
+            .ok_or("quest catalog class seed missing")?;
+        seed.quest_order.retain(|quest| *quest != 7);
+        seeds.class().update(seed);
+    }
+    playerbots_quest_fixture_fill_inventory(ctx, character_guid)
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_clear_one_inventory_slot(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let items = ctx.db.game_item_instance();
+    let filler = items
+        .by_owner_guid()
+        .filter(character_guid)
+        .find(|item| item.entry == INVENTORY_FILLER)
+        .ok_or("inventory filler missing")?;
+    items.guid().delete(filler.guid);
+    if !crate::items::has_free_slot(ctx, character_guid) {
+        return Err("one inventory slot did not become available".to_string());
+    }
+    Ok(())
+}
+
+/// Exercise three parked runner passes at one observed time so a one-second retry deadline cannot
+/// elapse between calls from the test process.
+#[reducer]
+pub fn playerbots_recovery_fixture_three_parked_passes(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    for _ in 0..3 {
+        super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_arm_gameobject_respawn(
+    ctx: &ReducerContext,
+    delay_seconds: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    if !(2..=10).contains(&delay_seconds) {
+        return Err("respawn delay must be 2 through 10 seconds".to_string());
+    }
+    let rows = ctx.db.game_gameobject();
+    let mut gameobject = rows
+        .guid()
+        .find(gameobject_guid(SEEDED_USE_GAMEOBJECT))
+        .ok_or("simple GameObject missing")?;
+    gameobject.state = 1;
+    gameobject.respawn_at_micros = (ctx.timestamp.to_micros_since_unix_epoch() as u64)
+        .saturating_add(u64::from(delay_seconds) * 1_000_000);
+    rows.guid().update(gameobject);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_position_simple_gameobject(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let rows = ctx.db.game_gameobject();
+    let mut gameobject = rows
+        .guid()
+        .find(gameobject_guid(SEEDED_USE_GAMEOBJECT))
+        .ok_or("simple GameObject is absent")?;
+    gameobject.x = character.x + 30.0;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(gameobject.x, gameobject.y);
+    gameobject.grid_x = grid_x;
+    gameobject.grid_y = grid_y;
+    gameobject.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    rows.guid().update(gameobject);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_remove_simple_gameobject(
+    ctx: &ReducerContext,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    if ctx
+        .db
+        .pkg_playerbots_seeded_quest_fixture()
+        .quest_entry()
+        .find(SEEDED_USE_QUEST)
+        .is_none()
+    {
+        return Err("simple GameObject fixture is absent".to_string());
+    }
+    let guid = gameobject_guid(SEEDED_USE_GAMEOBJECT);
+    let gameobjects = ctx.db.game_gameobject();
+    if gameobjects.guid().find(guid).is_none() {
+        return Err("simple GameObject is absent".to_string());
+    }
+    gameobjects.guid().delete(guid);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_restore_simple_gameobject(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+        .filter(|retained| retained.quest_entry == SEEDED_USE_QUEST)
+        .ok_or("simple GameObject Quest is not retained")?;
+    let destination = retained
+        .target
+        .source
+        .filter(|source| {
+            source.kind == CatalogEntityKind::GameObject
+                && source.entry == SEEDED_USE_GAMEOBJECT
+                && source.guid == gameobject_guid(SEEDED_USE_GAMEOBJECT)
+        })
+        .ok_or("retained simple GameObject destination differs")?;
+    let template = ctx
+        .db
+        .game_gameobject_template()
+        .entry()
+        .find(SEEDED_USE_GAMEOBJECT)
+        .filter(|template| {
+            template.type_id == crate::gameobject::go_type::GOOBER && template.lock_id == 0
+        })
+        .ok_or("simple GameObject template differs")?;
+    let rows = ctx.db.game_gameobject();
+    if rows.guid().find(destination.guid).is_some() {
+        return Err("simple GameObject is already present".to_string());
+    }
+    rows.insert(crate::GameObject {
+        guid: destination.guid,
+        template_entry: template.entry,
+        map_id: destination.map_id,
+        x: destination.x,
+        y: destination.y,
+        z: destination.z,
+        orientation: 0.0,
+        state: 0,
+        created_at: ctx.timestamp,
+        respawn_at_micros: 0,
+        instance_id: destination.instance_id,
+        grid_x: lyracore_shared::spatial::grid_cell(destination.x, destination.y).0,
+        grid_y: lyracore_shared::spatial::grid_cell(destination.x, destination.y).1,
+        cell: lyracore_shared::spatial::cell_id_at(destination.x, destination.y),
+        rotation_0: 0.0,
+        rotation_1: 0.0,
+        rotation_2: 0.0,
+        rotation_3: 0.0,
+    });
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_remove_simple_gameobject_and_objective(
+    ctx: &ReducerContext,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    if ctx
+        .db
+        .game_quest_objective()
+        .id()
+        .find(SEEDED_USE_OBJECTIVE)
+        .is_none()
+    {
+        return Err("simple GameObject objective is absent".to_string());
+    }
+    playerbots_recovery_fixture_remove_simple_gameobject(ctx)?;
+    ctx.db
+        .game_quest_objective()
+        .id()
+        .delete(SEEDED_USE_OBJECTIVE);
+    Ok(())
+}
+
+/// Move Quest 783's live ender and spawn before rebuilding its catalog destination, then make the
+/// route unreachable. Acceptance remains available at the separate nearby start giver.
+#[reducer]
+pub fn playerbots_recovery_fixture_stage_unreachable_ender(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_quest_fixture_stage(ctx, character_guid)?;
+    require_fixture(ctx)?;
+    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let ender_guid = creature_guid(197);
+    super::fixture::playerbots_fixture_position(ctx, ender_guid, character.x + 40.0)?;
+    let spawns = ctx.db.game_creature_spawn();
+    let mut spawn = spawns
+        .guid()
+        .find(ender_guid)
+        .ok_or("Quest 783 ender spawn missing")?;
+    spawn.x = character.x + 40.0;
+    spawns.guid().update(spawn);
+    quest_catalog::refresh_catalog(ctx, "unknown");
+    block_navigation(ctx, &character)
 }

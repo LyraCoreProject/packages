@@ -931,7 +931,7 @@ pub(super) enum AdmissionRefusal {
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct QuestAdmission {
     pub quest_entry: u32,
-    pub start: CatalogDestination,
+    pub start: Option<CatalogDestination>,
     pub target: RetainedQuestTarget,
     pub actual_ender: CatalogDestination,
     pub destination: CatalogDestination,
@@ -960,6 +960,7 @@ fn objective_rows(ctx: &ReducerContext, quest_entry: u32) -> Vec<PlayerbotsCatal
 fn source_gate(
     ctx: &ReducerContext,
     catalog: &PlayerbotsCatalogObjective,
+    require_current_destination: bool,
 ) -> Result<Option<CatalogDestination>, AdmissionRefusal> {
     let mut entries = Vec::new();
     match catalog.executor {
@@ -1043,11 +1044,13 @@ fn source_gate(
             }
         }
     }
-    source_destinations(ctx, catalog.source_kind, &entries)
+    match source_destinations(ctx, catalog.source_kind, &entries)
         .into_iter()
         .next()
-        .map(Some)
-        .ok_or_else(|| {
+    {
+        Some(destination) => Ok(Some(destination)),
+        None if !require_current_destination => Ok(None),
+        None => Err({
             missing(
                 MissingCapability::MissingSourceDestination,
                 match catalog.executor {
@@ -1064,7 +1067,8 @@ fn source_gate(
                     ObjectiveExecutor::Talk | ObjectiveExecutor::ProvidedItem => unreachable!(),
                 },
             )
-        })
+        }),
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1144,7 +1148,7 @@ fn executor_gate(
                     "kill objective differs from the catalog",
                 ));
             }
-            source_gate(ctx, catalog)
+            source_gate(ctx, catalog, admission_kind == AdmissionKind::Available)
         }
         CatalogObjectiveKind::CollectItem => {
             let Some(core) = core else {
@@ -1207,7 +1211,7 @@ fn executor_gate(
                     Ok(None)
                 }
                 ObjectiveExecutor::CreatureLoot | ObjectiveExecutor::GameObjectLoot => {
-                    source_gate(ctx, catalog)
+                    source_gate(ctx, catalog, admission_kind == AdmissionKind::Available)
                 }
                 _ => {
                     return Err(missing(
@@ -1234,7 +1238,7 @@ fn executor_gate(
                     "GameObject objective differs from the catalog",
                 ));
             }
-            source_gate(ctx, catalog)
+            source_gate(ctx, catalog, admission_kind == AdmissionKind::Available)
         }
     }
 }
@@ -1318,38 +1322,6 @@ fn inspect(
             "catalog actual ender does not end the quest",
         ));
     }
-    let start = destinations(
-        ctx,
-        EntityDefinition {
-            kind: quest.start_kind,
-            entry: quest.start_entry,
-        },
-        0,
-    )
-    .into_iter()
-    .next()
-    .ok_or_else(|| {
-        missing(
-            MissingCapability::MissingStartDestination,
-            "start giver has no stored destination",
-        )
-    })?;
-    let actual_ender = destinations(
-        ctx,
-        EntityDefinition {
-            kind: quest.actual_ender_kind,
-            entry: quest.actual_ender_entry,
-        },
-        0,
-    )
-    .into_iter()
-    .next()
-    .ok_or_else(|| {
-        missing(
-            MissingCapability::MissingActualEndDestination,
-            "actual ender has no stored destination",
-        )
-    })?;
     if ctx
         .db
         .game_quest_event_requirement()
@@ -1430,11 +1402,91 @@ fn inspect(
                 "catalog has no objective classification",
             )
         })?;
+    let retained = (admission_kind == AdmissionKind::Held)
+        .then(|| {
+            ctx.db
+                .pkg_playerbots_quest_objective()
+                .character_guid()
+                .find(character_guid)
+        })
+        .flatten()
+        .filter(|retained| {
+            let reference_source_revision = ctx
+                .db
+                .pkg_playerbots_quest_catalog()
+                .revision()
+                .find(CATALOG_REVISION)
+                .map_or_else(
+                    || "unknown".to_string(),
+                    |header| header.reference_source_revision,
+                );
+            retained.quest_entry == quest_entry
+                && retained.catalog_revision == CATALOG_REVISION
+                && retained.reference_source_revision == reference_source_revision
+                && retained.content_revision == quest.content_revision
+                && retained.destination_evidence_revision == selected.destination_evidence_revision
+                && retained.actual_ender_kind == quest.actual_ender_kind
+                && retained.actual_ender_entry == quest.actual_ender_entry
+                && retained.target.objective_index == selected.objective_index
+                && retained.target.kind == selected.kind
+                && retained.target.target_entry == selected.target_entry
+                && retained.target.required_count == selected.required_count
+                && retained.target.executor == selected.executor
+                && retained.work_area == selected.work_area
+        });
+    let start = (admission_kind == AdmissionKind::Available)
+        .then(|| {
+            destinations(
+                ctx,
+                EntityDefinition {
+                    kind: quest.start_kind,
+                    entry: quest.start_entry,
+                },
+                0,
+            )
+            .into_iter()
+            .next()
+        })
+        .flatten();
+    if admission_kind == AdmissionKind::Available && start.is_none() {
+        return Err(missing(
+            MissingCapability::MissingStartDestination,
+            "start giver has no stored destination",
+        ));
+    }
+    let actual_ender = destinations(
+        ctx,
+        EntityDefinition {
+            kind: quest.actual_ender_kind,
+            entry: quest.actual_ender_entry,
+        },
+        0,
+    )
+    .into_iter()
+    .next()
+    .or_else(|| {
+        retained
+            .as_ref()
+            .map(|retained| retained.actual_ender.clone())
+    })
+    .ok_or_else(|| {
+        missing(
+            MissingCapability::MissingActualEndDestination,
+            "actual ender has no stored destination",
+        )
+    })?;
+    let source = source.clone().or_else(|| {
+        retained
+            .as_ref()
+            .and_then(|retained| retained.target.source.clone())
+    });
     let complete = held
         .as_ref()
         .is_some_and(|row| crate::quest::quest_is_complete(ctx, row));
     let destination = if admission_kind == AdmissionKind::Available {
-        start.clone()
+        start
+            .clone()
+            .expect("available admission checked its current start destination")
     } else if complete || talk_only || selected.executor == ObjectiveExecutor::ProvidedItem {
         actual_ender.clone()
     } else {

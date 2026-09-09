@@ -16,6 +16,8 @@ const INTERACTION_RANGE_YD: f32 = 9.0;
 const MELEE_RANGE_YD: f32 = 4.0;
 const RAW_ENTITY_LIMIT: usize = 96;
 const CORPSE_LIMIT: usize = 8;
+const CONTROL_TARGET_LIMIT: usize = 12;
+const CONTROL_AURA_LIMIT: usize = 64;
 const LOOT_ROW_LIMIT: usize = 16;
 const SAFE_APPROACH_MIN_YD: f32 = 12.0;
 const SAFE_APPROACH_MAX_YD: f32 = 35.0;
@@ -25,6 +27,8 @@ pub(super) enum WaitReason {
     MissingTarget,
     ReadLimit,
     Respawn,
+    Deferred,
+    Controlled,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -58,6 +62,20 @@ pub(super) enum QuestPlan {
     Wait(WaitReason),
 }
 
+impl QuestPlan {
+    pub(super) fn target(self) -> Option<u64> {
+        match self {
+            Self::Accept { giver, .. } | Self::TurnIn { giver, .. } => Some(giver),
+            Self::Attack { target, .. } => Some(target),
+            Self::LootCreature { corpse, .. } => Some(corpse),
+            Self::UseGameObject { gameobject, .. } | Self::LootGameObject { gameobject, .. } => {
+                Some(gameobject)
+            }
+            Self::Wait(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StepResult {
     Completed,
@@ -80,6 +98,8 @@ pub(super) enum LiveCreatureTarget {
     Found(crate::WorldEntity),
     Missing,
     ReadLimit,
+    Deferred,
+    Controlled,
 }
 
 enum GameObjectWork {
@@ -168,30 +188,44 @@ pub(super) fn live_creature_target(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     entry: u32,
+    eligible_work: impl Fn(u64) -> bool,
 ) -> LiveCreatureTarget {
     let search = search_entities(ctx, me, entry, false);
-    let eligible: Vec<_> = search
+    let mut deferred = false;
+    let mut eligible: Vec<_> = search
         .rows
         .into_iter()
         .filter(|target| crate::combat::validate_attack_target(ctx, me, target.guid).is_ok())
-        .collect();
-    if eligible.is_empty() {
-        if search.exhausted {
-            LiveCreatureTarget::ReadLimit
-        } else {
-            LiveCreatureTarget::Missing
-        }
-    } else {
-        LiveCreatureTarget::Found(
+        .filter(|target| {
+            let eligible = eligible_work(target.guid);
+            deferred |= !eligible;
             eligible
-                .into_iter()
-                .min_by(|left, right| {
-                    distance_sq(me, left.x, left.y, left.z)
-                        .total_cmp(&distance_sq(me, right.x, right.y, right.z))
-                        .then_with(|| left.guid.cmp(&right.guid))
-                })
-                .expect("non-empty search result"),
-        )
+        })
+        .collect();
+    eligible.sort_by(|left, right| {
+        distance_sq(me, left.x, left.y, left.z)
+            .total_cmp(&distance_sq(me, right.x, right.y, right.z))
+            .then_with(|| left.guid.cmp(&right.guid))
+    });
+    let mut controlled = false;
+    for (index, target) in eligible.into_iter().enumerate() {
+        if index == CONTROL_TARGET_LIMIT {
+            return LiveCreatureTarget::ReadLimit;
+        }
+        match crate::spell::control_status(ctx, target.guid, CONTROL_AURA_LIMIT) {
+            Ok(None) => return LiveCreatureTarget::Found(target),
+            Ok(Some(_)) => controlled = true,
+            Err(_) => return LiveCreatureTarget::ReadLimit,
+        }
+    }
+    if search.exhausted {
+        LiveCreatureTarget::ReadLimit
+    } else if controlled {
+        LiveCreatureTarget::Controlled
+    } else if deferred {
+        LiveCreatureTarget::Deferred
+    } else {
+        LiveCreatureTarget::Missing
     }
 }
 
@@ -313,6 +347,7 @@ pub(super) fn plan(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     retained: &PlayerbotsQuestObjective,
+    eligible_fight: impl Fn(u64) -> bool,
 ) -> QuestPlan {
     let quest = retained.quest_entry;
     let Some(held) = crate::quest::character_quest_row(ctx, me.guid, quest) else {
@@ -342,14 +377,18 @@ pub(super) fn plan(
         return QuestPlan::Wait(WaitReason::MissingTarget);
     };
     match retained.target.executor {
-        ObjectiveExecutor::Attack => match live_creature_target(ctx, me, source.entry) {
-            LiveCreatureTarget::Found(target) => QuestPlan::Attack {
-                quest,
-                target: target.guid,
-            },
-            LiveCreatureTarget::ReadLimit => QuestPlan::Wait(WaitReason::ReadLimit),
-            LiveCreatureTarget::Missing => QuestPlan::Wait(WaitReason::MissingTarget),
-        },
+        ObjectiveExecutor::Attack => {
+            match live_creature_target(ctx, me, source.entry, &eligible_fight) {
+                LiveCreatureTarget::Found(target) => QuestPlan::Attack {
+                    quest,
+                    target: target.guid,
+                },
+                LiveCreatureTarget::ReadLimit => QuestPlan::Wait(WaitReason::ReadLimit),
+                LiveCreatureTarget::Missing => QuestPlan::Wait(WaitReason::MissingTarget),
+                LiveCreatureTarget::Deferred => QuestPlan::Wait(WaitReason::Deferred),
+                LiveCreatureTarget::Controlled => QuestPlan::Wait(WaitReason::Controlled),
+            }
+        }
         ObjectiveExecutor::CreatureLoot => {
             match entitled_corpse(ctx, me, source.entry, retained.target.target_entry) {
                 Search::Found((corpse, slot)) => QuestPlan::LootCreature {
@@ -358,14 +397,18 @@ pub(super) fn plan(
                     slot,
                 },
                 Search::Limit => QuestPlan::Wait(WaitReason::ReadLimit),
-                Search::Missing => match live_creature_target(ctx, me, source.entry) {
-                    LiveCreatureTarget::Found(target) => QuestPlan::Attack {
-                        quest,
-                        target: target.guid,
-                    },
-                    LiveCreatureTarget::ReadLimit => QuestPlan::Wait(WaitReason::ReadLimit),
-                    LiveCreatureTarget::Missing => QuestPlan::Wait(WaitReason::MissingTarget),
-                },
+                Search::Missing => {
+                    match live_creature_target(ctx, me, source.entry, &eligible_fight) {
+                        LiveCreatureTarget::Found(target) => QuestPlan::Attack {
+                            quest,
+                            target: target.guid,
+                        },
+                        LiveCreatureTarget::ReadLimit => QuestPlan::Wait(WaitReason::ReadLimit),
+                        LiveCreatureTarget::Missing => QuestPlan::Wait(WaitReason::MissingTarget),
+                        LiveCreatureTarget::Deferred => QuestPlan::Wait(WaitReason::Deferred),
+                        LiveCreatureTarget::Controlled => QuestPlan::Wait(WaitReason::Controlled),
+                    }
+                }
             }
         }
         ObjectiveExecutor::GameObjectLoot => {
@@ -511,6 +554,11 @@ pub(super) fn strategy(
             }),
             objective,
         ),
+        QuestPlan::Wait(WaitReason::Controlled) => {
+            let mut hold = ActionNode::ready(Action::Hold, Reason::CrowdControl, 750);
+            hold.candidate.id.objective = objective;
+            hold
+        }
         QuestPlan::Wait(_) => node(Action::Hold, objective),
     };
     let in_interaction_range = match plan {
