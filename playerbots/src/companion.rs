@@ -472,6 +472,7 @@ fn maintenance(
     party: &Party,
     objective: u64,
     retained: Option<u64>,
+    fallback: &ActionNode,
 ) -> Result<Option<(ActionNode, u64)>, RoleReadError> {
     let rows = rotation_rows(
         ctx,
@@ -494,7 +495,7 @@ fn maintenance(
             300,
             objective,
         );
-        cast.alternatives.push(follow(party, me, objective));
+        cast.alternatives.push(fallback.clone());
         if cast.readiness != Readiness::Refused {
             return Ok(Some((cast, target)));
         }
@@ -616,7 +617,15 @@ pub(super) fn strategy(
         candidates.push(node(Action::Hold, Reason::CrowdControl, 750, objective));
     }
     let (maintenance, read_failure) = if party.enemies.is_empty() {
-        match maintenance(ctx, bot, me, party, objective, retained_buff_target) {
+        match maintenance(
+            ctx,
+            bot,
+            me,
+            party,
+            objective,
+            retained_buff_target,
+            &follow,
+        ) {
             Ok(maintenance) => (maintenance, None),
             Err(RoleReadError::RotationLimit) => return Err(RoleReadError::RotationLimit),
             Err(unavailable) => (None, Some(unavailable)),
