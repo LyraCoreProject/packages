@@ -92,6 +92,15 @@ pub fn playerbots_fixture_orders_party_as(
     request_actor: crate::SessionActor,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    if ctx
+        .db
+        .game_group()
+        .group_id()
+        .find(ROLES_GROUP)
+        .is_none_or(|group| group.leader_guid != request_actor.guid)
+    {
+        return Err("order fixture party change requires its current leader".to_string());
+    }
     orders_party(
         ctx,
         warrior_guid,
