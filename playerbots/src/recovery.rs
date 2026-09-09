@@ -95,6 +95,10 @@ pub(super) struct Deferral {
     pub missing_coverage: bool,
 }
 
+pub(super) struct RestoredTransferAttempt {
+    pub deferred_until_micros: Option<i64>,
+}
+
 /// The root action names the purpose. Positioning prerequisites retain that root through selection.
 fn work(purpose: Candidate) -> Option<Work> {
     if matches!(
@@ -269,17 +273,19 @@ impl Recovery {
     pub(super) fn restore_transfer_attempt(
         &mut self,
         objective: u64,
+        reason: Reason,
+        member_guid: Option<u64>,
         stalled_micros: i64,
         approach: u8,
         deferred_micros: i64,
         now: i64,
-    ) {
-        let Some(attempt) = self
-            .attempts
-            .iter_mut()
-            .find(|attempt| attempt.objective == objective)
-        else {
-            return;
+    ) -> Option<RestoredTransferAttempt> {
+        let Some(attempt) = self.attempts.iter_mut().find(|attempt| {
+            attempt.objective == objective
+                && attempt.reason == reason
+                && member_guid.is_none_or(|guid| attempt.work == Work::Follow(guid))
+        }) else {
+            return None;
         };
         let approach_floor = CHANGE_APPROACH_MICROS.saturating_mul(i64::from(approach.min(2)));
         attempt.stalled_micros = attempt
@@ -292,6 +298,9 @@ impl Recovery {
         if deferred_micros > 0 {
             attempt.deferred_until_micros = Some(now.saturating_add(deferred_micros));
         }
+        Some(RestoredTransferAttempt {
+            deferred_until_micros: attempt.deferred_until_micros,
+        })
     }
 
     pub(super) fn capacity_refused(&self, purpose: Candidate) -> bool {
