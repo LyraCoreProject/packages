@@ -553,6 +553,31 @@ The roster selector travels with the Character; runner observations and foregrou
 The Character delete operation removes the runner and recovery scan rows. Production publication still requires the
 schema review described in LyraCore's `docs/danger-zones.md`.
 
+The populated recovery migration starts from clean merged Core
+`c600a7cc3887508012a512c77d7fefc128cf791d` and Package Collection
+`a17e5ec7120de21fe9ccc75c3b8fcc998be35df8`. For a manual run, check out both revisions and build
+the preceding Module with Rust 1.93.0, target `wasm32-unknown-unknown`, profile `release`, and
+feature `debug_reducers`. Use the preceding collection's `.github/check-core-tip.sh` wrapper so
+the build includes `dungeons`, `example`, `fire_nova`, and `playerbots`. Keep an immutable copy
+of the resulting Wasm outside the current build directory.
+
+Set these inputs before running the ignored `playerbots_recovery` target:
+
+| Variable | Value |
+| --- | --- |
+| `PLAYERBOTS_RECOVERY_PRECEDING_CORE` | Absolute path to the clean Core checkout above |
+| `PLAYERBOTS_RECOVERY_PRECEDING_COLLECTION` | Absolute path to the clean Package checkout above |
+| `PLAYERBOTS_RECOVERY_PRECEDING_WASM` | Absolute path to the immutable preceding Wasm |
+| `PLAYERBOTS_RECOVERY_PRECEDING_MANIFEST` | Absolute path to its build manifest JSON |
+
+The [canonical workflow](../.github/workflows/core-tip.yml), step
+`Build the merged PB-007 Wasm for populated recovery migration`, contains the exact build command
+and manifest builder. Run that builder against the preceding checkouts and Wasm. It records both
+commit and tree identities, the Package content identity, clean state, toolchain, build settings,
+installed Packages, Wasm size and SHA-256. The test checks those values against the actual files
+and checkouts before upgrading the populated private Standalone. Keep the current Package wrapper
+active for the complete test run so any Module rebuild uses the current Package collection.
+
 The companion migration appends nullable leader and injured-member identities to each runner row.
 Its populated upgrade case starts from merged PB-002 core
 `e6a755db0a150bbf73ad97b972fe829f20f6816c` and collection
