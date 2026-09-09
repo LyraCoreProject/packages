@@ -29,19 +29,6 @@ pub(super) struct Party {
 }
 
 impl Party {
-    pub fn destination(&self) -> Option<super::runner::Destination> {
-        self.leader
-            .as_ref()
-            .map(|leader| super::runner::Destination {
-                map_id: leader.map_id,
-                instance_id: leader.instance_id,
-                x: leader.x,
-                y: leader.y,
-                z: leader.z,
-                geometry_revision: None,
-            })
-    }
-
     pub fn leader_partition(&self) -> Option<crate::group::PartyPartitionFacts> {
         self.members
             .iter()
