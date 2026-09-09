@@ -29,6 +29,7 @@ const OBJECTIVE_ID_BASE: u64 = 509_9100;
 const CREATURE_LOOT_ID_BASE: u64 = 509_9200;
 const GAMEOBJECT_LOOT_ID: u64 = 509_9210;
 const INVENTORY_FILLER: u32 = 509_9400;
+const MAGE_COLLECT_ITEM: u32 = 750;
 const SHARED_FIXTURE_HEAL: u32 = 5_090_100;
 const SEEDED_USE_QUEST: u32 = 50_970;
 const SEEDED_USE_GAMEOBJECT: u32 = 5_090_970;
@@ -45,7 +46,7 @@ const FRIENDLY_FIXTURE_FACTION: u32 = 5_090_972;
 
 const CREATURES: [u32; 12] = [823, 197, 196, 9296, 952, 241, 240, 261, 6, 299, 69, 38];
 const GAMEOBJECTS: [u32; 3] = [55, 56, CHEST_ENTRY];
-const ITEMS: [u32; 4] = [750, 752, 11119, 11125];
+const ITEMS: [u32; 4] = [MAGE_COLLECT_ITEM, 752, 11119, 11125];
 
 const QUESTS: &[(u32, u32, u32, u32, u32)] = &[
     (783, 1, 0, 823, 197),
@@ -102,6 +103,17 @@ pub struct PlayerbotsQuestTurninFixture {
     pub observed_micros: i64,
 }
 
+#[table(accessor = pkg_playerbots_quest_loot_receipt_fixture, public)]
+pub struct PlayerbotsQuestLootReceiptFixture {
+    #[primary_key]
+    pub character_guid: u64,
+    pub item_entry: u32,
+    pub received_count: u32,
+    pub peak_carried_count: u32,
+    pub last_source_guid: u64,
+    pub observed_micros: i64,
+}
+
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_quest_loop_fixture(ctx, character_guid) {
     ctx.db
         .pkg_playerbots_quest_loop_fixture()
@@ -117,6 +129,45 @@ crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_quest_turnin_fixt
     }
 });
 crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_quest_turnin_fixture());
+
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_quest_loot_receipt_fixture(ctx, character_guid) {
+    ctx.db
+        .pkg_playerbots_quest_loot_receipt_fixture()
+        .character_guid()
+        .delete(character_guid);
+});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_quest_loot_receipt_fixture());
+
+crate::game_hook!(on_loot, fn playerbots_quest_fixture_looted(ctx, payload) {
+    if payload.item_entry != MAGE_COLLECT_ITEM
+        || ctx
+            .db
+            .pkg_playerbots_quest_loop_fixture()
+            .character_guid()
+            .find(payload.looter_guid)
+            .is_none()
+    {
+        return;
+    }
+    let rows = ctx.db.pkg_playerbots_quest_loot_receipt_fixture();
+    let carried_count = crate::items::item_count(ctx, payload.looter_guid, payload.item_entry);
+    if let Some(mut row) = rows.character_guid().find(payload.looter_guid) {
+        row.received_count = row.received_count.saturating_add(payload.count);
+        row.peak_carried_count = row.peak_carried_count.max(carried_count);
+        row.last_source_guid = payload.corpse_guid;
+        row.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
+        rows.character_guid().update(row);
+    } else {
+        rows.insert(PlayerbotsQuestLootReceiptFixture {
+            character_guid: payload.looter_guid,
+            item_entry: payload.item_entry,
+            received_count: payload.count,
+            peak_carried_count: carried_count,
+            last_source_guid: payload.corpse_guid,
+            observed_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+        });
+    }
+});
 
 crate::game_hook!(on_quest_turnin, fn playerbots_quest_fixture_turned_in(ctx, payload) {
     if ctx
