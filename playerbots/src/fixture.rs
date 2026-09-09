@@ -162,8 +162,9 @@ pub fn playerbots_fixture_orders_names(
             let is_bot = ctx
                 .db
                 .pkg_playerbots_bot()
-                .character_guid()
-                .find(*guid)
+                .by_character()
+                .filter(*guid)
+                .next()
                 .is_some();
             let is_fixture_leader = index == 3
                 && !is_bot
