@@ -210,9 +210,8 @@ pub fn playerbots_transfer_fixture_entry_route_stage(
     };
     let ensure_instance = crate::instance::ensure_instance; // package-api: exempt private fixture stages admitted instance
     ensure_instance(ctx, DESTINATION_INSTANCE, 36, GROUP, actor)?;
-    if crate::instance::resolve_or_create_instance(ctx, group.leader_guid, 36)?
-        != DESTINATION_INSTANCE
-    {
+    let resolved = crate::instance::resolve_or_create_instance(ctx, group.leader_guid, 36); // package-api: exempt private fixture verifies admitted instance
+    if resolved? != DESTINATION_INSTANCE {
         return Err("Transfer entry fixture resolved another instance".to_string());
     }
     Ok(())
