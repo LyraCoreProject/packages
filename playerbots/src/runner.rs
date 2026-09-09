@@ -130,22 +130,28 @@ pub struct Foreground {
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug)]
+pub struct CompanionTransferPurpose {
+    pub member_guid: u64,
+    pub stalled_micros: i64,
+    pub approach: u8,
+    pub deferred_micros: i64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug)]
+pub struct QuestTransferPurpose {
+    pub quest: u32,
+    pub objective_index: u8,
+    pub executor: super::quest_catalog::ObjectiveExecutor,
+    pub source_entry: u32,
+    pub stalled_micros: i64,
+    pub approach: u8,
+    pub deferred_micros: i64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug)]
 pub enum TransferPurpose {
-    Companion {
-        member_guid: u64,
-        stalled_micros: i64,
-        approach: u8,
-        deferred_micros: i64,
-    },
-    Quest {
-        quest: u32,
-        objective_index: u8,
-        executor: super::quest_catalog::ObjectiveExecutor,
-        source_entry: u32,
-        stalled_micros: i64,
-        approach: u8,
-        deferred_micros: i64,
-    },
+    Companion(CompanionTransferPurpose),
+    Quest(QuestTransferPurpose),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug)]
