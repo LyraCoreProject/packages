@@ -1106,23 +1106,25 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                             me.guid,
                             crate::actor::CommandOutcome::Applied,
                         );
-                        party.enemies.push(crate::group::PartyEnemyFacts {
-                            guid: target.guid,
-                            map_id: target.map_id,
-                            instance_id: target.instance_id,
-                            x: target.x,
-                            y: target.y,
-                            z: target.z,
-                            health: target.health,
-                            max_health: target.max_health,
-                            attacking_party: false,
-                            party_attacking: false,
-                            party_casting: false,
-                            party_has_threat: false,
-                            current_target_guid: None,
-                            top_threat_guid: None,
-                            control: None,
-                        });
+                        if !party.enemies.iter().any(|enemy| enemy.guid == target.guid) {
+                            party.enemies.push(crate::group::PartyEnemyFacts {
+                                guid: target.guid,
+                                map_id: target.map_id,
+                                instance_id: target.instance_id,
+                                x: target.x,
+                                y: target.y,
+                                z: target.z,
+                                health: target.health,
+                                max_health: target.max_health,
+                                attacking_party: false,
+                                party_attacking: false,
+                                party_casting: false,
+                                party_has_threat: false,
+                                current_target_guid: None,
+                                top_threat_guid: None,
+                                control: None,
+                            });
+                        }
                     }
                     Err(outcome) => {
                         super::orders::record_runtime_outcome(ctx, me.guid, outcome);
