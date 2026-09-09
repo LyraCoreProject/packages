@@ -2467,7 +2467,7 @@ pub fn playerbots_recovery_fixture_stage_full_bag(
     playerbots_quest_loop_fixture_stage_named(ctx, character_guid)?;
     require_fixture(ctx)?;
     let objectives = ctx.db.pkg_playerbots_catalog_objective();
-    let removed: Vec<_> = objectives.by_quest().filter(7).take(5).collect();
+    let removed: Vec<_> = objectives.by_quest().filter(7u32).take(5).collect();
     if removed.len() > 4 {
         return Err("Quest 7 fixture objectives exceed their read limit".to_string());
     }
