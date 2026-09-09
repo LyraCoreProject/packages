@@ -133,6 +133,9 @@ pub struct Foreground {
 pub enum TransferPurpose {
     Companion {
         member_guid: u64,
+        stalled_micros: i64,
+        approach: u8,
+        deferred_micros: i64,
     },
     Quest {
         quest: u32,
@@ -909,6 +912,7 @@ fn objective(
     if let Some(o) = &mut state.objective {
         if o.kind != ObjectiveKind::Companion
             && o.stage == ObjectiveStage::Deferred
+            && state.transfer_checkpoint.is_none()
             && !state
                 .deferred_destinations
                 .iter()
@@ -946,6 +950,26 @@ fn defer_until(state: &mut PlayerbotsRunner, until_micros: i64) {
             &mut state.deferred_destinations,
             DeferredDestination {
                 destination: o.destination.clone(),
+                until_micros,
+            },
+            FAILURE_LIMIT,
+        );
+    }
+    state.next_eligible_micros = until_micros;
+}
+
+fn restore_transfer_deferral(state: &mut PlayerbotsRunner, until_micros: i64) {
+    if let Some(objective) = &mut state.objective {
+        if objective.kind != ObjectiveKind::Companion {
+            objective.stage = ObjectiveStage::Deferred;
+        }
+        state
+            .deferred_destinations
+            .retain(|deferred| deferred.destination != objective.destination);
+        bounded_push(
+            &mut state.deferred_destinations,
+            DeferredDestination {
+                destination: objective.destination.clone(),
                 until_micros,
             },
             FAILURE_LIMIT,
@@ -1693,6 +1717,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     {
         state.failure(Failure::RecoveryCapacity, now);
     }
+    let mut transfer_recovery_restored = false;
     if bot.controller == Controller::Cohort {
         if let (Some(candidate), Some(purpose)) = (
             chosen.filter(|candidate| !quest_read_limited || *candidate != quest_unavailable),
@@ -1700,11 +1725,20 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         ) {
             let mut recovery = state.recovery.take().unwrap_or_default();
             let mut adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
+            let mut restored = None;
             if let Some(checkpoint) = arrival {
-                super::transfer::restore_recovery(&mut recovery, checkpoint, now);
+                restored =
+                    super::transfer::restore_recovery(&mut recovery, checkpoint, purpose, now);
+                transfer_recovery_restored = restored.is_some();
                 adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
             }
             state.recovery = Some(recovery);
+            if let Some(until_micros) = restored.and_then(|restored| restored.deferred_until_micros)
+            {
+                restore_transfer_deferral(&mut state, until_micros);
+                adjusted.id.action = Action::Hold;
+                adjusted.id.reason = purpose.id.reason;
+            }
             if let Some(proposed) = state
                 .candidate_order
                 .iter_mut()
@@ -1947,7 +1981,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if let Some(recovery) = &mut state.recovery {
         recovery.activate(decision.purpose, now);
     }
-    if arriving {
+    if arriving
+        && arrival.is_none_or(|checkpoint| {
+            !super::transfer::requires_recovery(checkpoint) || transfer_recovery_restored
+        })
+    {
         state.transfer_checkpoint = None;
         bounded_push(
             &mut state.history,

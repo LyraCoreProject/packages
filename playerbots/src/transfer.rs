@@ -110,7 +110,27 @@ fn checkpoint_purpose(
     now: i64,
 ) -> Option<TransferPurpose> {
     if let Some(member_guid) = state.companion_leader_guid {
-        return Some(TransferPurpose::Companion { member_guid });
+        let attempt = state.recovery.as_ref().and_then(|recovery| {
+            recovery.attempts.iter().find(|attempt| {
+                attempt.objective
+                    == state
+                        .objective
+                        .as_ref()
+                        .map_or(0, |objective| objective.identity)
+                    && attempt.reason == Reason::Follow
+                    && attempt.work == super::recovery::Work::Follow(member_guid)
+            })
+        });
+        return Some(TransferPurpose::Companion {
+            member_guid,
+            stalled_micros: attempt.map_or(0, |attempt| attempt.stalled_micros),
+            approach: attempt
+                .and_then(|attempt| attempt.position.as_ref())
+                .map_or(0, |position| position.number),
+            deferred_micros: attempt
+                .and_then(|attempt| attempt.deferred_until_micros)
+                .map_or(0, |until| until.saturating_sub(now).max(0)),
+        });
     }
     let retained = ctx
         .db
@@ -146,6 +166,24 @@ pub(super) enum Arrival {
     Ready,
     Waiting,
     Invalid(Failure),
+}
+
+pub(super) fn requires_recovery(checkpoint: TransferCheckpoint) -> bool {
+    match checkpoint.purpose {
+        Some(TransferPurpose::Companion {
+            stalled_micros,
+            approach,
+            deferred_micros,
+            ..
+        })
+        | Some(TransferPurpose::Quest {
+            stalled_micros,
+            approach,
+            deferred_micros,
+            ..
+        }) => stalled_micros > 0 || approach > 0 || deferred_micros > 0,
+        None => false,
+    }
 }
 
 pub(super) fn retains_quest(
@@ -209,7 +247,7 @@ pub(super) fn arrival(
         return Arrival::Invalid(Failure::TransferDestinationChanged);
     }
     match checkpoint.purpose {
-        Some(TransferPurpose::Companion { member_guid }) => {
+        Some(TransferPurpose::Companion { member_guid, .. }) => {
             let Some(party) = party else {
                 return Arrival::Invalid(Failure::TransferPurposeChanged);
             };
@@ -268,22 +306,47 @@ pub(super) fn arrival(
 pub(super) fn restore_recovery(
     recovery: &mut super::recovery::Recovery,
     checkpoint: TransferCheckpoint,
+    purpose: super::decision::Candidate,
     now: i64,
-) {
-    let Some(TransferPurpose::Quest {
-        stalled_micros,
-        approach,
-        deferred_micros,
-        ..
-    }) = checkpoint.purpose
-    else {
-        return;
+) -> Option<super::recovery::RestoredTransferAttempt> {
+    let (reason, member_guid, stalled_micros, approach, deferred_micros) = match checkpoint.purpose
+    {
+        Some(TransferPurpose::Companion {
+            member_guid,
+            stalled_micros,
+            approach,
+            deferred_micros,
+        }) => (
+            Reason::Follow,
+            Some(member_guid),
+            stalled_micros,
+            approach,
+            deferred_micros,
+        ),
+        Some(TransferPurpose::Quest {
+            stalled_micros,
+            approach,
+            deferred_micros,
+            ..
+        }) => (
+            Reason::Quest,
+            None,
+            stalled_micros,
+            approach,
+            deferred_micros,
+        ),
+        None => return None,
     };
+    if purpose.id.reason != reason {
+        return None;
+    }
     recovery.restore_transfer_attempt(
         checkpoint.objective_identity,
+        reason,
+        member_guid,
         stalled_micros,
         approach,
         deferred_micros,
         now,
-    );
+    )
 }
