@@ -26,29 +26,6 @@ pub(super) fn companion_member(
     }
 }
 
-pub(super) fn companion_partition(
-    party: &super::companion::Party,
-    order: Option<&super::orders::CompanionOrderState>,
-) -> Option<crate::group::PartyPartitionFacts> {
-    let member_guid = companion_member(order, Some(party.leader_guid))?;
-    party
-        .members
-        .iter()
-        .find(|member| member.character_guid == member_guid)
-        .and_then(|member| {
-            member.partition.or_else(|| {
-                member
-                    .unit
-                    .as_ref()
-                    .map(|unit| crate::group::PartyPartitionFacts {
-                        map_id: unit.map_id,
-                        instance_id: unit.instance_id,
-                        locator_revision: 0,
-                    })
-            })
-        })
-}
-
 pub(super) fn candidate(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
