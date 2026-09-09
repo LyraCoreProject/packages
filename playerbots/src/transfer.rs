@@ -6,7 +6,6 @@ use super::runner::{
     CompanionTransferPurpose, Failure, PlayerbotsRunner, QuestTransferPurpose, TransferCheckpoint,
     TransferPurpose,
 };
-use crate::game_character_quest;
 use spacetimedb::{ReducerContext, Table};
 
 const SUPPORTED_AREA_TRIGGERS: [u32; 3] = [78, 119, 121];
@@ -199,15 +198,6 @@ fn checkpoint_purpose(
         .character_guid()
         .find(state.character_guid)
         .filter(|retained| retained.runner_objective_identity == objective.identity)?;
-    if !ctx
-        .db
-        .game_character_quest()
-        .by_character()
-        .filter(state.character_guid)
-        .any(|quest| quest.quest_entry == retained.quest_entry && !quest.rewarded)
-    {
-        return None;
-    }
     let attempt = state.recovery.as_ref().and_then(|recovery| {
         recovery.attempts.iter().find(|attempt| {
             attempt.objective == retained.runner_objective_identity

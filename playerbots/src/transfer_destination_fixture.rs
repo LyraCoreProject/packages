@@ -282,9 +282,9 @@ pub fn playerbots_transfer_quest_execute(
     if !ctx
         .db
         .game_character_quest()
-        .by_character()
-        .filter(character_guid)
-        .any(|quest| quest.quest_entry == retained.quest_entry && !quest.rewarded)
+        .by_character_quest()
+        .filter((character_guid, retained.quest_entry))
+        .any(|quest| !quest.rewarded && !quest.failed)
     {
         return Err("source retained Quest identity changed".to_string());
     }
