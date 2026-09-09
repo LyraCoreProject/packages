@@ -1603,6 +1603,33 @@ pub fn playerbots_fixture_runner_survival(ctx: &ReducerContext, guid: u64) -> Re
     runner_due_for(ctx, guid)
 }
 
+/// Apply a real incoming hit and observe the resulting survival decision without opening a
+/// scheduler gap between the hit and the explicit runner pass. A lethal hit parks the dead bot so
+/// the fixture can observe death before advancing its normal recovery lifecycle.
+#[reducer]
+pub fn playerbots_fixture_runner_survival_hit(
+    ctx: &ReducerContext,
+    guid: u64,
+    attacker: u64,
+    damage: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_runner_survival(ctx, guid)?;
+    playerbots_fixture_runner_damage(ctx, guid, attacker, damage)?;
+    if ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(guid)
+        .ok_or("bot entity missing")?
+        .dead
+    {
+        runner_park_for(ctx, guid)
+    } else {
+        playerbots_fixture_runner_pass_once(ctx, guid)
+    }
+}
+
 #[reducer]
 pub fn playerbots_fixture_runner_clear_navigation(
     ctx: &ReducerContext,
