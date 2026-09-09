@@ -778,6 +778,62 @@ fn distance(me: &crate::WorldEntity, dest: &Destination) -> f32 {
     ((me.x - dest.x).powi(2) + (me.y - dest.y).powi(2) + (me.z - dest.z).powi(2)).sqrt()
 }
 
+fn companion_destination(
+    me: &crate::WorldEntity,
+    party: &super::companion::Party,
+    order: Option<&super::orders::CompanionOrderState>,
+) -> Option<Destination> {
+    match order.map(|order| &order.order) {
+        Some(super::orders::CompanionOrder::Stay(order)) => {
+            return Some(Destination {
+                map_id: order.map_id,
+                instance_id: order.instance_id,
+                x: order.x,
+                y: order.y,
+                z: order.z,
+                geometry_revision: None,
+            });
+        }
+        Some(super::orders::CompanionOrder::Target(_)) => {
+            return Some(Destination {
+                map_id: me.map_id,
+                instance_id: me.instance_id,
+                x: me.x,
+                y: me.y,
+                z: me.z,
+                geometry_revision: None,
+            });
+        }
+        _ => {}
+    }
+    let member_guid = super::transfer::companion_member(order, Some(party.leader_guid))?;
+    let member = party
+        .members
+        .iter()
+        .find(|member| member.character_guid == member_guid)?;
+    member
+        .unit
+        .as_ref()
+        .map(|unit| Destination {
+            map_id: unit.map_id,
+            instance_id: unit.instance_id,
+            x: unit.x,
+            y: unit.y,
+            z: unit.z,
+            geometry_revision: None,
+        })
+        .or_else(|| {
+            member.partition.map(|partition| Destination {
+                map_id: partition.map_id,
+                instance_id: partition.instance_id,
+                x: me.x,
+                y: me.y,
+                z: me.z,
+                geometry_revision: None,
+            })
+        })
+}
+
 fn objective(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
@@ -875,45 +931,16 @@ fn objective(
             super::quest_catalog::clear_retained(ctx, bot.character_guid);
         }
         let (kind, leader_guid, mut destination) = if let Some(party) = party {
-            let destination = order
-                .and_then(|state| match &state.order {
-                    super::orders::CompanionOrder::Stay(super::orders::StayOrder {
-                        map_id,
-                        instance_id,
-                        x,
-                        y,
-                        z,
-                    }) => Some(Destination {
-                        map_id: *map_id,
-                        instance_id: *instance_id,
-                        x: *x,
-                        y: *y,
-                        z: *z,
-                        geometry_revision: None,
-                    }),
-                    _ => None,
-                })
-                .or_else(|| party.destination())
-                .or_else(|| {
-                    party.leader_partition().map(|partition| Destination {
-                        map_id: partition.map_id,
-                        instance_id: partition.instance_id,
-                        x: me.x,
-                        y: me.y,
-                        z: me.z,
-                        geometry_revision: None,
+            let destination = companion_destination(me, party, order).or_else(|| {
+                state
+                    .objective
+                    .as_ref()
+                    .filter(|objective| {
+                        objective.kind == ObjectiveKind::Companion
+                            && state.companion_leader_guid == Some(party.leader_guid)
                     })
-                })
-                .or_else(|| {
-                    state
-                        .objective
-                        .as_ref()
-                        .filter(|objective| {
-                            objective.kind == ObjectiveKind::Companion
-                                && state.companion_leader_guid == Some(party.leader_guid)
-                        })
-                        .map(|objective| objective.destination.clone())
-                });
+                    .map(|objective| objective.destination.clone())
+            });
             (
                 ObjectiveKind::Companion,
                 Some(party.leader_guid),
@@ -1644,7 +1671,27 @@ fn run(
         strategies.push(strategy(Trigger::Attacked, defense));
         let transfer_partition = party
             .as_ref()
-            .and_then(super::companion::Party::leader_partition)
+            .and_then(|party| {
+                super::transfer::companion_member(order.as_ref(), Some(party.leader_guid))
+                    .and_then(|member_guid| {
+                        party
+                            .members
+                            .iter()
+                            .find(|member| member.character_guid == member_guid)
+                    })
+                    .and_then(|member| {
+                        member.partition.or_else(|| {
+                            member
+                                .unit
+                                .as_ref()
+                                .map(|unit| crate::group::PartyPartitionFacts {
+                                    map_id: unit.map_id,
+                                    instance_id: unit.instance_id,
+                                    locator_revision: 0,
+                                })
+                        })
+                    })
+            })
             .filter(|partition| {
                 (partition.map_id, partition.instance_id) != (me.map_id, me.instance_id)
             })
