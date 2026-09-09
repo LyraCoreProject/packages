@@ -88,6 +88,10 @@ pub enum Failure {
     RecoveryCapacity,
     QuestControlled,
     ControlReadLimit,
+    TransferRouteUnavailable,
+    TransferArrivalUnavailable,
+    TransferDestinationChanged,
+    TransferPurposeChanged,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -123,6 +127,35 @@ pub struct Foreground {
     pub instance_id: u64,
     pub started_micros: i64,
     pub running: Running,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug)]
+pub enum TransferPurpose {
+    Companion {
+        member_guid: u64,
+    },
+    Quest {
+        quest: u32,
+        objective_index: u8,
+        executor: super::quest_catalog::ObjectiveExecutor,
+        source_entry: u32,
+        stalled_micros: i64,
+        approach: u8,
+        deferred_micros: i64,
+    },
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug)]
+pub struct TransferCheckpoint {
+    pub intent_id: u64,
+    pub controller_generation: u64,
+    pub source_map: u32,
+    pub source_instance: u64,
+    pub destination_map: u32,
+    pub destination_instance: u64,
+    pub objective_identity: u64,
+    pub arrival_started_micros: i64,
+    pub purpose: Option<TransferPurpose>,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -221,16 +254,22 @@ pub struct PlayerbotsRunner {
 
     #[default(None::<super::recovery::Recovery>)]
     pub recovery: Option<super::recovery::Recovery>,
-
     #[default(0u64)]
     pub companion_order_revision: u64,
 
+    /// Semantic work retained across a Shard Boundary. Source-local targets and routes are cleared
+    /// before this row is exported and rebuilt from destination facts on the first live pass.
+    #[default(None::<TransferCheckpoint>)]
+    pub transfer_checkpoint: Option<TransferCheckpoint>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
     ctx.db.pkg_playerbots_runner().character_guid().delete(character_guid);
 });
-crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_runner());
+crate::character_owned!(transfer, fn sweep_transfer_pkg_playerbots_runner(ctx, character_guid, io) {
+    table = pkg_playerbots_runner,
+    primary_key = character_guid,
+});
 
 #[table(accessor = pkg_playerbots_scheduler, public)]
 pub struct PlayerbotsScheduler {
@@ -408,9 +447,9 @@ impl PlayerbotsRunner {
             companion_buff_target_guid: None,
 
             recovery: None,
-
             companion_order_revision: 0,
 
+            transfer_checkpoint: None,
         }
     }
 
@@ -508,7 +547,11 @@ pub(super) fn pass(ctx: &ReducerContext) {
                     state.save(ctx);
                     super::goals::think(ctx, &bot, now);
                 }
-                Controller::RecordOnly | Controller::Cohort => run(ctx, &bot, state, now),
+                Controller::RecordOnly => run(ctx, &bot, state, now),
+                Controller::Cohort => {
+                    let _ = super::goals::body(ctx, &bot, now);
+                    run(ctx, &bot, state, now);
+                }
                 Controller::Frozen => {
                     state.save(ctx);
                 }
@@ -700,25 +743,52 @@ fn objective(
                     || objective.catalog_revision != super::quest_catalog::CATALOG_REVISION
             });
         if changed {
-            state.objective_sequence = state.objective_sequence.saturating_add(1);
-            let identity = state.objective_sequence;
-            state.objective = Some(Objective {
-                identity,
-                kind: ObjectiveKind::Quest,
-                destination,
-                stage: ObjectiveStage::Travelling,
-                deadline_micros: now.saturating_add(OBJECTIVE_LIFETIME),
-                last_verified_progress_micros: None,
-                started_micros: now,
-                catalog_revision: super::quest_catalog::CATALOG_REVISION,
-            });
+            let transferred_identity = state
+                .transfer_checkpoint
+                .filter(|checkpoint| {
+                    checkpoint.objective_identity != 0
+                        && super::transfer::retains_quest(*checkpoint, &admission)
+                })
+                .and_then(|checkpoint| {
+                    state
+                        .objective
+                        .as_ref()
+                        .filter(|objective| {
+                            objective.kind == ObjectiveKind::Quest
+                                && objective.identity == checkpoint.objective_identity
+                        })
+                        .map(|objective| objective.identity)
+                });
+            let identity = if let Some(identity) = transferred_identity {
+                let objective = state
+                    .objective
+                    .as_mut()
+                    .expect("the transferred Quest identity came from this objective");
+                objective.destination = destination;
+                objective.catalog_revision = super::quest_catalog::CATALOG_REVISION;
+                identity
+            } else {
+                state.objective_sequence = state.objective_sequence.saturating_add(1);
+                let identity = state.objective_sequence;
+                state.objective = Some(Objective {
+                    identity,
+                    kind: ObjectiveKind::Quest,
+                    destination,
+                    stage: ObjectiveStage::Travelling,
+                    deadline_micros: now.saturating_add(OBJECTIVE_LIFETIME),
+                    last_verified_progress_micros: None,
+                    started_micros: now,
+                    catalog_revision: super::quest_catalog::CATALOG_REVISION,
+                });
+                state.retry_count = 0;
+                state.last_stall_check_micros = now;
+                identity
+            };
             super::quest_catalog::retain(ctx, bot.character_guid, identity, admission);
             state.companion_leader_guid = None;
             state.companion_heal_target_guid = None;
             state.companion_fight_target_guid = None;
             state.companion_buff_target_guid = None;
-            state.retry_count = 0;
-            state.last_stall_check_micros = now;
         }
     } else {
         if party.is_none()
@@ -749,6 +819,16 @@ fn objective(
                     _ => None,
                 })
                 .or_else(|| party.destination())
+                .or_else(|| {
+                    party.leader_partition().map(|partition| Destination {
+                        map_id: partition.map_id,
+                        instance_id: partition.instance_id,
+                        x: me.x,
+                        y: me.y,
+                        z: me.z,
+                        geometry_revision: None,
+                    })
+                })
                 .or_else(|| {
                     state
                         .objective
@@ -991,6 +1071,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     };
+    super::transfer::begin_arrival(&mut state, &me, now);
     let mut party = match super::companion::human_led_party(ctx, me.guid) {
         Ok(party) => party,
         Err(unavailable) => {
@@ -1002,6 +1083,12 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             );
             if bot.controller == Controller::Cohort {
                 stop(ctx, me.guid, &mut state);
+            }
+            if super::transfer::arrival_expired(&state, now) {
+                state.transfer_checkpoint = None;
+                state.failure(Failure::TransferArrivalUnavailable, now);
+                state.save(ctx);
+                return;
             }
             state.chosen = Some(Candidate {
                 id: decision::CandidateId {
@@ -1016,7 +1103,6 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             return;
         }
     };
-
     let mut order = super::orders::active(ctx, me.guid);
     if order.as_ref().is_some_and(|order| {
         matches!(
@@ -1138,6 +1224,8 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
     }
 
+    let arrival = state.transfer_checkpoint;
+    let arriving = arrival.is_some();
     if bot.controller == Controller::Cohort {
         let mut recovery = state.recovery.take().unwrap_or_default();
         let deferred = recovery.observe(ctx, &me, &mut state, now);
@@ -1171,7 +1259,31 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         &mut state,
         now,
     );
-
+    match super::transfer::arrival(ctx, &state, &me, party.as_ref(), now) {
+        super::transfer::Arrival::Ready => {}
+        super::transfer::Arrival::Waiting => {
+            state.chosen = Some(Candidate {
+                id: decision::CandidateId {
+                    action: Action::Hold,
+                    reason: Reason::Transfer,
+                    objective: state.objective_sequence,
+                },
+                priority: 1000,
+            });
+            state.last_outcome = RunnerOutcome::Waiting;
+            state.save(ctx);
+            return;
+        }
+        super::transfer::Arrival::Invalid(failure) => {
+            if bot.controller == Controller::Cohort {
+                stop(ctx, me.guid, &mut state);
+            }
+            state.transfer_checkpoint = None;
+            state.failure(failure, now);
+            state.save(ctx);
+            return;
+        }
+    }
     if bot.controller == Controller::Cohort {
         if prior_objective != state.objective_sequence && state.foreground.is_some() {
             stop(ctx, me.guid, &mut state);
@@ -1422,6 +1534,14 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
         strategies.push(strategy(Trigger::Attacked, defense));
         if let Some(party) = party.as_ref() {
+            if let Some(partition) = party.leader_partition().filter(|partition| {
+                (partition.map_id, partition.instance_id) != (me.map_id, me.instance_id)
+            }) {
+                strategies.push(strategy(
+                    Trigger::Always,
+                    super::transfer::candidate(ctx, &me, partition, state.objective_sequence),
+                ));
+            }
             let selection = super::companion::strategy(
                 ctx,
                 bot,
@@ -1579,7 +1699,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             decision.purpose,
         ) {
             let mut recovery = state.recovery.take().unwrap_or_default();
-            let adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
+            let mut adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
+            if let Some(checkpoint) = arrival {
+                super::transfer::restore_recovery(&mut recovery, checkpoint, now);
+                adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
+            }
             state.recovery = Some(recovery);
             if let Some(proposed) = state
                 .candidate_order
@@ -1707,6 +1831,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 ..
             } => true,
             decision::CandidateId {
+                action: Action::Move(MoveTarget::AreaTrigger(_)),
+                reason: Reason::TransferPosition,
+                ..
+            } => true,
+            decision::CandidateId {
                 action: Action::Move(MoveTarget::CastingPosition(target)),
                 reason: Reason::CastingPosition,
                 ..
@@ -1818,6 +1947,18 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if let Some(recovery) = &mut state.recovery {
         recovery.activate(decision.purpose, now);
     }
+    if arriving {
+        state.transfer_checkpoint = None;
+        bounded_push(
+            &mut state.history,
+            Transition {
+                at_micros: now,
+                chosen: None,
+                outcome: RunnerOutcome::Arrived,
+            },
+            HISTORY_LIMIT,
+        );
+    }
     state.chosen = chosen;
     if let (Some(reason), Some(candidate)) =
         (quest_plan.and_then(super::quest_loop::wait_reason), chosen)
@@ -1845,6 +1986,12 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
     }
     if let Some(candidate) = chosen {
+        if candidate.id.action == Action::Hold && candidate.id.reason == Reason::Transfer {
+            state.failure(Failure::TransferRouteUnavailable, now);
+            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            state.save(ctx);
+            return;
+        }
         execute(ctx, &me, &destination, candidate, &mut state, now);
     } else if let Some(reason) = decision.refusals.first() {
         state.failure(Failure::Decision(*reason), now);
@@ -1947,6 +2094,15 @@ fn execute(
                     .recovery
                     .as_ref()
                     .and_then(|recovery| recovery.position(identity)),
+                MoveTarget::AreaTrigger(trigger) => crate::actor::area_trigger_route(ctx, trigger)
+                    .map(|route| Destination {
+                        map_id: route.source_map,
+                        instance_id: me.instance_id,
+                        x: route.source_x,
+                        y: route.source_y,
+                        z: route.source_z,
+                        geometry_revision: geometry_revision(ctx, route.source_map),
+                    }),
             };
             let Some(dest) =
                 destination.filter(|d| (d.map_id, d.instance_id) == (me.map_id, me.instance_id))
@@ -1969,6 +2125,8 @@ fn execute(
                 me,
                 (dest.x, dest.y, dest.z),
                 if matches!(target, MoveTarget::RecoveryPosition(_)) {
+                    0.25
+                } else if matches!(target, MoveTarget::AreaTrigger(_)) {
                     0.25
                 } else if target == MoveTarget::Home {
                     2.0
@@ -2056,6 +2214,27 @@ fn execute(
                     } else {
                         INTERVAL * i64::from(state.retry_count)
                     });
+                }
+            }
+        }
+        Action::Transfer(transfer) => {
+            let Some(generation) = state.generation.checked_add(1) else {
+                state.failure(
+                    Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
+                    now,
+                );
+                return;
+            };
+            match super::actions::transfer(ctx, me.guid, transfer, generation) {
+                Ok(intent_id) => {
+                    super::transfer::normalize(
+                        ctx, state, me, transfer, intent_id, generation, now,
+                    );
+                    state.last_outcome = RunnerOutcome::Waiting;
+                }
+                Err(refusal) => {
+                    state.failure(Failure::ActionRefused(refusal.kind), now);
+                    state.retry_candidate = Some(candidate.id);
                 }
             }
         }

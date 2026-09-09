@@ -14,6 +14,14 @@ pub enum Action {
     LootCreature(QuestLoot),
     UseGameObject(QuestInteraction),
     LootGameObject(QuestLoot),
+    Transfer(TransferAction),
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TransferAction {
+    pub trigger: u32,
+    pub destination_map: u32,
+    pub destination_instance: u64,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -42,6 +50,7 @@ pub enum MoveTarget {
     CastingPosition(u64),
     GameObject(u64),
     RecoveryPosition(u64),
+    AreaTrigger(u32),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -68,6 +77,8 @@ pub enum Reason {
     CrowdControl,
     RoleUnavailable,
     Stay,
+    TransferPosition,
+    Transfer,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

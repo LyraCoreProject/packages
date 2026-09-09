@@ -556,7 +556,11 @@ pub(crate) fn may_rebuild(
 /// behind and its death never resolved. `pending_instance_id`'s sibling carry column,
 /// `pending_ghost`, is what the Character row remembers instead, and re-applying it here is the same
 /// thing `player_login` does at the same point of the same rebuild.
-fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::WorldEntity> {
+pub(super) fn body(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+    now: i64,
+) -> Option<crate::WorldEntity> {
     if let Ok(me) = crate::helpers::live_entity(ctx, bot.character_guid) {
         return Some(me);
     }
