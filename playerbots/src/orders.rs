@@ -174,7 +174,9 @@ pub(crate) fn apply_command(
         .find(|fence| fence.issuer_guid == admitted.issuer_guid)
     {
         fence.sequence = admitted.issuer_sequence;
-        fence.retain_until_micros = admitted.receipt_retain_until_micros;
+        fence.retain_until_micros = fence
+            .retain_until_micros
+            .max(admitted.receipt_retain_until_micros);
     } else {
         if issuer_fences.len() >= crate::actor::COMMAND_RECEIPT_CAPACITY {
             return crate::actor::CommandOutcome::WaitingForCapacity;
