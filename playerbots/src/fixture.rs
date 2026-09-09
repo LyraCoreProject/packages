@@ -93,6 +93,32 @@ pub fn playerbots_fixture_orders_party(
     )
 }
 
+/// Change only one private role-fixture enemy to exercise exact-target death and partition Gates.
+#[reducer]
+pub fn playerbots_fixture_orders_target_state(
+    ctx: &ReducerContext,
+    target_guid: u64,
+    mode: u8,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let entities = ctx.db.game_world_entity();
+    let mut target = entities
+        .guid()
+        .find(target_guid)
+        .filter(|entity| (5_098_001..=5_098_003).contains(&entity.entry))
+        .ok_or("order fixture target is outside the reserved role entries")?;
+    match mode {
+        0 => {
+            target.health = 0;
+            target.dead = true;
+        }
+        1 => target.map_id = target.map_id.saturating_add(1),
+        _ => return Err("unknown order fixture target mode".to_string()),
+    }
+    entities.guid().update(target);
+    Ok(())
+}
+
 /// Deliver one queued command through the production unsharded phases, then either park the
 /// admitted bot or run exactly one normal runner pass before parking it.
 #[reducer]
