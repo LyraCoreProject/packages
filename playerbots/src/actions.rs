@@ -13,6 +13,7 @@ pub enum ActionKind {
     UseGameObject,
     OpenLoot,
     TakeLoot,
+    Transfer,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -26,6 +27,7 @@ pub enum ActionOutcome {
     CastRefused(CastRefusal),
     Cancelled,
     Expired,
+    TransferAccepted(u64),
 }
 
 /// At most one observation per action kind per Character. Repeated waiting retains its start.
@@ -141,6 +143,43 @@ pub(super) fn cast(
             quest_entry: 0,
             spell_id,
             cast_id,
+            outcome,
+            started_micros: now,
+            observed_micros: now,
+        },
+    );
+    result
+}
+
+pub(super) fn transfer(
+    ctx: &ReducerContext,
+    guid: u64,
+    action: super::decision::TransferAction,
+    controller_generation: u64,
+) -> Result<u64, crate::actor::ActionRefusal> {
+    let result = crate::actor::enter_sessionless_areatrigger(
+        ctx,
+        guid,
+        action.trigger,
+        action.destination_map,
+        action.destination_instance,
+        controller_generation,
+    );
+    let outcome = match &result {
+        Ok(intent) => ActionOutcome::TransferAccepted(*intent),
+        Err(refusal) => ActionOutcome::Refused(refusal.clone()),
+    };
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    record(
+        ctx,
+        PlayerbotsAction {
+            id: 0,
+            character_guid: guid,
+            kind: ActionKind::Transfer,
+            target_guid: action.destination_instance,
+            spell_id: action.trigger,
+            quest_entry: action.destination_map,
+            cast_id: 0,
             outcome,
             started_micros: now,
             observed_micros: now,

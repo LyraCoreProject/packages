@@ -34,6 +34,7 @@ pub enum Work {
     Heal(u64),
     Buff(CastAction),
     Quest(QuestWork),
+    AreaTrigger(u32),
 }
 
 impl Work {
@@ -47,6 +48,7 @@ impl Work {
             Self::Follow(guid) | Self::Fight(guid) | Self::Heal(guid) => Some(guid),
             Self::Buff(cast) => Some(cast.target),
             Self::Quest(work) => Some(work.step.target),
+            Self::AreaTrigger(_) => None,
         }
     }
 }
@@ -103,6 +105,7 @@ fn work(purpose: Candidate) -> Option<Work> {
     }
     match purpose.id.action {
         Action::Hold | Action::Resurrect => None,
+        Action::Transfer(transfer) => Some(Work::AreaTrigger(transfer.trigger)),
         Action::Attack(target) => Some(Work::Fight(target)),
         Action::Cast(cast) => Some(match purpose.id.reason {
             Reason::Heal | Reason::Recovery => Work::Heal(cast.target),
@@ -168,6 +171,15 @@ fn destination(
             y,
             z,
             geometry_revision: crate::nav::coverage_generation(ctx, me.map_id),
+        })
+    } else if let Work::AreaTrigger(trigger) = work {
+        crate::actor::area_trigger_route(ctx, trigger).map(|route| Destination {
+            map_id: route.source_map,
+            instance_id: me.instance_id,
+            x: route.source_x,
+            y: route.source_y,
+            z: route.source_z,
+            geometry_revision: crate::nav::coverage_generation(ctx, route.source_map),
         })
     } else if matches!(work, Work::Destination(_)) {
         state
@@ -254,6 +266,34 @@ fn quest_completed(ctx: &ReducerContext, guid: u64, work: QuestWork, after: i64)
 }
 
 impl Recovery {
+    pub(super) fn restore_transfer_attempt(
+        &mut self,
+        objective: u64,
+        stalled_micros: i64,
+        approach: u8,
+        deferred_micros: i64,
+        now: i64,
+    ) {
+        let Some(attempt) = self
+            .attempts
+            .iter_mut()
+            .find(|attempt| attempt.objective == objective)
+        else {
+            return;
+        };
+        let approach_floor = CHANGE_APPROACH_MICROS.saturating_mul(i64::from(approach.min(2)));
+        attempt.stalled_micros = attempt
+            .stalled_micros
+            .max(stalled_micros.max(approach_floor));
+        attempt.last_observed_micros = now;
+        attempt.position = None;
+        attempt.route = None;
+        attempt.last_movement = None;
+        if deferred_micros > 0 {
+            attempt.deferred_until_micros = Some(now.saturating_add(deferred_micros));
+        }
+    }
+
     pub(super) fn capacity_refused(&self, purpose: Candidate) -> bool {
         work(purpose).is_some_and(|work| {
             !self.attempts.iter().any(|attempt| attempt.work == work) && !self.room(work)
@@ -374,7 +414,7 @@ impl Recovery {
                 if objective.identity == attempt.objective
                     && matches!(
                         attempt.reason,
-                        Reason::ReturnHome | Reason::Follow | Reason::Quest
+                        Reason::ReturnHome | Reason::Follow | Reason::Quest | Reason::Transfer
                     )
                 {
                     objective.last_verified_progress_micros = Some(now);
@@ -404,7 +444,7 @@ impl Recovery {
                 if objective.identity == attempt.objective
                     && matches!(
                         attempt.reason,
-                        Reason::ReturnHome | Reason::Follow | Reason::Quest
+                        Reason::ReturnHome | Reason::Follow | Reason::Quest | Reason::Transfer
                     )
                 {
                     objective.last_verified_progress_micros = Some(now);

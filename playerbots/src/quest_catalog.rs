@@ -199,7 +199,10 @@ pub struct PlayerbotsQuestObjective {
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_quest_objective(ctx, character_guid) {
     ctx.db.pkg_playerbots_quest_objective().character_guid().delete(character_guid);
 });
-crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_quest_objective());
+crate::character_owned!(transfer, fn sweep_transfer_pkg_playerbots_quest_objective(ctx, character_guid, io) {
+    table = pkg_playerbots_quest_objective,
+    primary_key = character_guid,
+});
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QuestAdmissionState {

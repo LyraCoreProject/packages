@@ -28,6 +28,7 @@ mod quest_catalog;
 mod quest_loop;
 mod recovery;
 mod runner;
+mod transfer;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;
 pub(crate) use quest_catalog::*;
@@ -37,7 +38,11 @@ mod fixture;
 #[cfg(feature = "debug_reducers")]
 mod quest_catalog_fixture;
 #[cfg(feature = "debug_reducers")]
+mod transfer_fixture;
+#[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
+#[cfg(feature = "debug_reducers")]
+pub(crate) use transfer_fixture::*;
 pub(crate) use goals::*;
 pub(crate) use orders::*;
 

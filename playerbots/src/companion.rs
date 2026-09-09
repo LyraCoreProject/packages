@@ -42,6 +42,13 @@ impl Party {
             })
     }
 
+    pub fn leader_partition(&self) -> Option<crate::group::PartyPartitionFacts> {
+        self.members
+            .iter()
+            .find(|member| member.character_guid == self.leader_guid)
+            .and_then(|member| member.partition)
+    }
+
     fn designated_target(&self) -> Option<u64> {
         self.leader
             .as_ref()
