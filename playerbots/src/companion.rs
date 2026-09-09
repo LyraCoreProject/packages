@@ -46,7 +46,18 @@ impl Party {
         self.members
             .iter()
             .find(|member| member.character_guid == self.leader_guid)
-            .and_then(|member| member.partition)
+            .and_then(|member| {
+                member.partition.or_else(|| {
+                    member
+                        .unit
+                        .as_ref()
+                        .map(|unit| crate::group::PartyPartitionFacts {
+                            map_id: unit.map_id,
+                            instance_id: unit.instance_id,
+                            locator_revision: 0,
+                        })
+                })
+            })
     }
 
     fn designated_target(&self) -> Option<u64> {
@@ -62,16 +73,25 @@ pub(super) fn human_led_party(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<Option<Party>, crate::group::PartyFactsUnavailable> {
+    party(ctx, character_guid, true)
+}
+
+pub(super) fn party(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    require_human_leader: bool,
+) -> Result<Option<Party>, crate::group::PartyFactsUnavailable> {
     let Some(facts) = crate::group::party_facts(ctx, character_guid)? else {
         return Ok(None);
     };
-    if ctx
-        .db
-        .pkg_playerbots_bot()
-        .by_character()
-        .filter(facts.leader_guid)
-        .next()
-        .is_some()
+    if require_human_leader
+        && ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(facts.leader_guid)
+            .next()
+            .is_some()
     {
         return Ok(None);
     }
