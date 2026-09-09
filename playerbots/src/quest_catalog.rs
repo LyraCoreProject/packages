@@ -1,8 +1,8 @@
 //! A versioned catalog of quest work this Package can execute with current core operations.
 
 use crate::{
-    game_creature_loot, game_creature_quest, game_gameobject_loot, game_gameobject_quest,
-    game_gameobject_template, game_item_template, game_quest_cast_objective,
+    game_character_quest, game_creature_loot, game_creature_quest, game_gameobject_loot,
+    game_gameobject_quest, game_gameobject_template, game_item_template, game_quest_cast_objective,
     game_quest_event_requirement, game_quest_objective, game_quest_template, game_world_entity,
 };
 use spacetimedb::{table, ReducerContext, Table};
@@ -14,7 +14,7 @@ pub const CATALOG_BLUEPRINT_REVISION: &str =
 const DESTINATION_LIMIT: usize = 128;
 const WAIT_MICROS: i64 = 30_000_000;
 const REFRESH_INTERVAL_MICROS: i64 = 30_000_000;
-const CATALOG_WALK_LIMIT: usize = 16;
+pub(super) const CATALOG_WALK_LIMIT: usize = 16;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CatalogEntityKind {
@@ -940,6 +940,12 @@ pub(super) struct QuestAdmission {
     pub work_area: Option<CatalogWorkArea>,
 }
 
+pub(super) enum ReconcileResult {
+    Found(QuestAdmission),
+    Missing,
+    ReadLimit,
+}
+
 fn objective_rows(ctx: &ReducerContext, quest_entry: u32) -> Vec<PlayerbotsCatalogObjective> {
     let mut rows: Vec<_> = ctx
         .db
@@ -1488,10 +1494,7 @@ pub(super) fn admit_held(
     inspect(ctx, character_guid, quest_entry, AdmissionKind::Held)
 }
 
-pub(super) fn reconcile_active(
-    ctx: &ReducerContext,
-    character_guid: u64,
-) -> Option<QuestAdmission> {
+pub(super) fn reconcile_active(ctx: &ReducerContext, character_guid: u64) -> ReconcileResult {
     ensure_catalog(ctx);
     let reconsider = ctx
         .db
@@ -1506,29 +1509,33 @@ pub(super) fn reconcile_active(
         .character_guid()
         .find(character_guid)
         .map(|row| row.quest_entry);
-    let mut entries: Vec<_> = ctx
+    let mut active: Vec<_> = ctx
         .db
-        .pkg_playerbots_catalog_quest()
-        .by_order()
-        .filter((CATALOG_REVISION, 0u16..=u16::MAX))
-        .take(CATALOG_WALK_LIMIT)
-        .map(|quest| quest.quest_entry)
+        .game_character_quest()
+        .by_character_active()
+        .filter((character_guid, false, false))
+        .take(crate::quest::MAX_QUEST_LOG_SIZE + 1)
         .collect();
-    entries.sort_by_key(|entry| {
+    if active.len() > crate::quest::MAX_QUEST_LOG_SIZE {
+        return ReconcileResult::ReadLimit;
+    }
+    let catalog = ctx.db.pkg_playerbots_catalog_quest();
+    let mut held: Vec<_> = active
+        .drain(..)
+        .filter_map(|row| catalog.quest_entry().find(row.quest_entry))
+        .filter(|quest| quest.catalog_revision == CATALOG_REVISION)
+        .map(|quest| (quest.quest_entry, quest.catalog_order))
+        .collect();
+    held.sort_by_key(|(entry, order)| {
         (
             u8::from(Some(*entry) != reconsider),
             u8::from(Some(*entry) != retained),
-            QUESTS
-                .iter()
-                .position(|quest| quest.entry == *entry)
-                .unwrap_or(usize::MAX),
+            *order,
+            *entry,
         )
     });
     let mut first_refusal = None;
-    for entry in entries.iter().copied().filter(|entry| {
-        crate::quest::character_quest_row(ctx, character_guid, *entry)
-            .is_some_and(|row| !row.rewarded && !row.failed)
-    }) {
+    for (entry, _) in held {
         match admit_held(ctx, character_guid, entry) {
             Ok(admission) => {
                 if let Some((considered, refusal)) = first_refusal.as_ref() {
@@ -1548,7 +1555,7 @@ pub(super) fn reconcile_active(
                         None,
                     );
                 }
-                return Some(admission);
+                return ReconcileResult::Found(admission);
             }
             Err(refusal @ AdmissionRefusal::Unsupported { .. }) => {
                 first_refusal.get_or_insert((entry, refusal));
@@ -1558,8 +1565,16 @@ pub(super) fn reconcile_active(
     }
     if let Some((entry, refusal)) = first_refusal.as_ref() {
         record_admission(ctx, character_guid, *entry, None, Some(refusal));
-        return None;
+        return ReconcileResult::Missing;
     }
+    let entries: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_quest()
+        .by_order()
+        .filter((CATALOG_REVISION, 0u16..=u16::MAX))
+        .take(CATALOG_WALK_LIMIT)
+        .map(|quest| quest.quest_entry)
+        .collect();
     let mut available_refusal = None;
     for entry in entries {
         match admit_available(ctx, character_guid, entry) {
@@ -1569,7 +1584,7 @@ pub(super) fn reconcile_active(
                 } else {
                     record_admission(ctx, character_guid, entry, Some(entry), None);
                 }
-                return Some(admission);
+                return ReconcileResult::Found(admission);
             }
             Err(AdmissionRefusal::Ineligible(_)) => {}
             Err(refusal @ AdmissionRefusal::Unsupported { .. }) => {
@@ -1580,7 +1595,7 @@ pub(super) fn reconcile_active(
     if let Some((entry, refusal)) = available_refusal.as_ref() {
         record_admission(ctx, character_guid, *entry, None, Some(refusal));
     }
-    None
+    ReconcileResult::Missing
 }
 
 pub(super) fn retain(

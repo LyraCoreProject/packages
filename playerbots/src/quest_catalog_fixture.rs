@@ -8,6 +8,7 @@ use super::quest_catalog::{
     pkg_playerbots_quest_catalog, pkg_playerbots_quest_objective, AdmissionRefusal,
     CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
     ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, CATALOG_REVISION,
+    CATALOG_WALK_LIMIT,
 };
 use crate::import_meta::game_import_meta; // package-api: exempt operator fixture refuses imported content before staging
 use crate::{
@@ -43,6 +44,8 @@ const SEARCH_LIMIT_ROWS: u64 = 96;
 const LOOPBACK_SMITE: u32 = 585;
 const LOOPBACK_PRIEST_MANA: u32 = 400;
 const FRIENDLY_FIXTURE_FACTION: u32 = 5_090_972;
+const HELD_CATALOG_PREFIX_BASE: u32 = 5_098_000;
+const ACTIVE_QUEST_OVERFLOW_BASE: u32 = 5_098_100;
 
 const CREATURES: [u32; 12] = [823, 197, 196, 9296, 952, 241, 240, 261, 6, 299, 69, 38];
 const GAMEOBJECTS: [u32; 3] = [55, 56, CHEST_ENTRY];
@@ -499,6 +502,8 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
         SEEDED_USE_GAMEOBJECT,
         crate::gameobject::go_type::GOOBER,
         0,
+        destination.map_id,
+        destination.instance_id,
         destination.x,
         destination.y,
         destination.z,
@@ -885,6 +890,8 @@ fn insert_gameobject(
     entry: u32,
     type_id: u8,
     data1: u32,
+    map_id: u32,
+    instance_id: u64,
     x: f32,
     y: f32,
     z: f32,
@@ -908,7 +915,7 @@ fn insert_gameobject(
     ctx.db.game_gameobject().insert(crate::GameObject {
         guid,
         template_entry: entry,
-        map_id: 0,
+        map_id,
         x,
         y,
         z,
@@ -916,7 +923,7 @@ fn insert_gameobject(
         state: 0,
         created_at: ctx.timestamp,
         respawn_at_micros: 0,
-        instance_id: 0,
+        instance_id,
         grid_x: lyracore_shared::spatial::grid_cell(x, y).0,
         grid_y: lyracore_shared::spatial::grid_cell(x, y).1,
         cell: lyracore_shared::spatial::cell_id_at(x, y),
@@ -1137,6 +1144,8 @@ pub fn playerbots_quest_fixture_stage(
         55,
         crate::gameobject::go_type::QUESTGIVER,
         0,
+        character.map_id,
+        character.instance_id,
         character.x + 2.0,
         character.y + 0.7,
         character.z,
@@ -1146,6 +1155,8 @@ pub fn playerbots_quest_fixture_stage(
         56,
         crate::gameobject::go_type::QUESTGIVER,
         0,
+        character.map_id,
+        character.instance_id,
         character.x + 2.0,
         character.y + 0.8,
         character.z,
@@ -1155,6 +1166,8 @@ pub fn playerbots_quest_fixture_stage(
         CHEST_ENTRY,
         crate::gameobject::go_type::CHEST,
         CHEST_LOOT,
+        character.map_id,
+        character.instance_id,
         character.x + 2.0,
         character.y + 0.9,
         character.z,
@@ -2029,13 +2042,83 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
         kind: CatalogObjectiveKind::Escort,
         ..previous
     });
-    let selected = quest_catalog::reconcile_active(ctx, character_guid)
-        .ok_or("supported held alternative missing")?;
+    let quests = ctx.db.pkg_playerbots_catalog_quest();
+    let mut held = quests
+        .quest_entry()
+        .find(5261)
+        .ok_or("held alternative catalog row missing")?;
+    held.catalog_order = u16::MAX;
+    for offset in 0..CATALOG_WALK_LIMIT {
+        let prefix = PlayerbotsCatalogQuest {
+            quest_entry: HELD_CATALOG_PREFIX_BASE + offset as u32,
+            catalog_revision: held.catalog_revision,
+            catalog_order: 100 + offset as u16,
+            min_level: held.min_level,
+            required_races: held.required_races,
+            required_classes: held.required_classes,
+            prerequisite_quest: held.prerequisite_quest,
+            start_kind: held.start_kind,
+            start_entry: held.start_entry,
+            start_destinations: held.start_destinations.clone(),
+            actual_ender_kind: held.actual_ender_kind,
+            actual_ender_entry: held.actual_ender_entry,
+            actual_ender_destinations: held.actual_ender_destinations.clone(),
+            content_revision: held.content_revision.clone(),
+        };
+        quests.quest_entry().delete(prefix.quest_entry);
+        quests.insert(prefix);
+    }
+    quests.quest_entry().update(held);
+    let selected = match quest_catalog::reconcile_active(ctx, character_guid) {
+        quest_catalog::ReconcileResult::Found(selected) => selected,
+        quest_catalog::ReconcileResult::Missing => {
+            return Err("supported held alternative missing".to_string());
+        }
+        quest_catalog::ReconcileResult::ReadLimit => {
+            return Err("held quest read limit reached".to_string());
+        }
+    };
     if selected.quest_entry != 5261 {
         return Err(format!(
             "expected quest 5261 after quest 7 became unsupported, got {}",
             selected.quest_entry
         ));
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_quest_fixture_active_log_overflow(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let quests = ctx.db.game_character_quest();
+    let exemplar = quests
+        .by_character_active()
+        .filter((character_guid, false, false))
+        .next()
+        .ok_or("active fixture quest missing")?;
+    for offset in 0..crate::quest::MAX_QUEST_LOG_SIZE {
+        let quest_entry = ACTIVE_QUEST_OVERFLOW_BASE + offset as u32;
+        if let Some(previous) = quests
+            .by_character_quest()
+            .filter((character_guid, quest_entry))
+            .next()
+        {
+            quests.id().delete(previous.id);
+        }
+        quests.insert(crate::quest::CharacterQuest {
+            id: 0,
+            character_guid: exemplar.character_guid,
+            owner_identity: exemplar.owner_identity,
+            quest_entry,
+            counts: Vec::new(),
+            rewarded: false,
+            deadline_micros: exemplar.deadline_micros,
+            failed: false,
+        });
     }
     Ok(())
 }
@@ -2060,8 +2143,14 @@ pub fn playerbots_quest_fixture_lose_provided_item(
     } else {
         items.guid().delete(item.guid);
     }
-    if quest_catalog::reconcile_active(ctx, character_guid).is_some() {
-        return Err("held quest remained admitted without its provided item".to_string());
+    match quest_catalog::reconcile_active(ctx, character_guid) {
+        quest_catalog::ReconcileResult::Found(_) => {
+            return Err("held quest remained admitted without its provided item".to_string());
+        }
+        quest_catalog::ReconcileResult::ReadLimit => {
+            return Err("held quest read limit reached".to_string());
+        }
+        quest_catalog::ReconcileResult::Missing => {}
     }
     Ok(())
 }

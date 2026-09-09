@@ -1589,6 +1589,87 @@ pub fn playerbots_fixture_runner_select_cohort(
 }
 
 #[reducer]
+pub fn playerbots_fixture_runner_stage_quest_retry(
+    ctx: &ReducerContext,
+    guid: u64,
+    quest: u32,
+    target: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::decision::{Action, Candidate, CandidateId, QuestInteraction, Reason};
+    use super::pkg_playerbots_runner;
+    let mut state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let candidate = Candidate {
+        id: CandidateId {
+            action: Action::AcceptQuest(QuestInteraction { target, quest }),
+            reason: Reason::Quest,
+            objective: state.objective_sequence,
+        },
+        priority: 110,
+    };
+    state.chosen = Some(candidate);
+    state.retry_count = 3;
+    state.retry_candidate = Some(candidate.id);
+    state.next_eligible_micros = ctx.timestamp.to_micros_since_unix_epoch();
+    ctx.db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_stage_defense_retry(
+    ctx: &ReducerContext,
+    guid: u64,
+    target: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::decision::{Action, Candidate, CandidateId, Reason};
+    use super::pkg_playerbots_runner;
+    let mut state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let candidate = Candidate {
+        id: CandidateId {
+            action: Action::Attack(target),
+            reason: Reason::Defense,
+            objective: state.objective_sequence,
+        },
+        priority: 600,
+    };
+    state.chosen = Some(candidate);
+    state.retry_count = 3;
+    state.retry_candidate = Some(candidate.id);
+    state.next_eligible_micros = ctx.timestamp.to_micros_since_unix_epoch();
+    ctx.db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_runner_refuse_quest_candidate(
+    ctx: &ReducerContext,
+    guid: u64,
+    quest: u32,
+    target: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    super::runner::fixture_refuse_quest_candidate(ctx, guid, quest, target)?;
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
 pub fn playerbots_fixture_runner_survival(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     let mut personality = ctx

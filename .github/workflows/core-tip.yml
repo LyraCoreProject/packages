@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 6ab7a2c1b16fdf268e3ad6aeb48db4a88cd5345e
+          ref: c600a7cc3887508012a512c77d7fefc128cf791d
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
