@@ -55,13 +55,21 @@ impl Work {
 pub struct Attempt {
     pub work: Work,
     pub destination: Destination,
+    pub geometry: crate::nav::NavigationInputs,
     pub objective: u64,
     pub last_observed_micros: i64,
     pub stalled_micros: i64,
     pub target_health: Option<u32>,
     pub position: Option<Approach>,
     pub route: Option<crate::nav::RouteStep>,
+    pub last_movement: Option<ObservedMovement>,
     pub deferred_until_micros: Option<i64>,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct ObservedMovement {
+    pub started_micros: i64,
+    pub position: crate::nav::RoutePoint,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -81,6 +89,7 @@ pub struct Recovery {
 pub(super) struct Deferral {
     pub destination: Destination,
     pub until_micros: i64,
+    pub missing_coverage: bool,
 }
 
 /// The root action names the purpose. Positioning prerequisites retain that root through selection.
@@ -174,7 +183,8 @@ fn movement_progress(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     state: &PlayerbotsRunner,
-) -> Option<(crate::nav::RouteStep, bool)> {
+    previous: Option<&ObservedMovement>,
+) -> Option<(crate::nav::RouteStep, ObservedMovement, bool)> {
     let foreground = state.foreground.as_ref()?;
     if foreground.generation != state.generation
         || (foreground.map_id, foreground.instance_id) != (me.map_id, me.instance_id)
@@ -193,19 +203,38 @@ fn movement_progress(
         return None;
     }
     let route = movement.route;
+    let previous_position = previous
+        .filter(|previous| previous.started_micros == foreground.started_micros)
+        .map_or(route.from, |previous| previous.position);
+    let advanced = advanced_on_leg(&route, previous_position, (me.x, me.y).into());
+    Some((
+        route,
+        ObservedMovement {
+            started_micros: foreground.started_micros,
+            position: (me.x, me.y).into(),
+        },
+        advanced,
+    ))
+}
+
+fn advanced_on_leg(
+    route: &crate::nav::RouteStep,
+    previous: crate::nav::RoutePoint,
+    current: crate::nav::RoutePoint,
+) -> bool {
     let dx = route.endpoint.x - route.from.x;
     let dy = route.endpoint.y - route.from.y;
     let length = (dx * dx + dy * dy).sqrt();
-    let moved_x = me.x - route.from.x;
-    let moved_y = me.y - route.from.y;
-    let advanced = if length > 0.05 {
+    let moved_x = current.x - route.from.x;
+    let moved_y = current.y - route.from.y;
+    if length > 0.05 {
         let along = (moved_x * dx + moved_y * dy) / length;
+        let before = ((previous.x - route.from.x) * dx + (previous.y - route.from.y) * dy) / length;
         let across = (moved_x * dy - moved_y * dx).abs() / length;
-        along > 0.05 && along <= length + 0.25 && across <= 0.25
+        along > before.max(0.0) + 0.05 && along <= length + 0.25 && across <= 0.25
     } else {
         false
-    };
-    Some((route, advanced))
+    }
 }
 
 fn quest_completed(ctx: &ReducerContext, guid: u64, work: QuestWork, after: i64) -> bool {
@@ -224,6 +253,12 @@ fn quest_completed(ctx: &ReducerContext, guid: u64, work: QuestWork, after: i64)
 }
 
 impl Recovery {
+    pub(super) fn capacity_refused(&self, purpose: Candidate) -> bool {
+        work(purpose).is_some_and(|work| {
+            !self.attempts.iter().any(|attempt| attempt.work == work) && !self.room(work)
+        })
+    }
+
     pub(super) fn position(&self, identity: u64) -> Option<Destination> {
         self.attempts
             .iter()
@@ -248,6 +283,10 @@ impl Recovery {
         let Some(work) = work(purpose) else {
             return true;
         };
+        self.eligible_work(work)
+    }
+
+    pub(super) fn eligible_work(&self, work: Work) -> bool {
         self.attempts
             .iter()
             .find(|attempt| attempt.work == work)
@@ -265,18 +304,25 @@ impl Recovery {
         state: &mut PlayerbotsRunner,
         now: i64,
     ) -> Option<Deferral> {
-        let geometry = crate::nav::coverage_generation(ctx, me.map_id);
+        let geometry = crate::nav::inputs(ctx, me.map_id);
         self.attempts.retain(|attempt| {
-            (attempt.destination.map_id, attempt.destination.instance_id)
+            let retain = (attempt.destination.map_id, attempt.destination.instance_id)
                 == (me.map_id, me.instance_id)
-                && attempt.destination.geometry_revision == geometry
+                && attempt.geometry == geometry
                 && match attempt.deferred_until_micros {
                     Some(until) => until > now,
                     None => {
                         self.active == Some(attempt.work)
                             || now.saturating_sub(attempt.last_observed_micros) < DEFER_MICROS
                     }
-                }
+                };
+            if !retain {
+                state.deferred_destinations.retain(|deferred| {
+                    deferred.destination != attempt.destination
+                        || Some(deferred.until_micros) != attempt.deferred_until_micros
+                });
+            }
+            retain
         });
         let index = self
             .attempts
@@ -333,16 +379,18 @@ impl Recovery {
             self.active = None;
             return None;
         }
-        let advanced = movement_progress(ctx, me, state).is_some_and(|(route, advanced)| {
-            attempt.route = Some(route);
-            advanced
-                && state.foreground.as_ref().is_some_and(|foreground| {
-                    !matches!(
-                        foreground.candidate.id.action,
-                        Action::Move(MoveTarget::RecoveryPosition(_))
-                    )
-                })
-        });
+        let advanced = movement_progress(ctx, me, state, attempt.last_movement.as_ref())
+            .is_some_and(|(route, observation, advanced)| {
+                attempt.route = Some(route);
+                attempt.last_movement = Some(observation);
+                advanced
+                    && state.foreground.as_ref().is_some_and(|foreground| {
+                        !matches!(
+                            foreground.candidate.id.action,
+                            Action::Move(MoveTarget::RecoveryPosition(_))
+                        )
+                    })
+            });
         if advanced {
             attempt.stalled_micros = 0;
             attempt.position = None;
@@ -368,6 +416,9 @@ impl Recovery {
             return Some(Deferral {
                 destination: attempt.destination.clone(),
                 until_micros,
+                missing_coverage: attempt.route.as_ref().is_some_and(|route| {
+                    matches!(route.coverage, crate::nav::CoverageEvidence::Unknown)
+                }),
             });
         }
         None
@@ -404,6 +455,7 @@ impl Recovery {
             self.attempts.push(Attempt {
                 work,
                 destination,
+                geometry: crate::nav::inputs(ctx, me.map_id),
                 objective: purpose.id.objective,
                 last_observed_micros: now,
                 stalled_micros: 0,
@@ -413,6 +465,7 @@ impl Recovery {
                     .map(|unit| unit.health),
                 position: None,
                 route: None,
+                last_movement: None,
                 deferred_until_micros: None,
             });
             self.attempts.len() - 1
@@ -487,5 +540,118 @@ impl Recovery {
         {
             attempt.last_observed_micros = now;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::decision::CandidateId;
+    use super::*;
+
+    fn retained(work: Work) -> Attempt {
+        Attempt {
+            work,
+            destination: Destination {
+                map_id: 0,
+                instance_id: 0,
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                geometry_revision: None,
+            },
+            geometry: crate::nav::NavigationInputs {
+                imported_revision: None,
+                navigation_enabled: true,
+                collision_enabled: false,
+                coverage_enabled: false,
+                static_generation: None,
+                coverage_generation: None,
+            },
+            objective: 1,
+            last_observed_micros: 0,
+            stalled_micros: 1,
+            target_health: None,
+            position: None,
+            route: None,
+            last_movement: None,
+            deferred_until_micros: None,
+        }
+    }
+
+    fn candidate(action: Action, reason: Reason) -> Candidate {
+        Candidate {
+            id: CandidateId {
+                action,
+                reason,
+                objective: 1,
+            },
+            priority: 1,
+        }
+    }
+
+    #[test]
+    fn three_failed_ordinary_attempts_reserve_the_last_slot_for_a_heal() {
+        let mut recovery = Recovery {
+            attempts: vec![
+                retained(Work::Fight(1)),
+                retained(Work::Fight(2)),
+                retained(Work::Fight(3)),
+            ],
+            ..Recovery::default()
+        };
+        let ordinary = candidate(Action::Attack(4), Reason::Defense);
+        let heal = candidate(
+            Action::Cast(CastAction {
+                target: 10,
+                spell: 2050,
+            }),
+            Reason::Heal,
+        );
+
+        assert!(!recovery.eligible(ordinary));
+        assert!(recovery.eligible(heal));
+
+        recovery.attempts.push(retained(Work::Heal(10)));
+        let second_heal = candidate(
+            Action::Cast(CastAction {
+                target: 11,
+                spell: 2050,
+            }),
+            Reason::Heal,
+        );
+        assert!(!recovery.eligible(second_heal));
+    }
+
+    #[test]
+    fn progress_along_a_partial_leg_counts_once_even_when_it_moves_away_from_the_goal() {
+        let route = crate::nav::RouteStep {
+            from: (10.0, 0.0).into(),
+            endpoint: (5.0, 0.0).into(),
+            first_waypoint: Some((0.0, 0.0).into()),
+            status: crate::nav::RouteStatus::Partial,
+            expansions: 4096,
+            clipping: None,
+            coverage: crate::nav::CoverageEvidence::Unknown,
+        };
+        assert!(advanced_on_leg(
+            &route,
+            (10.0, 0.0).into(),
+            (7.0, 0.0).into()
+        ));
+        assert!(!advanced_on_leg(
+            &route,
+            (7.0, 0.0).into(),
+            (7.0, 0.0).into()
+        ));
+        assert!(!advanced_on_leg(
+            &route,
+            (7.0, 0.0).into(),
+            (8.0, 0.0).into()
+        ));
+        assert!(!advanced_on_leg(
+            &route,
+            (7.0, 0.0).into(),
+            (6.0, 3.0).into()
+        ));
     }
 }

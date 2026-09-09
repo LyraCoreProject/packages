@@ -291,6 +291,56 @@ fn block_navigation(ctx: &ReducerContext, me: &crate::WorldEntity) -> Result<(),
     Ok(())
 }
 
+/// The near wall forces a first leg west, while the distant wall exhausts the bounded search east.
+#[reducer]
+pub fn playerbots_recovery_fixture_partial_route(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    super::fixture::playerbots_fixture_partial_route(ctx, character_guid)?;
+    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    use crate::nav::game_nav_chunk;
+    let mut chunks = std::collections::BTreeMap::new();
+    for x in -4..=2 {
+        for y in -4..=4 {
+            if x != 2 && y != -4 && y != 4 {
+                continue;
+            }
+            let (px, py) = (me.x + x as f32, me.y + y as f32);
+            let cx = lyracore_shared::terrain::cell_index(px).ok_or("fixture off grid")?;
+            let cy = lyracore_shared::terrain::cell_index(py).ok_or("fixture off grid")?;
+            let key = lyracore_shared::terrain::cell_key(me.map_id, cx, cy);
+            let chunk = chunks.entry(key).or_insert_with(|| {
+                ctx.db
+                    .game_nav_chunk()
+                    .key()
+                    .find(key)
+                    .unwrap_or(crate::nav::NavChunk {
+                        key,
+                        map_id: me.map_id,
+                        cell_x: cx,
+                        cell_y: cy,
+                        base_z: me.z,
+                        walk: vec![255; lyracore_shared::nav::WALK_BYTES],
+                        obs: vec![lyracore_shared::nav::OBS_NONE; lyracore_shared::nav::OBS_BYTES],
+                    })
+            });
+            let nx = lyracore_shared::nav::sub_index(px, cx, lyracore_shared::nav::WALK_DIM)
+                .ok_or("fixture off grid")?;
+            let ny = lyracore_shared::nav::sub_index(py, cy, lyracore_shared::nav::WALK_DIM)
+                .ok_or("fixture off grid")?;
+            lyracore_shared::nav::walk_set(&mut chunk.walk, nx, ny, false);
+        }
+    }
+    for (key, chunk) in chunks {
+        ctx.db.game_nav_chunk().key().delete(key);
+        ctx.db.game_nav_chunk().insert(chunk);
+    }
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
 #[reducer]
 pub fn playerbots_recovery_fixture_block_companion(
     ctx: &ReducerContext,
@@ -1661,15 +1711,18 @@ pub fn playerbots_quest_fixture_kill(
     crate::helpers::require_operator(ctx)?;
     require_fixture(ctx)?;
     let character = crate::helpers::live_entity(ctx, character_guid)?;
-    let target = match super::quest_loop::live_creature_target(ctx, &character, creature_entry) {
-        super::quest_loop::LiveCreatureTarget::Found(target) => target,
-        super::quest_loop::LiveCreatureTarget::Missing => {
-            return Err("no live target".to_string());
-        }
-        super::quest_loop::LiveCreatureTarget::ReadLimit => {
-            return Err("live target read limit".to_string());
-        }
-    };
+    let target =
+        match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
+            super::quest_loop::LiveCreatureTarget::Found(target) => target,
+            super::quest_loop::LiveCreatureTarget::Missing
+            | super::quest_loop::LiveCreatureTarget::Deferred
+            | super::quest_loop::LiveCreatureTarget::Controlled => {
+                return Err("no live target".to_string());
+            }
+            super::quest_loop::LiveCreatureTarget::ReadLimit => {
+                return Err("live target read limit".to_string());
+            }
+        };
     super::actions::attack(ctx, character_guid, target.guid).map_err(String::from)?;
     let (amount, _) = crate::combat::fold_incoming_damage(ctx, character_guid, target.guid, 10_000);
     let damage = crate::combat::final_damage(ctx, target.guid, amount);
@@ -2338,11 +2391,13 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
     crate::helpers::require_operator(ctx)?;
     require_fixture(ctx)?;
     let character = crate::helpers::live_entity(ctx, character_guid)?;
-    match super::quest_loop::live_creature_target(ctx, &character, creature_entry) {
+    match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
         super::quest_loop::LiveCreatureTarget::Found(_) => {
             Err("live target still present".to_string())
         }
-        super::quest_loop::LiveCreatureTarget::Missing => Ok(()),
+        super::quest_loop::LiveCreatureTarget::Missing
+        | super::quest_loop::LiveCreatureTarget::Deferred
+        | super::quest_loop::LiveCreatureTarget::Controlled => Ok(()),
         super::quest_loop::LiveCreatureTarget::ReadLimit => {
             Err("live target search reached its read limit".to_string())
         }
