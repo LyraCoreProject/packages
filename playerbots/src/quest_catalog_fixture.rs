@@ -239,6 +239,53 @@ fn require_fixture(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
+/// Place the Character beside a real quest target inside blocked seeded navigation. Attack
+/// admission remains available, but the owning melee line-of-sight Gate prevents damage.
+#[reducer]
+pub fn playerbots_recovery_fixture_block_quest_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let target = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(creature_guid(6))
+        .ok_or("quest target missing")?;
+    super::fixture::playerbots_fixture_position(ctx, character_guid, target.x - 3.0)?;
+    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
+    let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
+    use crate::game_nav_chunk;
+    for x in cx.saturating_sub(1)..=cx.saturating_add(1).min(1023) {
+        for y in cy.saturating_sub(1)..=cy.saturating_add(1).min(1023) {
+            let key = lyracore_shared::terrain::cell_key(me.map_id, x, y);
+            ctx.db.game_nav_chunk().key().delete(key);
+            ctx.db.game_nav_chunk().insert(crate::nav::NavChunk {
+                key,
+                map_id: me.map_id,
+                cell_x: x,
+                cell_y: y,
+                base_z: me.z,
+                walk: vec![0; lyracore_shared::nav::WALK_BYTES],
+                obs: vec![20; lyracore_shared::nav::OBS_BYTES],
+            });
+        }
+    }
+    if crate::nav::has_los(
+        ctx,
+        me.map_id,
+        me.instance_id,
+        (me.x, me.y, me.z),
+        (target.x, target.y, target.z),
+    ) {
+        return Err("fixture ray unexpectedly clear".to_string());
+    }
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
 fn quest_offset(quest_entry: u32) -> u64 {
     QUESTS
         .iter()
