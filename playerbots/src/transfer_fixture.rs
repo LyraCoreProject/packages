@@ -11,6 +11,7 @@ const ENTRY_TRIGGER: u32 = 78;
 const EXIT_TRIGGER: u32 = 119;
 const DESTINATION_INSTANCE: u64 = 5_098_078;
 const ENTRY_SOURCE: (f32, f32, f32) = (1208.0, 1200.0, 50.0);
+#[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
 const ENTRY_LANDING: (f32, f32, f32, f32) = (-14.5732, -385.475, 62.4561, 1.5708);
 const EXIT_SOURCE: (f32, f32, f32) = (-14.3628, -393.38, 64.5605);
 const EXIT_LANDING: (f32, f32, f32, f32) = (-11208.7, 1675.9, 24.5733, 4.71239);

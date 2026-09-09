@@ -269,34 +269,39 @@ fn quest_completed(ctx: &ReducerContext, guid: u64, work: QuestWork, after: i64)
     })
 }
 
+pub(super) struct TransferAttemptRestore {
+    pub objective: u64,
+    pub reason: Reason,
+    pub member_guid: Option<u64>,
+    pub stalled_micros: i64,
+    pub approach: u8,
+    pub deferred_micros: i64,
+}
+
 impl Recovery {
     pub(super) fn restore_transfer_attempt(
         &mut self,
-        objective: u64,
-        reason: Reason,
-        member_guid: Option<u64>,
-        stalled_micros: i64,
-        approach: u8,
-        deferred_micros: i64,
+        restore: TransferAttemptRestore,
         now: i64,
     ) -> Option<RestoredTransferAttempt> {
-        let Some(attempt) = self.attempts.iter_mut().find(|attempt| {
-            attempt.objective == objective
-                && attempt.reason == reason
-                && member_guid.is_none_or(|guid| attempt.work == Work::Follow(guid))
-        }) else {
-            return None;
-        };
-        let approach_floor = CHANGE_APPROACH_MICROS.saturating_mul(i64::from(approach.min(2)));
+        let attempt = self.attempts.iter_mut().find(|attempt| {
+            attempt.objective == restore.objective
+                && attempt.reason == restore.reason
+                && restore
+                    .member_guid
+                    .is_none_or(|guid| attempt.work == Work::Follow(guid))
+        })?;
+        let approach_floor =
+            CHANGE_APPROACH_MICROS.saturating_mul(i64::from(restore.approach.min(2)));
         attempt.stalled_micros = attempt
             .stalled_micros
-            .max(stalled_micros.max(approach_floor));
+            .max(restore.stalled_micros.max(approach_floor));
         attempt.last_observed_micros = now;
         attempt.position = None;
         attempt.route = None;
         attempt.last_movement = None;
-        if deferred_micros > 0 {
-            attempt.deferred_until_micros = Some(now.saturating_add(deferred_micros));
+        if restore.deferred_micros > 0 {
+            attempt.deferred_until_micros = Some(now.saturating_add(restore.deferred_micros));
         }
         Some(RestoredTransferAttempt {
             deferred_until_micros: attempt.deferred_until_micros,
