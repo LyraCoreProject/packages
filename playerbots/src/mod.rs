@@ -22,6 +22,7 @@ mod actions;
 mod companion;
 mod decision;
 mod goals;
+mod orders;
 mod provisioning;
 mod quest_catalog;
 mod quest_loop;
@@ -38,6 +39,7 @@ mod quest_catalog_fixture;
 #[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
 pub(crate) use goals::*;
+pub(crate) use orders::*;
 
 use crate::package_config::game_package_config;
 use crate::{game_account, game_character, game_world_entity};

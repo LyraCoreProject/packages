@@ -20,10 +20,12 @@ pub enum RoleReadError {
 }
 
 pub(super) struct Party {
+    pub group_id: u64,
     pub leader_guid: u64,
     pub leader: Option<crate::group::PartyUnitFacts>,
     pub members: Vec<crate::group::PartyMemberFacts>,
     pub enemies: Vec<crate::group::PartyEnemyFacts>,
+    pub fight_constraint: Option<u64>,
 }
 
 impl Party {
@@ -72,10 +74,12 @@ pub(super) fn human_led_party(
         .find(|member| member.character_guid == facts.leader_guid)
         .and_then(|member| member.unit.clone());
     Ok(Some(Party {
+        group_id: facts.group_id,
         leader_guid: facts.leader_guid,
         leader,
         members: facts.members,
         enemies: facts.enemies,
+        fight_constraint: None,
     }))
 }
 
@@ -204,6 +208,9 @@ fn fight_target<'a>(
             && enemy.health > 0
     };
     let enemies: Vec<_> = party.enemies.iter().filter(eligible).collect();
+    if let Some(exact) = party.fight_constraint {
+        return enemies.into_iter().find(|enemy| enemy.guid == exact);
+    }
     if let Some(designated) = party.designated_target() {
         if let Some(enemy) = enemies.iter().find(|enemy| enemy.guid == designated) {
             return Some(*enemy);
@@ -623,10 +630,12 @@ mod tests {
     #[test]
     fn the_most_injured_ally_wins_with_guid_as_the_stable_tie_break() {
         let party = Party {
+            group_id: 1,
             leader_guid: 10,
             leader: None,
             members: vec![member(12, 20, 100), member(11, 10, 50), member(13, 30, 100)],
             enemies: vec![],
+            fight_constraint: None,
         };
         assert_eq!(wounded_ally(&party, (0, 0), 50, None), Some(11));
         assert_eq!(wounded_ally(&party, (0, 0), 50, Some(12)), Some(12));

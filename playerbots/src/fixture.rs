@@ -6,12 +6,12 @@ use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
 use crate::spell::stacking::{game_spell_group, SpellGroup};
 use crate::{
-    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect, game_threat,
-    game_world_entity,
+    game_account, game_character, game_creature_spawn, game_creature_template, game_group,
+    game_quest_objective, game_quest_template,
 };
 use crate::{
-    game_creature_spawn, game_creature_template, game_group, game_quest_objective,
-    game_quest_template,
+    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect, game_threat,
+    game_world_entity,
 };
 use spacetimedb::{reducer, ReducerContext, Table, TimeDuration};
 
@@ -21,6 +21,105 @@ const COMPANION_GROUP: u64 = 5_090_300;
 const ROLES_GROUP: u64 = 5_098_000;
 const ROLES_PRIEST_TRAINER: u32 = 5_098_200;
 const ROLES_FORTITUDE_OFFERING: u64 = 5_098_201;
+
+/// Move the fixture's human stand-in onto its own Account before exercising the authenticated
+/// Gateway Actor Gate. No bot shares this Account.
+#[reducer]
+pub fn playerbots_fixture_orders_account(
+    ctx: &ReducerContext,
+    leader_guid: u64,
+    account_id: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if ctx.db.game_account().id().find(account_id).is_none() {
+        return Err("order fixture account missing".to_string());
+    }
+    let characters = ctx.db.game_character();
+    let mut leader = characters
+        .guid()
+        .find(leader_guid)
+        .ok_or("order fixture leader missing")?;
+    if characters
+        .by_account()
+        .filter(&account_id)
+        .any(|character| character.guid != leader_guid)
+    {
+        return Err("order fixture account is not empty".to_string());
+    }
+    leader.account_id = account_id;
+    characters.guid().update(leader);
+    Ok(())
+}
+
+/// Replace only the private role fixture's Group mirror to model departure or leadership loss.
+#[reducer]
+#[allow(clippy::too_many_arguments)]
+pub fn playerbots_fixture_orders_party(
+    ctx: &ReducerContext,
+    warrior_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    leader_guid: u64,
+    mode: u8,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let (leader, members) = match mode {
+        0 => (
+            leader_guid,
+            vec![leader_guid, warrior_guid, priest_guid, mage_guid],
+        ),
+        1 => (leader_guid, vec![leader_guid, priest_guid, mage_guid]),
+        2 => (
+            mage_guid,
+            vec![leader_guid, warrior_guid, priest_guid, mage_guid],
+        ),
+        _ => return Err("unknown order fixture party mode".to_string()),
+    };
+    crate::group::sync_group_mirror(
+        ctx,
+        ROLES_GROUP,
+        leader,
+        0,
+        2,
+        0,
+        members,
+        crate::SessionActor {
+            guid: leader_guid,
+            ownership: None,
+        },
+    )
+}
+
+/// Deliver one queued command through the production unsharded phases, then either park the
+/// admitted bot or run exactly one normal runner pass before parking it.
+#[reducer]
+pub fn playerbots_fixture_orders_drive(
+    ctx: &ReducerContext,
+    intent_id: u64,
+    claim_token: u64,
+    bot_guid: u64,
+    run_once: bool,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::actor::fixture_command_drive(ctx, intent_id, claim_token)?;
+    let _applied = ctx
+        .db
+        .pkg_playerbots_companion_order()
+        .character_guid()
+        .find(bot_guid)
+        .filter(|state| {
+            state
+                .history
+                .last()
+                .is_some_and(|record| record.intent_id == intent_id)
+        })
+        .ok_or("order fixture command did not apply")?;
+    if run_once {
+        runner_due_for(ctx, bot_guid)?;
+        super::runner::pass(ctx);
+    }
+    runner_park_for(ctx, bot_guid)
+}
 
 #[reducer]
 pub fn playerbots_fixture_prepare(ctx: &ReducerContext) -> Result<(), String> {
