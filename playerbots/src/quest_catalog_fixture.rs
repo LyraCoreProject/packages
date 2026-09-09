@@ -256,6 +256,20 @@ pub fn playerbots_recovery_fixture_block_quest_target(
         .ok_or("quest target missing")?;
     super::fixture::playerbots_fixture_position(ctx, character_guid, target.x - 3.0)?;
     let me = crate::helpers::live_entity(ctx, character_guid)?;
+    block_navigation(ctx, &me)?;
+    if crate::nav::has_los(
+        ctx,
+        me.map_id,
+        me.instance_id,
+        (me.x, me.y, me.z),
+        (target.x, target.y, target.z),
+    ) {
+        return Err("fixture ray unexpectedly clear".to_string());
+    }
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
+fn block_navigation(ctx: &ReducerContext, me: &crate::WorldEntity) -> Result<(), String> {
     let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
     let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
     use crate::nav::game_nav_chunk;
@@ -274,15 +288,18 @@ pub fn playerbots_recovery_fixture_block_quest_target(
             });
         }
     }
-    if crate::nav::has_los(
-        ctx,
-        me.map_id,
-        me.instance_id,
-        (me.x, me.y, me.z),
-        (target.x, target.y, target.z),
-    ) {
-        return Err("fixture ray unexpectedly clear".to_string());
-    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_block_companion(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    block_navigation(ctx, &me)?;
     super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
 }
 

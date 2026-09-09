@@ -18,7 +18,6 @@ use spacetimedb::{reducer, table, ReducerContext, Table};
 pub const BATCH_LIMIT: usize = 16;
 const INTERVAL: i64 = 1_000_000;
 const OBJECTIVE_LIFETIME: i64 = 120_000_000;
-const STALL_INTERVAL: i64 = 10_000_000;
 const DEFER_INTERVAL: i64 = 30_000_000;
 const HISTORY_LIMIT: usize = 8;
 const RECOVERY_SCAN_LIMIT: usize = 24;
@@ -981,6 +980,26 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             return;
         }
     };
+    if bot.controller == Controller::Cohort {
+        let mut recovery = state.recovery.take().unwrap_or_default();
+        let deferred = recovery.observe(ctx, &me, &mut state, now);
+        state.recovery = Some(recovery);
+        if let Some(deferred) = deferred {
+            stop(ctx, me.guid, &mut state);
+            state.failure(Failure::NoMovement, now);
+            state
+                .deferred_destinations
+                .retain(|old| old.destination != deferred.destination);
+            bounded_push(
+                &mut state.deferred_destinations,
+                DeferredDestination {
+                    destination: deferred.destination,
+                    until_micros: deferred.until_micros,
+                },
+                FAILURE_LIMIT,
+            );
+        }
+    }
     let prior_objective = state.objective_sequence;
     let quest_read_limited = objective(ctx, bot, &me, party.as_ref(), &mut state, now);
     if bot.controller == Controller::Cohort {
@@ -1318,7 +1337,12 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     state.companion_heal_target_guid = companion_heal_target;
     state.companion_fight_target_guid = companion_fight_target;
     state.companion_buff_target_guid = companion_buff_target;
-    let decision = decision::choose(&facts, &strategies, decision::LIMITS);
+    let decision = decision::choose(&facts, &strategies, decision::LIMITS, |purpose| {
+        state
+            .recovery
+            .as_ref()
+            .is_none_or(|recovery| recovery.eligible(purpose))
+    });
     state.candidate_order = decision.order;
     state.transitions = decision.transitions as u32;
     state.route_expansions = 0;
@@ -1333,43 +1357,18 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     }
-    if quest_objective {
-        if let Some(candidate) = chosen {
-            let mut recovery = state.recovery.take().unwrap_or_default();
-            let selection = recovery.select(ctx, &me, &state, candidate, now);
-            state.recovery = Some(recovery);
-            match selection {
-                super::recovery::Selection::Candidate(adjusted) => {
-                    if let Some(proposed) = state
-                        .candidate_order
-                        .iter_mut()
-                        .find(|proposed| proposed.id == candidate.id)
-                    {
-                        *proposed = adjusted;
-                    }
-                    chosen = Some(adjusted);
-                }
-                super::recovery::Selection::Deferred { until_micros } => {
-                    stop(ctx, me.guid, &mut state);
-                    if !state.deferred_destinations.iter().any(|deferred| {
-                        deferred.destination == destination && deferred.until_micros == until_micros
-                    }) {
-                        state.failure(Failure::NoMovement, now);
-                    }
-                    defer_until(&mut state, until_micros);
-                    state.chosen = Some(Candidate {
-                        id: decision::CandidateId {
-                            action: Action::Hold,
-                            ..candidate.id
-                        },
-                        ..candidate
-                    });
-                    state.candidate_order = state.chosen.into_iter().collect();
-                    state.save(ctx);
-                    return;
-                }
-            }
+    if let (Some(candidate), Some(purpose)) = (chosen, decision.purpose) {
+        let mut recovery = state.recovery.take().unwrap_or_default();
+        let adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
+        state.recovery = Some(recovery);
+        if let Some(proposed) = state
+            .candidate_order
+            .iter_mut()
+            .find(|proposed| proposed.id == purpose.id)
+        {
+            *proposed = adjusted;
         }
+        chosen = Some(adjusted);
     }
     let party_holds_control = party
         .as_ref()
@@ -1405,7 +1404,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         .objective
         .as_ref()
         .filter(|o| {
-            o.kind != ObjectiveKind::Companion
+            o.kind == ObjectiveKind::ReturnHome
                 && o.stage == ObjectiveStage::Travelling
                 && now >= o.deadline_micros
         })
@@ -1537,6 +1536,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 return;
             }
         }
+    }
+    if let Some(recovery) = &mut state.recovery {
+        recovery.activate(decision.purpose, now);
     }
     state.chosen = chosen;
     if let (Some(reason), Some(candidate)) =
@@ -1677,26 +1679,6 @@ fn execute(
             };
             if candidate.id.reason == Reason::Survival {
                 let _ = crate::actor::stop_attack(ctx, me.guid);
-            }
-            if state
-                .objective
-                .as_ref()
-                .is_none_or(|objective| objective.kind != ObjectiveKind::Quest)
-                && now.saturating_sub(state.last_stall_check_micros) >= STALL_INTERVAL
-            {
-                state.failure(Failure::NoMovement, now);
-                state.last_stall_check_micros = now;
-                if state.retry_count >= 3 {
-                    stop(ctx, me.guid, state);
-                    if state
-                        .objective
-                        .as_ref()
-                        .is_some_and(|objective| objective.kind != ObjectiveKind::Companion)
-                    {
-                        defer(state, now);
-                    }
-                    return;
-                }
             }
             super::goals::walk_toward(
                 ctx,
