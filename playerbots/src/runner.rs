@@ -1133,37 +1133,37 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 state.companion_fight_target_guid,
                 state.companion_buff_target_guid,
             );
-            let selection = match selection {
-                Ok(selection) => selection,
+            match selection {
+                Ok(selection) => {
+                    if let Some(unavailable) = selection.read_failure {
+                        spacetimedb::log::error!(
+                            "role facts unavailable for member {}: {:?}",
+                            me.guid,
+                            unavailable
+                        );
+                        state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                    }
+                    companion_heal_target = selection.heal_target;
+                    companion_fight_target = selection.fight_target;
+                    companion_buff_target = selection.buff_target;
+                    strategies.push(selection.strategy);
+                }
                 Err(unavailable) => {
                     spacetimedb::log::error!(
                         "role facts unavailable for member {}: {:?}",
                         me.guid,
                         unavailable
                     );
-                    if bot.controller == Controller::Cohort {
-                        stop(ctx, me.guid, &mut state);
-                    }
-                    state.companion_heal_target_guid = None;
-                    state.companion_fight_target_guid = None;
-                    state.companion_buff_target_guid = None;
-                    state.chosen = Some(Candidate {
-                        id: decision::CandidateId {
-                            action: Action::Hold,
-                            reason: Reason::RoleUnavailable,
-                            objective: state.objective_sequence,
-                        },
-                        priority: 1000,
-                    });
+                    companion_heal_target = None;
+                    companion_fight_target = None;
+                    companion_buff_target = None;
                     state.failure(Failure::RoleFactsUnavailable(unavailable), now);
-                    state.save(ctx);
-                    return;
+                    strategies.push(strategy(
+                        Trigger::Always,
+                        node(Action::Hold, Reason::RoleUnavailable, 750),
+                    ));
                 }
-            };
-            companion_heal_target = selection.heal_target;
-            companion_fight_target = selection.fight_target;
-            companion_buff_target = selection.buff_target;
-            strategies.push(selection.strategy);
+            }
         } else {
             companion_heal_target = None;
             companion_fight_target = None;

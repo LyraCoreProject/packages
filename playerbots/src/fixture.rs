@@ -401,7 +401,7 @@ pub fn playerbots_fixture_roles_move(
     companion_unit(ctx, guid, x, y, 100)
 }
 
-/// Narrow Taunt's curated header for the short-range movement repair probe.
+/// Narrow Taunt's curated header for the short-range movement repair verification.
 #[reducer]
 pub fn playerbots_fixture_roles_short_taunt(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
@@ -623,7 +623,7 @@ pub fn playerbots_fixture_roles_despawn(
     Ok(())
 }
 
-/// Apply one of the core's seeded control probes through the real aura pipeline.
+/// Apply one of the core's seeded control verification spells through the real aura pipeline.
 #[reducer]
 pub fn playerbots_fixture_roles_control(
     ctx: &ReducerContext,
@@ -639,8 +639,8 @@ pub fn playerbots_fixture_roles_control(
     crate::spell::cast_triggered(ctx, caster_guid, spell_id, caster.level as u8, target_guid)
 }
 
-/// Begin a real cast bar for the seeded control probe. This catches the interval before the aura
-/// lands, when damage assistance would break the incoming control.
+/// Begin a real cast bar for the seeded control verification. This catches the interval before the
+/// aura lands, when damage assistance would break the incoming control.
 #[reducer]
 pub fn playerbots_fixture_roles_begin_control(
     ctx: &ReducerContext,
@@ -918,8 +918,7 @@ pub fn playerbots_fixture_companion_client_cast(
     caster_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::gw::gw_cast_at(
-        // package-api: exempt fixture proves client and bot cast Gate parity
+    crate::gw::gw_cast_at( // package-api: exempt fixture proves client and bot cast Gate parity
         ctx,
         crate::SessionActor {
             guid: caster_guid,

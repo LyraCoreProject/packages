@@ -461,6 +461,7 @@ pub(super) struct CompanionSelection {
     pub heal_target: Option<u64>,
     pub fight_target: Option<u64>,
     pub buff_target: Option<u64>,
+    pub read_failure: Option<RoleReadError>,
 }
 
 fn healing(
@@ -549,14 +550,21 @@ pub(super) fn strategy(
     } else if !party.enemies.is_empty() {
         candidates.push(node(Action::Hold, Reason::CrowdControl, 750, objective));
     }
-    let maintenance = if party.enemies.is_empty() {
-        maintenance(ctx, bot, me, party, objective, retained_buff_target)?
+    let (maintenance, read_failure) = if party.enemies.is_empty() {
+        match maintenance(ctx, bot, me, party, objective, retained_buff_target) {
+            Ok(maintenance) => (maintenance, None),
+            Err(RoleReadError::RotationLimit) => return Err(RoleReadError::RotationLimit),
+            Err(unavailable) => (None, Some(unavailable)),
+        }
     } else {
-        None
+        (None, None)
     };
     let buff_target = maintenance.as_ref().map(|(_, target)| *target);
     if let Some((buff, _)) = maintenance {
         candidates.push(buff);
+    }
+    if read_failure.is_some() {
+        candidates.push(node(Action::Hold, Reason::RoleUnavailable, 750, objective));
     }
     candidates.push(follow);
     Ok(CompanionSelection {
@@ -569,6 +577,7 @@ pub(super) fn strategy(
         heal_target,
         fight_target: fight_target.map(|target| target.guid),
         buff_target,
+        read_failure,
     })
 }
 

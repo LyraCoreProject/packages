@@ -32,10 +32,16 @@
       "power": 100,
       "source": "synthetic private resource Gate fixture"
     },
-    "starter_role_tank_range_probe": {
+    "starter_role_tank_range_verification": {
       "spell_id": 355,
       "range_yd": 8,
       "source": "synthetic private short-range movement repair fixture"
+    },
+    "starter_role_buff_los_verification": {
+      "wall_x": 1205,
+      "caster": [1200, 1200],
+      "target": [1210, 1200],
+      "source": "synthetic private navigation obstruction fixture"
     },
     "starter_role_read_limits": {
       "rotation_rows": 12,
