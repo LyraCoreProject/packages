@@ -316,7 +316,7 @@ fn fight(
                     spell: row.spell_id,
                 },
                 Reason::TankFight,
-                Reason::FightPosition,
+                Reason::MeleePosition,
                 700,
                 objective,
             );

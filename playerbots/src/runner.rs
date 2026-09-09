@@ -1156,14 +1156,6 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     state.companion_heal_target_guid = companion_heal_target;
     state.companion_fight_target_guid = companion_fight_target;
     state.companion_buff_target_guid = companion_buff_target;
-    let party_holds_control = party
-        .as_ref()
-        .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
-    if party_holds_control
-        || (previous_fight_target.is_some() && previous_fight_target != companion_fight_target)
-    {
-        let _ = crate::actor::stop_attack(ctx, me.guid);
-    }
     let decision = decision::choose(&facts, &strategies, decision::LIMITS);
     state.candidate_order = decision.order;
     state.transitions = decision.transitions as u32;
@@ -1175,6 +1167,14 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.last_outcome = RunnerOutcome::Recorded;
         state.save(ctx);
         return;
+    }
+    let party_holds_control = party
+        .as_ref()
+        .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
+    if party_holds_control
+        || (previous_fight_target.is_some() && previous_fight_target != companion_fight_target)
+    {
+        let _ = crate::actor::stop_attack(ctx, me.guid);
     }
     if let Some(deadline) = state
         .objective
@@ -1227,6 +1227,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             } => state.companion_fight_target_guid != Some(target),
             decision::CandidateId {
                 action: Action::Move(MoveTarget::Entity(target)),
+                reason: Reason::MeleePosition,
+                ..
+            } => state.companion_fight_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::CastingPosition(target)),
                 reason: Reason::MeleePosition,
                 ..
             } => state.companion_fight_target_guid != Some(target),

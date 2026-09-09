@@ -377,6 +377,7 @@ fn config_parsed<T: std::str::FromStr>(ctx: &ReducerContext, key: &str, fallback
 /// Operator's edited value survives a republish. Existing class/role rows change only when both
 /// tables exactly match the preceding shipped catalogue; any Operator edit keeps the tables intact.
 pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
+    crate::seed::reconcile_curated_starter_role_levels(ctx);
     for (key, value) in CONFIG_DEFAULTS {
         crate::package_config::ensure_package_config_default(ctx, PACKAGE, key, value);
     }

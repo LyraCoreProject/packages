@@ -464,13 +464,15 @@ member identity across movement legs even if another member becomes more injured
 remains visible as a CastingPosition wait. A completed, cancelled, or refused cast releases the
 foreground action so the next pass can heal again or resume follow.
 
-Starter roles keep their stored role across every companion objective. The private companion
-fixture supports level 5. At that level, its normal Character creation and spell provisioning give
-the Warrior Heroic Strike 78 and Battle Stance 2457, the Priest Smite 585 and Lesser Heal 2050, and
-the Mage Fireball 133 and Frost Armor 168. The Warrior tanks through accepted melee when Taunt 355
-or Sunder Armor 7386 is not learned or lacks a usable spell definition. The Priest heals a wounded
-member before it uses Smite. The Mage uses Fireball from casting range and never receives a melee
-fallback from its damage role.
+Starter roles keep their stored role across every companion objective. The private role fixture
+validates levels 5 and 10 against source-derived classic training levels. At level 5, normal
+Character creation and provisioning give the Warrior Heroic Strike 78 and Battle Stance 2457, the
+Priest Smite 585 and Lesser Heal 2050, and the Mage Fireball 133 and Frost Armor 168. Taunt 355 and
+Renew 139 remain unavailable until levels 10 and 8. At level 10, seed-only demo provisioning admits
+both and the role cases exercise them. Imported Shards still require real trainer offerings. The
+Warrior tanks through accepted melee when Taunt or Sunder Armor 7386 is not learned or lacks a usable
+spell definition. The Priest heals a wounded member before it uses Smite. The Mage uses Fireball
+from casting range and never receives a melee fallback from its damage role.
 
 A leader's selected target affects a companion only after current melee, casting, or active threat
 shows that the party is already fighting it. The selected engaged target wins over retained and

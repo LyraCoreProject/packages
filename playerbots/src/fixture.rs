@@ -4,7 +4,10 @@
 use super::{pkg_playerbots_bot, pkg_playerbots_kit, PlayerbotsBot};
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
-use crate::{game_aura, game_creature_spline, game_spell, game_spell_effect, game_world_entity};
+use crate::{
+    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect,
+    game_world_entity,
+};
 use crate::{
     game_creature_spawn, game_creature_template, game_group, game_quest_objective,
     game_quest_template,
@@ -388,6 +391,17 @@ pub fn playerbots_fixture_roles_select(
 }
 
 #[reducer]
+pub fn playerbots_fixture_roles_move(
+    ctx: &ReducerContext,
+    guid: u64,
+    x: f32,
+    y: f32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    companion_unit(ctx, guid, x, y, 100)
+}
+
+#[reducer]
 pub fn playerbots_fixture_roles_engage(
     ctx: &ReducerContext,
     leader_guid: u64,
@@ -409,6 +423,42 @@ pub fn playerbots_fixture_roles_enemy_engage(
     crate::combat::request_attack(ctx, enemy_guid, target_guid)
         .map(|_| ())
         .map_err(|refusal| format!("enemy attack refused: {refusal:?}"))
+}
+
+/// Arm a fixed attack row and run one RecordOnly pass atomically, before combat ticks can advance it.
+#[reducer]
+pub fn playerbots_fixture_roles_record_only_attack(
+    ctx: &ReducerContext,
+    guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if bot.controller != super::Controller::RecordOnly {
+        return Err("role fixture requires RecordOnly controller".to_string());
+    }
+    let melee = ctx.db.game_melee_attack();
+    melee.attacker_guid().delete(guid);
+    melee.insert(crate::combat::MeleeAttack {
+        attacker_guid: guid,
+        target_guid,
+        last_swing_ms: 4_242,
+        ranged_spell_id: 0,
+        last_offhand_swing_ms: 2_121,
+        rout_ends_ms: 0,
+        pursuit_ends_ms: 0,
+        leash_x: 0.0,
+        leash_y: 0.0,
+    });
+    runner_due_for(ctx, guid)?;
+    super::runner::pass(ctx);
+    runner_park_for(ctx, guid)
 }
 
 #[reducer]

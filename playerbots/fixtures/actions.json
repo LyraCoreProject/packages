@@ -11,7 +11,23 @@
     "creature_source_entry": 51000,
     "companion_unrelated_creature_entry": 5090302,
     "starter_role_creature_entries": [5098001, 5098002, 5098003],
-    "starter_role_level": 5,
+    "starter_role_levels": [5, 10],
+    "starter_role_training_level_reference": {
+      "source": "local classic-db-full.sql",
+      "sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+      "use": "source-derived level facts only; not imported World Shard evidence",
+      "spells": {
+        "133": 1,
+        "139": 8,
+        "168": 1,
+        "355": 10,
+        "585": 1,
+        "1243": 1,
+        "2050": 1,
+        "6673": 1,
+        "7386": 10
+      }
+    },
     "starter_role_priest_mana": {
       "power": 100,
       "source": "synthetic private resource Gate fixture"
