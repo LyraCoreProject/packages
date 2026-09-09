@@ -10,6 +10,62 @@
     "heal_target": "named ally, with explicit self still admitted",
     "creature_source_entry": 51000,
     "companion_unrelated_creature_entry": 5090302,
+    "starter_role_creature_entries": [5098001, 5098002, 5098003],
+    "starter_role_levels": [5, 10],
+    "starter_role_training_level_reference": {
+      "source": "local classic-db-full.sql",
+      "sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+      "use": "source-derived level facts only; not imported World Shard evidence",
+      "spells": {
+        "133": 1,
+        "139": 8,
+        "168": 1,
+        "355": 10,
+        "585": 1,
+        "1243": 1,
+        "2050": 1,
+        "6673": 1,
+        "7386": 10
+      }
+    },
+    "starter_role_priest_mana": {
+      "power": 100,
+      "source": "synthetic private resource Gate fixture"
+    },
+    "starter_role_tank_range_verification": {
+      "spell_id": 355,
+      "range_yd": 8,
+      "source": "synthetic private short-range movement repair fixture"
+    },
+    "starter_role_buff_los_verification": {
+      "wall_x": 1205,
+      "caster": [1200, 1200],
+      "target": [1210, 1200],
+      "source": "synthetic private navigation obstruction fixture"
+    },
+    "starter_role_read_limits": {
+      "rotation_rows": 12,
+      "target_auras": 64,
+      "buff_family_rows": 64,
+      "party_enemy_guids": 24
+    },
+    "starter_role_cancel_renew": {
+      "spell": 139,
+      "purpose": "isolate the Lesser Heal cost and direct-heal lifecycle"
+    },
+    "starter_role_control_spells": [50020, 50021, 50022, 50023],
+    "starter_role_fortitude_trainer": {
+      "trainer_entry": 5098200,
+      "offering_id": 5098201,
+      "spell": 1243,
+      "required_level": 1,
+      "source": "private source-derived trainer row"
+    },
+    "starter_role_capabilities": {
+      "warrior": [78, 2457],
+      "priest": [585, 2050],
+      "mage": [133, 168]
+    },
     "item_source": "first starter item held by the seeded role-1 bot"
   },
   "imported_content": null,

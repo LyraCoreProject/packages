@@ -463,6 +463,30 @@ healing rotation spell. Range or line of sight becomes a movement prerequisite t
 member identity across movement legs even if another member becomes more injured. A blocked route
 remains visible as a CastingPosition wait. A completed, cancelled, or refused cast releases the
 foreground action so the next pass can heal again or resume follow.
+
+Starter roles keep their stored role across every companion objective. The private role fixture
+validates levels 5 and 10 against source-derived classic training levels. At level 5, normal
+Character creation and provisioning give the Warrior Heroic Strike 78 and Battle Stance 2457, the
+Priest Smite 585 and Lesser Heal 2050, and the Mage Fireball 133 and Frost Armor 168. Taunt 355 and
+Renew 139 remain unavailable until levels 10 and 8. At level 10, seed-only demo provisioning admits
+both and the role cases exercise them. Imported Shards still require real trainer offerings. The
+Warrior tanks through accepted melee when Taunt or Sunder Armor 7386 is not learned or lacks a usable
+spell definition. The Priest heals a wounded member before it uses Smite. The Mage uses Fireball
+from casting range and never receives a melee fallback from its damage role.
+
+A leader's selected target affects a companion only after current melee, casting, or active threat
+shows that the party is already fighting it. The selected engaged target wins over retained and
+fallback targets. A retained target survives later decisions until it dies, disappears, or becomes
+controlled. Stun, polymorph, fear, and root all exclude an enemy from damage selection. A pending
+party control cast excludes it before the aura lands. The runner stops its own cast, movement, and
+melee when a control hold preempts the fight.
+
+Between fights, rotation rows can name a self or party buff. The same core cast Gate checks the
+spellbook, level, resource, range, and line of sight before the action runs. Missing range or line of
+sight retains the buff target while the bot repairs its position. Active exact auras and equally
+strong or stronger members of an exclusive buff family satisfy the row, so the bot does not refresh
+them. Oversized or ambiguous aura, family, threat, enemy, pending-cast, and rotation reads hold and
+record their typed Party or role read failure instead of choosing from a partial scan.
 An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
 control. A membership whose parent Group is unavailable holds the existing objective and records the
 typed failure. The existing Legacy policy remains available under its explicit selector.

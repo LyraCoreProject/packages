@@ -77,6 +77,8 @@ pub enum Failure {
     CastRefused(crate::spell::CastRefusalKind),
     Decision(DecisionRefusal),
     PartyFactsUnavailable,
+    PartyReadUnavailable(crate::group::PartyFactsUnavailableReason),
+    RoleFactsUnavailable(super::companion::RoleReadError),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -200,6 +202,13 @@ pub struct PlayerbotsRunner {
     /// The injured party member retained from CastingPosition movement through cast completion.
     #[default(None::<u64>)]
     pub companion_heal_target_guid: Option<u64>,
+    /// The engaged enemy retained until it dies, disappears, becomes controlled, or the leader
+    /// designates another engaged enemy.
+    #[default(None::<u64>)]
+    pub companion_fight_target_guid: Option<u64>,
+    /// The party member retained while a between-fight buff repairs its casting position.
+    #[default(None::<u64>)]
+    pub companion_buff_target_guid: Option<u64>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -379,6 +388,8 @@ impl PlayerbotsRunner {
             route_budget: 0,
             companion_leader_guid: None,
             companion_heal_target_guid: None,
+            companion_fight_target_guid: None,
+            companion_buff_target_guid: None,
         }
     }
 
@@ -563,12 +574,13 @@ pub fn playerbots_select_controller(
 
 fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
     if let Some(foreground) = state.foreground.take() {
-        if matches!(
-            &foreground.running,
-            Running::Cast(handle)
-                if state.companion_heal_target_guid == Some(handle.target_guid)
-        ) {
-            state.companion_heal_target_guid = None;
+        if let Running::Cast(handle) = &foreground.running {
+            if state.companion_heal_target_guid == Some(handle.target_guid) {
+                state.companion_heal_target_guid = None;
+            }
+            if state.companion_buff_target_guid == Some(handle.target_guid) {
+                state.companion_buff_target_guid = None;
+            }
         }
         bounded_push(
             &mut state.history,
@@ -674,6 +686,8 @@ fn objective(
             super::quest_catalog::retain(ctx, bot.character_guid, identity, admission);
             state.companion_leader_guid = None;
             state.companion_heal_target_guid = None;
+            state.companion_fight_target_guid = None;
+            state.companion_buff_target_guid = None;
             state.retry_count = 0;
             state.last_stall_check_micros = now;
         }
@@ -751,6 +765,8 @@ fn objective(
             });
             state.companion_leader_guid = leader_guid;
             state.companion_heal_target_guid = None;
+            state.companion_fight_target_guid = None;
+            state.companion_buff_target_guid = None;
             state.retry_count = 0;
             state.last_stall_check_micros = now;
         } else if kind == ObjectiveKind::Companion {
@@ -923,9 +939,10 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         Ok(party) => party,
         Err(unavailable) => {
             spacetimedb::log::error!(
-                "party facts unavailable: member {} points to missing group {}",
+                "party facts unavailable for member {} in group {}: {:?}",
                 me.guid,
-                unavailable.group_id
+                unavailable.group_id,
+                unavailable.reason
             );
             if bot.controller == Controller::Cohort {
                 stop(ctx, me.guid, &mut state);
@@ -938,7 +955,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 },
                 priority: 1000,
             });
-            state.failure(Failure::PartyFactsUnavailable, now);
+            state.failure(Failure::PartyReadUnavailable(unavailable.reason), now);
             state.save(ctx);
             return;
         }
@@ -1002,9 +1019,10 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         attacked: threat.is_some(),
         away: !at_destination,
     };
+    let objective_sequence = state.objective_sequence;
     let node = |action, reason, priority| {
         let mut node = ActionNode::ready(action, reason, priority);
-        node.candidate.id.objective = state.objective_sequence;
+        node.candidate.id.objective = objective_sequence;
         node
     };
     let mut travel_action = node(Action::Move(MoveTarget::Home), Reason::ReturnHome, 100);
@@ -1073,9 +1091,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             .alternatives
             .push(node(Action::Hold, Reason::Survival, 900));
     }
+    let retry_candidate = state.retry_candidate;
+    let next_eligible_micros = state.next_eligible_micros;
     let strategy = |trigger, mut n: ActionNode| {
-        if state.retry_candidate == Some(n.candidate.id) && state.next_eligible_micros > now {
-            n.readiness = Readiness::NotBefore(state.next_eligible_micros);
+        if retry_candidate == Some(n.candidate.id) && next_eligible_micros > now {
+            n.readiness = Readiness::NotBefore(next_eligible_micros);
         }
         Strategy {
             trigger,
@@ -1089,6 +1109,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         node(Action::Hold, Reason::Restricted, 1000),
     )];
     let mut companion_heal_target = state.companion_heal_target_guid;
+    let previous_fight_target = state.companion_fight_target_guid;
+    let mut companion_fight_target = previous_fight_target;
+    let mut companion_buff_target = state.companion_buff_target_guid;
     if me.dead {
         strategies.push(strategy(
             Trigger::Always,
@@ -1106,15 +1129,47 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 bot,
                 &me,
                 party,
-                spell,
                 !low_health || at_destination,
                 state.objective_sequence,
                 state.companion_heal_target_guid,
+                state.companion_fight_target_guid,
+                state.companion_buff_target_guid,
             );
-            companion_heal_target = selection.heal_target;
-            strategies.push(selection.strategy);
+            match selection {
+                Ok(selection) => {
+                    if let Some(unavailable) = selection.read_failure {
+                        spacetimedb::log::error!(
+                            "role facts unavailable for member {}: {:?}",
+                            me.guid,
+                            unavailable
+                        );
+                        state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                    }
+                    companion_heal_target = selection.heal_target;
+                    companion_fight_target = selection.fight_target;
+                    companion_buff_target = selection.buff_target;
+                    strategies.push(selection.strategy);
+                }
+                Err(unavailable) => {
+                    spacetimedb::log::error!(
+                        "role facts unavailable for member {}: {:?}",
+                        me.guid,
+                        unavailable
+                    );
+                    companion_heal_target = None;
+                    companion_fight_target = None;
+                    companion_buff_target = None;
+                    state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                    strategies.push(strategy(
+                        Trigger::Always,
+                        node(Action::Hold, Reason::RoleUnavailable, 750),
+                    ));
+                }
+            }
         } else {
             companion_heal_target = None;
+            companion_fight_target = None;
+            companion_buff_target = None;
             if quest_objective || quest_wait.is_some_and(|until| until > now) {
                 strategies.push(strategy(
                     Trigger::Always,
@@ -1130,6 +1185,8 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         node(Action::Hold, Reason::Idle, 0),
     ));
     state.companion_heal_target_guid = companion_heal_target;
+    state.companion_fight_target_guid = companion_fight_target;
+    state.companion_buff_target_guid = companion_buff_target;
     let decision = decision::choose(&facts, &strategies, decision::LIMITS);
     state.candidate_order = decision.order;
     state.transitions = decision.transitions as u32;
@@ -1141,6 +1198,14 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.last_outcome = RunnerOutcome::Recorded;
         state.save(ctx);
         return;
+    }
+    let party_holds_control = party
+        .as_ref()
+        .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
+    if party_holds_control
+        || (previous_fight_target.is_some() && previous_fight_target != companion_fight_target)
+    {
+        let _ = crate::actor::stop_attack(ctx, me.guid);
     }
     if let Some(deadline) = state
         .objective
@@ -1176,11 +1241,53 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     }
     if let Some(fg) = &state.foreground {
         let incompatible = chosen.is_some_and(|c| c.id != fg.candidate.id);
-        let casting_target_invalid = matches!(
-            fg.candidate.id.action,
-            Action::Move(MoveTarget::CastingPosition(target))
-                if state.companion_heal_target_guid != Some(target)
-        );
+        let casting_target_invalid = match fg.candidate.id {
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::CastingPosition(target)),
+                reason: Reason::CastingPosition,
+                ..
+            } => {
+                state.companion_heal_target_guid != Some(target)
+                    && state.companion_fight_target_guid != Some(target)
+                    && state.companion_buff_target_guid != Some(target)
+            }
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::CastingPosition(target)),
+                reason: Reason::FightPosition,
+                ..
+            } => state.companion_fight_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::Entity(target)),
+                reason: Reason::MeleePosition,
+                ..
+            } => state.companion_fight_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::CastingPosition(target)),
+                reason: Reason::MeleePosition,
+                ..
+            } => state.companion_fight_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::CastingPosition(target)),
+                reason: Reason::BuffPosition,
+                ..
+            } => state.companion_buff_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Cast(CastAction { target, .. }),
+                reason: Reason::Heal,
+                ..
+            } => state.companion_heal_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Cast(CastAction { target, .. }),
+                reason: Reason::TankFight | Reason::DamageFight,
+                ..
+            } => state.companion_fight_target_guid != Some(target),
+            decision::CandidateId {
+                action: Action::Cast(CastAction { target, .. }),
+                reason: Reason::Buff,
+                ..
+            } => state.companion_buff_target_guid != Some(target),
+            _ => false,
+        };
         let preempts =
             casting_target_invalid || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
         if incompatible && preempts {
@@ -1254,8 +1361,10 @@ fn execute(
 ) {
     match candidate.id.action {
         Action::Hold => {
-            if candidate.id.reason == Reason::Restricted || candidate.id.reason == Reason::Survival
-            {
+            if matches!(
+                candidate.id.reason,
+                Reason::Restricted | Reason::Survival | Reason::CrowdControl
+            ) {
                 stop(ctx, me.guid, state);
             }
             if candidate.id.reason == Reason::ReturnHome
@@ -1334,7 +1443,13 @@ fn execute(
                 ctx,
                 me,
                 (dest.x, dest.y, dest.z),
-                if target == MoveTarget::Home { 2.0 } else { 3.0 },
+                if target == MoveTarget::Home {
+                    2.0
+                } else if candidate.id.reason == Reason::FightPosition {
+                    25.0
+                } else {
+                    3.0
+                },
                 true,
             );
             state.route_expansions =
@@ -1395,12 +1510,18 @@ fn execute(
                     if state.companion_heal_target_guid == Some(target) {
                         state.companion_heal_target_guid = None;
                     }
+                    if state.companion_buff_target_guid == Some(target) {
+                        state.companion_buff_target_guid = None;
+                    }
                     state.retry_candidate = None;
                 }
                 Err(reason) => {
                     state.failure(Failure::CastRefused(reason.kind), now);
                     if state.companion_heal_target_guid == Some(target) {
                         state.companion_heal_target_guid = None;
+                    }
+                    if state.companion_buff_target_guid == Some(target) {
+                        state.companion_buff_target_guid = None;
                     }
                     state.retry_candidate = Some(candidate.id);
                     state.next_eligible_micros = now.saturating_add(if state.retry_count >= 3 {
@@ -1458,6 +1579,9 @@ crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payl
     state.foreground = None;
     if state.companion_heal_target_guid == Some(payload.target_guid) {
         state.companion_heal_target_guid = None;
+    }
+    if state.companion_buff_target_guid == Some(payload.target_guid) {
+        state.companion_buff_target_guid = None;
     }
     state.last_stall_check_micros = now;
     state.last_outcome = RunnerOutcome::CastFinished(payload.outcome.clone());

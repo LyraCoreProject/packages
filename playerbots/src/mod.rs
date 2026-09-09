@@ -374,17 +374,122 @@ fn config_parsed<T: std::str::FromStr>(ctx: &ReducerContext, key: &str, fallback
 /// its tick runs.
 ///
 /// Idempotent twice over. The Config seeding helper only inserts when the row is absent, so an
-/// Operator's edited value survives a republish. The data seeding is skipped entirely once any kit
-/// row exists, so the common case costs one count.
+/// Operator's edited value survives a republish. Existing class/role rows change only when both
+/// tables exactly match the preceding shipped catalogue; any Operator edit keeps the tables intact.
 pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
+    crate::actor::reconcile_starter_role_spell_levels(ctx);
     for (key, value) in CONFIG_DEFAULTS {
         crate::package_config::ensure_package_config_default(ctx, PACKAGE, key, value);
     }
     quest_catalog::ensure_catalog(ctx);
-    if ctx.db.pkg_playerbots_kit().count() > 0 {
+    if ctx.db.pkg_playerbots_kit().count() > 0 || ctx.db.pkg_playerbots_rotation().count() > 0 {
+        upgrade_starter_role_defaults(ctx);
         return;
     }
     seed_class_role_data(ctx);
+}
+
+type RotationSeed = (u8, u8, u8, u32, u8, u8);
+
+const STARTER_ROLE_ROTATIONS: &[RotationSeed] = &[
+    (
+        class::WARRIOR,
+        ROLE_TANK,
+        20,
+        6673,
+        cond::SELF_MISSING_AURA,
+        0,
+    ),
+    (class::PRIEST, ROLE_HEALER, 10, 585, cond::ALWAYS, 0),
+    (
+        class::PRIEST,
+        ROLE_HEALER,
+        20,
+        1243,
+        cond::ALLY_MISSING_AURA,
+        0,
+    ),
+    (class::MAGE, ROLE_DPS, 20, 168, cond::SELF_MISSING_AURA, 0),
+];
+
+fn is_starter_role_rotation(row: &RotationSeed) -> bool {
+    STARTER_ROLE_ROTATIONS.contains(row)
+}
+
+fn kit_for(rotations: impl IntoIterator<Item = RotationSeed>) -> Vec<(u8, u8, u32)> {
+    let mut kit = Vec::new();
+    for (class, role, _, spell_id, _, _) in rotations {
+        if !kit.contains(&(class, role, spell_id)) {
+            kit.push((class, role, spell_id));
+        }
+    }
+    kit
+}
+
+/// Add PB-004 rows only when both Operator-tunable tables still equal the preceding shipped
+/// catalogue. Any customization makes the snapshot unequal and remains authoritative.
+fn upgrade_starter_role_defaults(ctx: &ReducerContext) {
+    let mut expected_rotations: Vec<_> = DEFAULT_ROTATIONS
+        .iter()
+        .copied()
+        .filter(|row| !is_starter_role_rotation(row))
+        .collect();
+    let mut stored_rotations: Vec<_> = ctx
+        .db
+        .pkg_playerbots_rotation()
+        .iter()
+        .take(expected_rotations.len() + 1)
+        .map(|row| {
+            (
+                row.class,
+                row.role,
+                row.priority,
+                row.spell_id,
+                row.condition,
+                row.threshold_pct,
+            )
+        })
+        .collect();
+    if stored_rotations.len() != expected_rotations.len() {
+        return;
+    }
+    let mut expected_kit = kit_for(expected_rotations.iter().copied());
+    let mut stored_kit: Vec<_> = ctx
+        .db
+        .pkg_playerbots_kit()
+        .iter()
+        .take(expected_kit.len() + 1)
+        .map(|row| (row.class, row.role, row.spell_id))
+        .collect();
+    if stored_kit.len() != expected_kit.len() {
+        return;
+    }
+    expected_rotations.sort_unstable();
+    stored_rotations.sort_unstable();
+    expected_kit.sort_unstable();
+    stored_kit.sort_unstable();
+    if stored_rotations != expected_rotations || stored_kit != expected_kit {
+        return;
+    }
+    let rotations = ctx.db.pkg_playerbots_rotation();
+    let kits = ctx.db.pkg_playerbots_kit();
+    for &(class, role, priority, spell_id, condition, threshold_pct) in STARTER_ROLE_ROTATIONS {
+        rotations.insert(PlayerbotsRotation {
+            id: 0,
+            class,
+            role,
+            priority,
+            spell_id,
+            condition,
+            threshold_pct,
+        });
+        kits.insert(PlayerbotsKit {
+            id: 0,
+            class,
+            role,
+            spell_id,
+        });
+    }
 }
 
 /// The shipped `(class, role)` rotations, and the kit each one implies.
@@ -395,6 +500,14 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
     // Warrior tank: taunt what is hitting somebody else, otherwise build threat.
     (class::WARRIOR, ROLE_TANK, 0, 355, cond::ENEMY_ON_ALLY, 0),
     (class::WARRIOR, ROLE_TANK, 1, 7386, cond::ALWAYS, 0),
+    (
+        class::WARRIOR,
+        ROLE_TANK,
+        20,
+        6673,
+        cond::SELF_MISSING_AURA,
+        0,
+    ),
     // Priest healer: a heal over time first, a direct heal when a member is really hurt.
     (
         class::PRIEST,
@@ -412,8 +525,18 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
         cond::ALLY_HP_BELOW_PCT,
         80,
     ),
+    (class::PRIEST, ROLE_HEALER, 10, 585, cond::ALWAYS, 0),
+    (
+        class::PRIEST,
+        ROLE_HEALER,
+        20,
+        1243,
+        cond::ALLY_MISSING_AURA,
+        0,
+    ),
     // Mage damage.
     (class::MAGE, ROLE_DPS, 0, 133, cond::ALWAYS, 0),
+    (class::MAGE, ROLE_DPS, 20, 168, cond::SELF_MISSING_AURA, 0),
     // Paladin tank: vanilla Paladins have no taunt, so the peel is a stun on whatever is hitting a
     // party member. Consecration needs a ground-target engine the core does not have yet, so the
     // row is seeded and simply never passes its condition today.
@@ -494,13 +617,7 @@ fn seed_class_role_data(ctx: &ReducerContext) {
 /// deduplicated. Derived rather than typed out a second time, so the two tables cannot drift into
 /// a bot that carries a rotation row for a spell it never learned.
 pub(crate) fn default_kit() -> Vec<(u8, u8, u32)> {
-    let mut kit: Vec<(u8, u8, u32)> = Vec::new();
-    for (class, role, _, spell_id, _, _) in DEFAULT_ROTATIONS.iter().copied() {
-        if !kit.contains(&(class, role, spell_id)) {
-            kit.push((class, role, spell_id));
-        }
-    }
-    kit
+    kit_for(DEFAULT_ROTATIONS.iter().copied())
 }
 
 /// The Refusal for a `(class, role)` this Package has no kit for. The wording is the Operator's

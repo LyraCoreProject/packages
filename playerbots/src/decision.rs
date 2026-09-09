@@ -39,6 +39,14 @@ pub enum Reason {
     PartyUnavailable,
     Provisioning,
     Quest,
+    TankFight,
+    DamageFight,
+    MeleePosition,
+    FightPosition,
+    Buff,
+    BuffPosition,
+    CrowdControl,
+    RoleUnavailable,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

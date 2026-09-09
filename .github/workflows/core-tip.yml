@@ -124,6 +124,7 @@ jobs:
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
       CARGO_PROFILE_TEST_DEBUG: 0
+      CARGO_PROFILE_RELEASE_DEBUG: 0
     steps:
       - name: Check out Packages
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -176,7 +177,7 @@ jobs:
           CARGO_BUILD_JOBS: 2
           CARGO_INCREMENTAL: 0
         run: |
-          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/preceding-core/target"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/playerbots-legacy-preceding-target"
           cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" -p lyracore-module
           "$GITHUB_WORKSPACE/preceding-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" \
@@ -200,7 +201,7 @@ jobs:
       - name: Build the merged PB-002 Wasm for populated companion migration
         working-directory: preceding-pb002-core
         run: |
-          export CARGO_TARGET_DIR="$GITHUB_WORKSPACE/preceding-pb002-core/target"
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/playerbots-pb002-preceding-target"
           cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-pb002-core/Cargo.toml" -p lyracore-module
           "$GITHUB_WORKSPACE/preceding-pb002-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-pb002-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-pb002-core/Cargo.toml" \
@@ -272,6 +273,91 @@ jobs:
           echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
+      - name: Check out the merged PB-006 Module source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: dae05c1b78cfd4b59f24968ec8be41f75ce896d1
+          path: preceding-roles-core
+          persist-credentials: false
+      - name: Check out the merged PB-006 Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 2028771d15c8efe87b50d2b6795315221953055d
+          path: preceding-roles-collection
+          persist-credentials: false
+      - name: Build the merged PB-006 Wasm for populated role migration
+        working-directory: preceding-roles-core
+        run: |
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/playerbots-roles-preceding-target"
+          cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-roles-core/Cargo.toml" -p lyracore-module
+          "$GITHUB_WORKSPACE/preceding-roles-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-roles-core" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-roles-core/Cargo.toml" \
+            --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
+          wasm_path="$RUNNER_TEMP/playerbots-roles-preceding.wasm"
+          manifest_path="$RUNNER_TEMP/playerbots-roles-preceding-inputs.json"
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$wasm_path"
+          python3 - "$wasm_path" \
+            "$GITHUB_WORKSPACE/preceding-roles-core" \
+            "$GITHUB_WORKSPACE/preceding-roles-collection" "$manifest_path" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          wasm_path, core_path, collection_path, manifest_path = map(pathlib.Path, sys.argv[1:])
+
+          def git(path, *args):
+              return subprocess.run(
+                  ["git", *args], cwd=path, check=True, text=True, capture_output=True
+              ).stdout.strip()
+
+          if git(core_path, "status", "--porcelain"):
+              raise SystemExit("the preceding role Module checkout is dirty")
+          if git(collection_path, "status", "--porcelain"):
+              raise SystemExit("the preceding role Package checkout is dirty")
+          wasm = wasm_path.read_bytes()
+          rust = subprocess.run(
+              ["rustc", "--version"], check=True, text=True, capture_output=True
+          ).stdout.strip()
+          spacetime = subprocess.run(
+              ["spacetime", "--version"], check=True, text=True, capture_output=True
+          ).stdout.strip()
+          installed = sorted(
+              path.name
+              for root in (core_path / "packages", collection_path)
+              for path in root.iterdir()
+              if path.is_dir() and not path.name.startswith(".")
+          )
+          manifest = {
+              "core": git(core_path, "rev-parse", "HEAD"),
+              "collection": git(collection_path, "rev-parse", "HEAD"),
+              "core_tree": git(core_path, "rev-parse", "HEAD^{tree}"),
+              "collection_tree": git(collection_path, "rev-parse", "HEAD^{tree}"),
+              "playerbots_tree": git(collection_path, "rev-parse", "HEAD:playerbots"),
+              "core_dirty": False,
+              "collection_dirty": False,
+              "rust": rust.split()[1],
+              "rust_detail": rust,
+              "spacetimedb": spacetime.split("spacetimedb tool version ", 1)[1].split(";", 1)[0],
+              "spacetimedb_detail": spacetime,
+              "target": "wasm32-unknown-unknown",
+              "profile": "release",
+              "features": ["debug_reducers"],
+              "installed_packages": installed,
+              "wasm_bytes": len(wasm),
+              "wasm_sha256": hashlib.sha256(wasm).hexdigest(),
+              "package_content_identity": "573c5856e3a261e073a7bd414e2183efa7f6dcec823a47d0c190d29b1aab3db4",
+              "verification": "Clean merged PB-006 inputs for the populated PB-004 upgrade test.",
+          }
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+          PY
+          echo "PLAYERBOTS_ROLES_PRECEDING_WASM=$wasm_path" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_ROLES_PRECEDING_MANIFEST=$manifest_path" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_ROLES_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-roles-core" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_ROLES_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-roles-collection" >> "$GITHUB_ENV"
       - name: Build the current Wasm and run the durable fixtures
         working-directory: lyracore
         env:
@@ -286,6 +372,7 @@ jobs:
               cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
                 --test playerbots_provisioning --test playerbots_quest_catalog \
+                --test playerbots_roles \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
