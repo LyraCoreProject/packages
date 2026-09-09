@@ -324,10 +324,11 @@ with no body and no goal, and the ordinary tick rebuilds one and decides afresh.
 of arrival.
 
 On a realm of one Shard the same code runs and the crossing is already finished when the Intent is
-written, because the placement was the whole move. The Gateway says so and the bot is back in the
-world about three seconds later. The same three seconds are what recovers a bot whose crossing was
-never driven at all — a republish in the middle of one, or a Gateway that was down. An Intent is a
-request, not a record: nothing refuses it and nothing retries it, so the deadline is the way back.
+written, because the placement was the whole move. The Gateway completes the exact Intent and the
+next bot pass rebuilds the body. The durable Intent remains the crossing authority while the
+Gateway is unavailable or restarts, and the bot stays bodiless until the Gateway completes that
+row. The three-second rebuild applies only to a populated in-transit goal from before durable
+Intents.
 
 ## Limits
 
