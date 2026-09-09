@@ -844,9 +844,35 @@ fn objective(
     now: i64,
 ) -> bool {
     state.deferred_destinations.retain(|d| d.until_micros > now);
+    let retain_quest_for_transfer = party
+        .and_then(|party| super::transfer::companion_partition(party, order))
+        .filter(|partition| {
+            (partition.map_id, partition.instance_id) != (me.map_id, me.instance_id)
+        })
+        .is_some_and(|partition| {
+            matches!(
+                super::transfer::candidate(ctx, me, partition, state.objective_sequence)
+                    .candidate
+                    .id
+                    .action,
+                Action::Transfer(_)
+            )
+        });
+    if retain_quest_for_transfer
+        && state
+            .objective
+            .as_ref()
+            .is_some_and(|objective| objective.kind == ObjectiveKind::Quest)
+        && super::quest_catalog::retained(ctx, bot.character_guid).is_some()
+    {
+        return false;
+    }
+    let restore_transferred_quest = state
+        .transfer_checkpoint
+        .is_some_and(|checkpoint| matches!(checkpoint.purpose, Some(TransferPurpose::Quest(_))));
     let admission = if bot.controller == Controller::Legacy {
         None
-    } else if party.is_none() {
+    } else if party.is_none() || restore_transferred_quest {
         match super::quest_catalog::reconcile_active(ctx, bot.character_guid) {
             super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
             super::quest_catalog::ReconcileResult::Missing => None,
@@ -1671,27 +1697,7 @@ fn run(
         strategies.push(strategy(Trigger::Attacked, defense));
         let transfer_partition = party
             .as_ref()
-            .and_then(|party| {
-                super::transfer::companion_member(order.as_ref(), Some(party.leader_guid))
-                    .and_then(|member_guid| {
-                        party
-                            .members
-                            .iter()
-                            .find(|member| member.character_guid == member_guid)
-                    })
-                    .and_then(|member| {
-                        member.partition.or_else(|| {
-                            member
-                                .unit
-                                .as_ref()
-                                .map(|unit| crate::group::PartyPartitionFacts {
-                                    map_id: unit.map_id,
-                                    instance_id: unit.instance_id,
-                                    locator_revision: 0,
-                                })
-                        })
-                    })
-            })
+            .and_then(|party| super::transfer::companion_partition(party, order.as_ref()))
             .filter(|partition| {
                 (partition.map_id, partition.instance_id) != (me.map_id, me.instance_id)
             })
