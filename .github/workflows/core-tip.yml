@@ -553,6 +553,7 @@ jobs:
                 --test playerbots_roles --test playerbots_quest_loops \
                 --test playerbots_recovery --test playerbots_recovery_failures \
                 --test playerbots_recovery_casting --test playerbots_recovery_geometry \
+                --test playerbots_orders \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
