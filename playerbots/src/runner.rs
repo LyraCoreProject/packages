@@ -1709,11 +1709,14 @@ fn run(
             ));
         }
         if let Some(party) = party.as_ref() {
+            let follow_member_guid =
+                super::transfer::companion_member(order.as_ref(), Some(party.leader_guid));
             let selection = super::companion::strategy(
                 ctx,
                 bot,
                 &me,
                 party,
+                follow_member_guid,
                 !low_health || at_destination,
                 state.objective_sequence,
                 state.companion_heal_target_guid,
@@ -1827,18 +1830,18 @@ fn run(
 
     if quest_read_limited && chosen.is_none_or(|candidate| candidate.priority <= 110) {
         chosen = Some(quest_unavailable);
-
     }
     if bot.controller == Controller::Cohort
         && matches!(
-        quest_plan,
-        Some(super::quest_loop::QuestPlan::Wait(
-            super::quest_loop::WaitReason::Controlled
-        ))
-    ) && state
-        .failures
-        .last()
-        .is_none_or(|failure| failure.reason != Failure::QuestControlled)
+            quest_plan,
+            Some(super::quest_loop::QuestPlan::Wait(
+                super::quest_loop::WaitReason::Controlled
+            ))
+        )
+        && state
+            .failures
+            .last()
+            .is_none_or(|failure| failure.reason != Failure::QuestControlled)
     {
         bounded_push(
             &mut state.failures,

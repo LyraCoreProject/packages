@@ -124,17 +124,29 @@ fn node(action: Action, reason: Reason, priority: i32, objective: u64) -> Action
     node
 }
 
-fn follow(party: &Party, me: &crate::WorldEntity, objective: u64) -> ActionNode {
-    let Some(leader) = party.leader.as_ref() else {
+fn follow(
+    party: &Party,
+    member_guid: Option<u64>,
+    me: &crate::WorldEntity,
+    objective: u64,
+) -> ActionNode {
+    let Some((member_guid, member)) = member_guid.and_then(|guid| {
+        party
+            .members
+            .iter()
+            .find(|member| member.character_guid == guid)
+            .and_then(|member| member.unit.as_ref())
+            .map(|member| (guid, member))
+    }) else {
         return node(Action::Hold, Reason::Follow, 100, objective);
     };
-    if (leader.map_id, leader.instance_id) != (me.map_id, me.instance_id)
-        || distance_sq(me, leader) <= 3.05 * 3.05
+    if (member.map_id, member.instance_id) != (me.map_id, me.instance_id)
+        || distance_sq(me, member) <= 3.05 * 3.05
     {
         return node(Action::Hold, Reason::Follow, 100, objective);
     }
     node(
-        Action::Move(MoveTarget::Entity(party.leader_guid)),
+        Action::Move(MoveTarget::Entity(member_guid)),
         Reason::Follow,
         100,
         objective,
@@ -560,13 +572,14 @@ pub(super) fn strategy(
     bot: &PlayerbotsBot,
     me: &crate::WorldEntity,
     party: &Party,
+    follow_member_guid: Option<u64>,
     survival_permits_healing: bool,
     objective: u64,
     retained_heal_target: Option<u64>,
     retained_fight_target: Option<u64>,
     retained_buff_target: Option<u64>,
 ) -> Result<CompanionSelection, RoleReadError> {
-    let follow = follow(party, me, objective);
+    let follow = follow(party, follow_member_guid, me, objective);
     let personality_heal_at = ctx
         .db
         .pkg_playerbots_personality()
