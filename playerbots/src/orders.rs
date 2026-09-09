@@ -11,23 +11,35 @@ pub(crate) const TARGET: u8 = 3;
 const HISTORY_LIMIT: usize = 8;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+pub struct FollowOrder {
+    pub leader_guid: u64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+pub struct StayOrder {
+    pub map_id: u32,
+    pub instance_id: u64,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+pub struct AssistOrder {
+    pub member_guid: u64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+pub struct TargetOrder {
+    pub target_guid: u64,
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
 pub enum CompanionOrder {
-    Follow {
-        leader_guid: u64,
-    },
-    Stay {
-        map_id: u32,
-        instance_id: u64,
-        x: f32,
-        y: f32,
-        z: f32,
-    },
-    Assist {
-        member_guid: u64,
-    },
-    Target {
-        target_guid: u64,
-    },
+    Follow(FollowOrder),
+    Stay(StayOrder),
+    Assist(AssistOrder),
+    Target(TargetOrder),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -110,9 +122,9 @@ pub(crate) fn apply_command(
         return crate::actor::CommandOutcome::Suppressed;
     }
     let order = match admitted.command.kind {
-        FOLLOW => CompanionOrder::Follow {
+        FOLLOW => CompanionOrder::Follow(FollowOrder {
             leader_guid: admitted.leader_guid,
-        },
+        }),
         STAY => {
             let Some(me) = ctx
                 .db
@@ -124,12 +136,12 @@ pub(crate) fn apply_command(
             };
             stay_at(&me)
         }
-        ASSIST => CompanionOrder::Assist {
+        ASSIST => CompanionOrder::Assist(AssistOrder {
             member_guid: admitted.command.authority_member_guid,
-        },
-        TARGET => CompanionOrder::Target {
+        }),
+        TARGET => CompanionOrder::Target(TargetOrder {
             target_guid: admitted.command.exact_target_guid,
-        },
+        }),
         _ => return crate::actor::CommandOutcome::Malformed,
     };
     let states = ctx.db.pkg_playerbots_companion_order();
@@ -189,13 +201,13 @@ pub(crate) fn apply_command(
 }
 
 fn stay_at(me: &WorldEntity) -> CompanionOrder {
-    CompanionOrder::Stay {
+    CompanionOrder::Stay(StayOrder {
         map_id: me.map_id,
         instance_id: me.instance_id,
         x: me.x,
         y: me.y,
         z: me.z,
-    }
+    })
 }
 
 pub(crate) fn active(ctx: &ReducerContext, character_guid: u64) -> Option<CompanionOrderState> {
