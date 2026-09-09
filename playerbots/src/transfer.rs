@@ -1,12 +1,13 @@
 //! Imported portal selection and source-local runner preparation for party Transfer.
 
 use super::decision::{Action, ActionNode, MoveTarget, Reason, TransferAction};
+use super::pkg_playerbots_bot;
 use super::quest_catalog::pkg_playerbots_quest_objective;
 use super::runner::{
     CompanionTransferPurpose, Failure, PlayerbotsRunner, QuestTransferPurpose, TransferCheckpoint,
     TransferPurpose,
 };
-use spacetimedb::{ReducerContext, Table};
+use spacetimedb::ReducerContext;
 
 const SUPPORTED_AREA_TRIGGERS: [u32; 3] = [78, 119, 121];
 const TRANSFER_PRIORITY: i32 = 700;
