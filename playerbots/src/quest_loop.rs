@@ -62,6 +62,20 @@ pub(super) enum QuestPlan {
     Wait(WaitReason),
 }
 
+impl QuestPlan {
+    pub(super) fn target(self) -> Option<u64> {
+        match self {
+            Self::Accept { giver, .. } | Self::TurnIn { giver, .. } => Some(giver),
+            Self::Attack { target, .. } => Some(target),
+            Self::LootCreature { corpse, .. } => Some(corpse),
+            Self::UseGameObject { gameobject, .. } | Self::LootGameObject { gameobject, .. } => {
+                Some(gameobject)
+            }
+            Self::Wait(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum StepResult {
     Completed,

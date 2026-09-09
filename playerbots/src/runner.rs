@@ -1404,26 +1404,18 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let party_holds_control = party
         .as_ref()
         .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
-    let stale_quest_attack = quest_read_limited
-        && ctx
-            .db
-            .game_melee_attack()
-            .attacker_guid()
-            .find(me.guid)
-            .is_some_and(|attack| {
-                !chosen.is_some_and(|candidate| {
-                    candidate.id.reason == Reason::Defense
-                        && candidate.id.action == Action::Attack(attack.target_guid)
-                })
+    let stale_quest_attack = (quest_objective || quest_read_limited)
+        && ctx.db.game_melee_attack().attacker_guid().find(me.guid).is_some_and(|attack| {
+            let quest_keeps_target = matches!(quest_plan,
+                Some(super::quest_loop::QuestPlan::Attack { target, .. }) if target == attack.target_guid);
+            let defense_keeps_target = decision.purpose.is_some_and(|candidate| {
+                candidate.id.reason == Reason::Defense
+                    && candidate.id.action == Action::Attack(attack.target_guid)
             });
+            !quest_keeps_target && !defense_keeps_target
+        });
     if party_holds_control
         || stale_quest_attack
-        || matches!(
-            quest_plan,
-            Some(super::quest_loop::QuestPlan::Wait(
-                super::quest_loop::WaitReason::Controlled
-            ))
-        )
         || (previous_fight_target.is_some() && previous_fight_target != companion_fight_target)
     {
         let _ = crate::actor::stop_attack(ctx, me.guid);
@@ -1475,19 +1467,21 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             decision::CandidateId {
                 action:
                     Action::Cast(CastAction { target, .. })
-                    | Action::Move(MoveTarget::CastingPosition(target))
-                    | Action::Move(MoveTarget::Entity(target)),
+                    | Action::Move(MoveTarget::CastingPosition(target)),
                 reason: Reason::Quest,
                 ..
-            } => {
-                matches!(quest_plan, Some(super::quest_loop::QuestPlan::Attack { target: current, .. }) if current != target)
-                    || matches!(
-                        quest_plan,
-                        Some(super::quest_loop::QuestPlan::Wait(
-                            super::quest_loop::WaitReason::Controlled
-                        ))
-                    )
-            }
+            } => !matches!(quest_plan,
+                Some(super::quest_loop::QuestPlan::Attack { target: current, .. }) if current == target),
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::Entity(target)),
+                reason: Reason::Quest,
+                ..
+            } => !quest_plan.is_some_and(|plan| plan.target() == Some(target)),
+            decision::CandidateId {
+                action: Action::Move(MoveTarget::RecoveryPosition(_)),
+                reason: Reason::Quest,
+                ..
+            } => matches!(quest_plan, Some(super::quest_loop::QuestPlan::Wait(_))),
             decision::CandidateId {
                 action: Action::Move(MoveTarget::CastingPosition(target)),
                 reason: Reason::CastingPosition,
@@ -1597,7 +1591,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if let (Some(reason), Some(candidate)) =
         (quest_plan.and_then(super::quest_loop::wait_reason), chosen)
     {
-        if candidate.id.reason == Reason::Quest && candidate.id.action == Action::Hold {
+        if matches!(candidate.id.reason, Reason::Quest | Reason::CrowdControl)
+            && candidate.id.action == Action::Hold
+        {
             state.failure(
                 match reason {
                     super::quest_loop::WaitReason::MissingTarget => Failure::QuestTargetMissing,

@@ -303,12 +303,12 @@ pub fn playerbots_recovery_fixture_partial_route(
     let me = crate::helpers::live_entity(ctx, character_guid)?;
     use crate::nav::game_nav_chunk;
     let mut chunks = std::collections::BTreeMap::new();
-    for x in -4..=2 {
-        for y in -4..=4 {
-            if x != 2 && y != -4 && y != 4 {
+    for x in -16..=8 {
+        for y in -16..=16 {
+            if x != 8 && y != -16 && y != 16 {
                 continue;
             }
-            let (px, py) = (me.x + x as f32, me.y + y as f32);
+            let (px, py) = (me.x + x as f32 * 0.25, me.y + y as f32 * 0.25);
             let cx = lyracore_shared::terrain::cell_index(px).ok_or("fixture off grid")?;
             let cy = lyracore_shared::terrain::cell_index(py).ok_or("fixture off grid")?;
             let key = lyracore_shared::terrain::cell_key(me.map_id, cx, cy);
@@ -351,6 +351,31 @@ pub fn playerbots_recovery_fixture_block_companion(
     let me = crate::helpers::live_entity(ctx, character_guid)?;
     block_navigation(ctx, &me)?;
     super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_exhaust_attempt(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    use super::runner::pkg_playerbots_runner;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut runner = rows
+        .character_guid()
+        .find(character_guid)
+        .ok_or("runner missing")?;
+    let recovery = runner.recovery.as_mut().ok_or("recovery missing")?;
+    let active = recovery.active.ok_or("no active recovery attempt")?;
+    let attempt = recovery
+        .attempts
+        .iter_mut()
+        .find(|attempt| attempt.work == active)
+        .ok_or("active recovery attempt missing")?;
+    attempt.stalled_micros = 30_000_000;
+    rows.character_guid().update(runner);
+    Ok(())
 }
 
 fn quest_offset(quest_entry: u32) -> u64 {
@@ -1714,10 +1739,12 @@ pub fn playerbots_quest_fixture_kill(
     let target =
         match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
             super::quest_loop::LiveCreatureTarget::Found(target) => target,
-            super::quest_loop::LiveCreatureTarget::Missing
-            | super::quest_loop::LiveCreatureTarget::Deferred
-            | super::quest_loop::LiveCreatureTarget::Controlled => {
+            super::quest_loop::LiveCreatureTarget::Missing => {
                 return Err("no live target".to_string());
+            }
+            super::quest_loop::LiveCreatureTarget::Deferred
+            | super::quest_loop::LiveCreatureTarget::Controlled => {
+                return Err("live target is temporarily ineligible".to_string());
             }
             super::quest_loop::LiveCreatureTarget::ReadLimit => {
                 return Err("live target read limit".to_string());
@@ -2395,9 +2422,11 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
         super::quest_loop::LiveCreatureTarget::Found(_) => {
             Err("live target still present".to_string())
         }
-        super::quest_loop::LiveCreatureTarget::Missing
-        | super::quest_loop::LiveCreatureTarget::Deferred
-        | super::quest_loop::LiveCreatureTarget::Controlled => Ok(()),
+        super::quest_loop::LiveCreatureTarget::Missing => Ok(()),
+        super::quest_loop::LiveCreatureTarget::Deferred
+        | super::quest_loop::LiveCreatureTarget::Controlled => {
+            Err("live target still present".to_string())
+        }
         super::quest_loop::LiveCreatureTarget::ReadLimit => {
             Err("live target search reached its read limit".to_string())
         }

@@ -54,6 +54,7 @@ impl Work {
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
 pub struct Attempt {
     pub work: Work,
+    pub reason: Reason,
     pub destination: Destination,
     pub geometry: crate::nav::NavigationInputs,
     pub objective: u64,
@@ -370,7 +371,12 @@ impl Recovery {
         };
         if health_progress || matches!((attempt.work, health), (Work::Fight(_), Some(0))) {
             if let Some(objective) = &mut state.objective {
-                if objective.identity == attempt.objective {
+                if objective.identity == attempt.objective
+                    && matches!(
+                        attempt.reason,
+                        Reason::ReturnHome | Reason::Follow | Reason::Quest
+                    )
+                {
                     objective.last_verified_progress_micros = Some(now);
                     objective.deadline_micros = now.saturating_add(120_000_000);
                 }
@@ -395,7 +401,11 @@ impl Recovery {
             attempt.stalled_micros = 0;
             attempt.position = None;
             if let Some(objective) = &mut state.objective {
-                if objective.identity == attempt.objective && !matches!(attempt.work, Work::Buff(_))
+                if objective.identity == attempt.objective
+                    && matches!(
+                        attempt.reason,
+                        Reason::ReturnHome | Reason::Follow | Reason::Quest
+                    )
                 {
                     objective.last_verified_progress_micros = Some(now);
                     objective.deadline_micros = now.saturating_add(120_000_000);
@@ -454,6 +464,7 @@ impl Recovery {
             });
             self.attempts.push(Attempt {
                 work,
+                reason: purpose.id.reason,
                 destination,
                 geometry: crate::nav::inputs(ctx, me.map_id),
                 objective: purpose.id.objective,
@@ -471,7 +482,6 @@ impl Recovery {
             self.attempts.len() - 1
         };
         let attempt = &mut self.attempts[index];
-        attempt.objective = purpose.id.objective;
         if let Some(current) = destination(ctx, me, state, work) {
             attempt.destination = current;
         }
@@ -538,6 +548,10 @@ impl Recovery {
             .iter_mut()
             .find(|attempt| Some(attempt.work) == self.active)
         {
+            if let Some(purpose) = purpose {
+                attempt.objective = purpose.id.objective;
+                attempt.reason = purpose.id.reason;
+            }
             attempt.last_observed_micros = now;
         }
     }
@@ -551,6 +565,7 @@ mod tests {
     fn retained(work: Work) -> Attempt {
         Attempt {
             work,
+            reason: Reason::Defense,
             destination: Destination {
                 map_id: 0,
                 instance_id: 0,
