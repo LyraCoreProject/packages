@@ -258,7 +258,7 @@ pub fn playerbots_recovery_fixture_block_quest_target(
     let me = crate::helpers::live_entity(ctx, character_guid)?;
     let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
     let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
-    use crate::game_nav_chunk;
+    use crate::nav::game_nav_chunk;
     for x in cx.saturating_sub(1)..=cx.saturating_add(1).min(1023) {
         for y in cy.saturating_sub(1)..=cy.saturating_add(1).min(1023) {
             let key = lyracore_shared::terrain::cell_key(me.map_id, x, y);
