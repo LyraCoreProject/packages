@@ -136,7 +136,7 @@ jobs:
         with:
           repository: LyraCoreProject/LyraCore
           # Replace with the final PB-009 Core head before opening the Package PR.
-          ref: 40e06a253180d9ec68768298fb6a9ae4104d7a0e
+          ref: 2f469ce4b7a2055eebe0ea5bcbbd4832af8ad272
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -537,23 +537,21 @@ jobs:
           echo "PLAYERBOTS_RECOVERY_PRECEDING_MANIFEST=$manifest_path" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_RECOVERY_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-recovery-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_RECOVERY_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-recovery-collection" >> "$GITHUB_ENV"
-      # PB-008 is not merged yet. Replace both candidate refs and the content identity below with
-      # the exact merged PB-008 inputs before opening the PB-009 Package PR.
-      - name: Check out the PB-008 Module candidate
+      - name: Check out merged PB-008 Core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 42ece0a2f316fb1ff13f6c8aa419561355c5de6e
+          ref: a880bd29b9a56f6fe685f858eb90bb748623dfa7
           path: preceding-orders-core
           persist-credentials: false
-      - name: Check out the PB-008 Package candidate
+      - name: Check out merged PB-008 Package
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/packages
-          ref: 6a778480bb284ed06c8d09f437231a68ea9618cd
+          ref: a3d67002184d2ca427ffef8fd3e2504fe4d4ed1d
           path: preceding-orders-collection
           persist-credentials: false
-      - name: Build the PB-008 candidate Wasm for populated Orders migration
+      - name: Build merged PB-008 Wasm for populated Orders migration
         working-directory: preceding-orders-core
         run: |
           export CARGO_TARGET_DIR="$RUNNER_TEMP/playerbots-orders-preceding-target"
@@ -619,8 +617,8 @@ jobs:
               "installed_packages": installed,
               "wasm_bytes": len(wasm),
               "wasm_sha256": hashlib.sha256(wasm).hexdigest(),
-              "package_content_identity": "a5283b105e95241eaac08b9c753a0f8da5b99c18faec5418923c3bf8a2cb435a",
-              "verification": "Clean PB-008 candidate inputs for PB-009 development. Replace these inputs with the exact merged PB-008 pair before PB-009 acceptance.",
+              "package_content_identity": "eb76b3853a6b868a64a3d59fd05fe9017d3d52faeedc7ec999b6d105ed66fcdb",
+              "verification": "Clean merged PB-008 inputs for the populated PB-009 upgrade test.",
           }
           manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
           PY_MANIFEST
