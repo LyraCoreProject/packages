@@ -52,6 +52,34 @@ one class, three roles, three different rotations, no code that knows the differ
 A `(class, role)` pair with no kit rows is a pairing this Package cannot fill, and the spawn verb
 refuses it by name. Adding kit rows for a new pairing makes it legal.
 
+## Provisioning
+
+Spawn and level-up arm a class-and-role profile. They do not grant anything. The next admitted
+`Cohort` runner pass reconciles one missing entry through the core Actor API. Survival, usable
+recovery, and defense keep their higher priority. `Legacy`, `RecordOnly`, `Frozen`, a current Account
+owner, and a current World Session block every provisioning gameplay write.
+
+Profiles make training and their bounded item grants free. They cover the configured kit, one class
+weapon skill, vanilla talents, gear, four bags, food, drink, potions, ammunition or class reagents,
+bandages, and a Hearthstone. Reconciliation only adds profile entries. It never raises level, awards
+experience or quest credit, removes quest items, or replaces equal or stronger equipped gear.
+One profile accepts at most 12 kit spell rows, 16 tabs at one tree position, and 64 talents in one
+tab. Trainer admission reads at most 16 exact offerings, 16 reverse wrapper effects, and three
+effects per candidate wrapper. Each limit reads one extra row to detect overflow. A larger catalogue
+records a typed profile-limit outcome when that bounded prefix cannot decide admission. An eligible
+offering completes admission without reading later duplicates.
+
+`pkg_playerbots_provisioning` records the profile, revision, free-grant policy, current cursor, next
+repair time, and the last 32 typed decisions. A full inventory, missing catalogue row, death, or
+combat records one explanation and backs off. Periodic repair then checks the same bounded profile
+without duplicating grants or costs.
+
+The default Warrior tank profile names Sunder Armor (7386). Today's seed-only Shard has no spell
+header for it. The core Gate returns `MissingResource`, provisioning leaves the spellbook unchanged,
+continues with later profile entries, and checks the spell again during periodic repair. Imported
+content, or the supported role capability catalogue, must supply the real spell definition before
+the profile can learn it.
+
 `pkg_playerbots_personality` holds the part of a fight the rotation leaves open: where a bot breaks
 off, and where a healer places a heal. Two bots on one rotation at the same health diverge on those
 alone. The row is the floor; a Runtime Script can answer for either of them instead.

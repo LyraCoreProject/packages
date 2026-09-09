@@ -1,8 +1,8 @@
 //! Deterministic staging for private, per-test durable databases.
 //! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
-use super::{pkg_playerbots_bot, PlayerbotsBot};
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
+use super::{pkg_playerbots_bot, pkg_playerbots_kit, PlayerbotsBot};
 use crate::nav::game_nav_chunk;
 use crate::{
     game_creature_spawn, game_creature_template, game_group, game_quest_objective,
@@ -1211,4 +1211,935 @@ pub fn playerbots_fixture_runner_wide_recovery(
     }
     rotations.insert(super::PlayerbotsRotation { id: 0, ..heal });
     Ok(())
+}
+
+const PROVISION_QUEST_ITEM: u32 = 5_090_150;
+const PROVISION_FILLER: u32 = 5_090_151;
+const PROVISION_WARRIOR_TRAINER: u32 = 5_090_200;
+const PROVISION_OTHER_TRAINER: u32 = 5_090_201;
+const PROVISION_LEARN_WRAPPER: u32 = 5_090_202;
+const PROVISION_CHANNEL_WRAPPER: u32 = 5_090_203;
+const PROVISION_PROC_WRAPPER: u32 = 5_090_204;
+const PROVISION_WRONG_CLASS_SPELL: u32 = 5_090_205;
+const PROVISION_LOW_LEVEL_SPELL: u32 = 5_090_206;
+const PROVISION_PREVIOUS_RANK_SPELL: u32 = 5_090_207;
+const PROVISION_OVERFLOW_SPELL: u32 = 5_090_208;
+const PROVISION_PREVIOUS_REQUIRED: u32 = 5_090_209;
+const PROVISION_DUPLICATE_SUCCESS_SPELL: u32 = 5_090_210;
+const PROVISION_WRONG_WRAPPER: u32 = 5_090_211;
+const PROVISION_WRONG_WRAPPER_PAYLOAD: u32 = 5_090_212;
+const PROVISION_PARTIAL_TALENT_FIRST: u32 = 5_095_000;
+const PROVISION_PARTIAL_TALENT_COUNT: u32 = 65;
+const PROVISION_SKILL_AVAILABILITY_ROWS: u32 = 17;
+const PROVISION_SKILL_AVAILABILITY_FIRST: u64 = 5_096_000;
+
+fn replace_profile_skill_availability(ctx: &ReducerContext, admitted: bool) -> Result<(), String> {
+    use crate::game_skill_availability;
+    let line = super::provisioning::WARRIOR_PROFILE_SKILL;
+    let rows = ctx.db.game_skill_availability();
+    let fixture_end =
+        PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(PROVISION_SKILL_AVAILABILITY_ROWS);
+    if let Some(row) = rows
+        .by_skill_line()
+        .filter(line)
+        .find(|row| !(PROVISION_SKILL_AVAILABILITY_FIRST..fixture_end).contains(&row.id))
+    {
+        return Err(format!(
+            "skill line {line} already has non-fixture availability row {}",
+            row.id
+        ));
+    }
+    for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+        let id = PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal);
+        if let Some(row) = rows.id().find(id) {
+            let fixture_row = row.skill_line == line
+                && row.race_mask == 0
+                && matches!(row.class_mask, 1 | 128)
+                && row.flags == 0
+                && row.min_level == 1;
+            if !fixture_row {
+                return Err(format!("skill availability fixture id {id} is occupied"));
+            }
+        }
+    }
+    for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+        rows.id()
+            .delete(PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal));
+    }
+    for ordinal in 0..PROVISION_SKILL_AVAILABILITY_ROWS {
+        rows.insert(crate::SkillAvailability {
+            id: PROVISION_SKILL_AVAILABILITY_FIRST + u64::from(ordinal),
+            skill_line: line,
+            race_mask: 0,
+            class_mask: if admitted { 1 } else { 1 << 7 },
+            flags: 0,
+            min_level: 1,
+        });
+    }
+    Ok(())
+}
+
+/// Fill a missing low-ID item definition for a private seed-only Shard. Imported or otherwise
+/// existing rows remain authoritative and are never changed by this fixture.
+fn ensure_profile_item(
+    ctx: &ReducerContext,
+    entry: u32,
+    name: &str,
+    max_stack: u32,
+    inventory_type: u8,
+    container_slots: u8,
+    spell_id: u32,
+    restores_power: bool,
+) -> Result<(), String> {
+    use crate::game_item_template;
+    if ctx.db.game_item_template().entry().find(entry).is_some() {
+        return Ok(());
+    }
+    let mut template = ctx
+        .db
+        .game_item_template()
+        .entry()
+        .find(52)
+        .ok_or("seed food template missing")?;
+    template.entry = entry;
+    template.name = name.to_string();
+    template.class = if inventory_type == 18 { 1 } else { 0 };
+    template.inventory_type = inventory_type;
+    template.item_level = 1;
+    template.required_level = 1;
+    template.max_durability = 0;
+    template.max_stack = max_stack;
+    template.container_slots = container_slots;
+    template.spellid_1 = spell_id;
+    template.spelltrigger_1 = 0;
+    template.restores_power = restores_power;
+    template.bonding = 0;
+    template.max_count = 0;
+    template.required_skill = 0;
+    template.required_skill_rank = 0;
+    ctx.db.game_item_template().insert(template);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    // The seed and World import both own this real low id. Deliberately different values prove that
+    // fixture staging takes the import-aware no-op path; item 52 is never part of the profile.
+    ensure_profile_item(
+        ctx,
+        52,
+        "Provisioning preservation fixture",
+        1,
+        18,
+        4,
+        0,
+        true,
+    )?;
+    ensure_profile_item(ctx, 4496, "Provisioning Bag", 1, 18, 4, 0, false)?;
+    ensure_profile_item(ctx, 117, "Provisioning Food", 20, 0, 0, 50115, false)?;
+    ensure_profile_item(ctx, 159, "Provisioning Drink", 20, 0, 0, 50114, true)?;
+    ensure_profile_item(ctx, 118, "Provisioning Potion", 5, 0, 0, 50110, false)?;
+    ensure_profile_item(ctx, 1251, "Provisioning Bandage", 20, 0, 0, 50111, false)?;
+    ensure_profile_item(ctx, 2512, "Provisioning Ammo", 200, 0, 0, 0, false)?;
+    for (entry, name) in [
+        (17033, "Paladin Reagent"),
+        (17029, "Priest Reagent"),
+        (17056, "Mage Reagent"),
+    ] {
+        ensure_profile_item(ctx, entry, name, 20, 0, 0, 0, false)?;
+    }
+    Ok(())
+}
+
+/// Give the completion scenario an explicit no-import profile whose every spell has a seeded
+/// `game_spell` header. The default Warrior tank profile still names Sunder Armor (7386); its
+/// missing-resource behavior is exercised separately.
+#[reducer]
+pub fn playerbots_fixture_provision_complete_profile(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if bot.class != super::class::WARRIOR || bot.role != super::ROLE_TANK {
+        return Err("complete profile fixture requires a Warrior tank".to_string());
+    }
+    replace_profile_skill_availability(ctx, true)?;
+    if ctx.db.game_spell().spell_id().find(355).is_none() {
+        return Err("seed Taunt spell header missing".to_string());
+    }
+    let kits = ctx.db.pkg_playerbots_kit();
+    for row in kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .filter(|row| row.spell_id == 7386)
+        .collect::<Vec<_>>()
+    {
+        kits.id().delete(row.id);
+    }
+    if kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .any(|row| ctx.db.game_spell().spell_id().find(row.spell_id).is_none())
+    {
+        return Err("complete profile fixture contains a spell without a header".to_string());
+    }
+    Ok(())
+}
+
+/// Stage a partial Talent import: tabs are absent and 65 imported-style rows remain at the
+/// preferred tree position.
+#[reducer]
+pub fn playerbots_fixture_provision_partial_talent_catalog(
+    ctx: &ReducerContext,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::{game_talent, game_talent_tab};
+    if ctx.db.game_talent_tab().count() != 0 {
+        return Err("partial talent catalogue requires no tab rows".to_string());
+    }
+    let talents = ctx.db.game_talent();
+    for ordinal in 0..PROVISION_PARTIAL_TALENT_COUNT {
+        let talent_id = PROVISION_PARTIAL_TALENT_FIRST + ordinal;
+        let mut talent = talents.talent_id().find(1).ok_or("seed talent missing")?;
+        talent.talent_id = talent_id;
+        talent.name = format!("Provisioning partial talent {ordinal}");
+        talent.tree_id = 2;
+        talent.tab_id = talent_id;
+        talents.talent_id().delete(talent_id);
+        talents.insert(talent);
+    }
+    Ok(())
+}
+
+fn provision_trainer(ctx: &ReducerContext, entry: u32, class: u8) -> Result<(), String> {
+    let mut template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(51001)
+        .ok_or("seed trainer template missing")?;
+    template.entry = entry;
+    template.name = format!("PB005 class {class} trainer");
+    template.trainer_type = lyracore_shared::trainer::trainer_type::CLASS;
+    template.trainer_class = class;
+    let templates = ctx.db.game_creature_template();
+    templates.entry().delete(entry);
+    templates.insert(template);
+    Ok(())
+}
+
+fn provision_wrapper(
+    ctx: &ReducerContext,
+    wrapper: u32,
+    target: u32,
+    kind: u8,
+) -> Result<(), String> {
+    let mut header = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(target)
+        .ok_or_else(|| format!("seed spell {target} missing"))?;
+    header.spell_id = wrapper;
+    header.name = format!("PB005 wrapper for {target}");
+    let headers = ctx.db.game_spell();
+    headers.spell_id().delete(wrapper);
+    headers.insert(header);
+
+    let mut effect = ctx
+        .db
+        .game_spell_effect()
+        .by_spell()
+        .filter(target)
+        .next()
+        .ok_or_else(|| format!("seed spell {target} has no effect"))?;
+    effect.id = (u64::from(wrapper) << 2) | u64::from(effect.effect_index);
+    effect.spell_id = wrapper;
+    effect.kind = kind;
+    effect.trigger_spell = target;
+    let effects = ctx.db.game_spell_effect();
+    for row in effects.by_spell().filter(wrapper).collect::<Vec<_>>() {
+        effects.id().delete(row.id);
+    }
+    effects.insert(effect);
+    Ok(())
+}
+
+fn provision_spell_clone(
+    ctx: &ReducerContext,
+    spell_id: u32,
+    source_spell: u32,
+) -> Result<(), String> {
+    let mut header = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(source_spell)
+        .ok_or_else(|| format!("seed spell {source_spell} missing"))?;
+    header.spell_id = spell_id;
+    header.name = format!("PB005 fixture spell {spell_id}");
+    let headers = ctx.db.game_spell();
+    headers.spell_id().delete(spell_id);
+    headers.insert(header);
+
+    let source_effects: Vec<_> = ctx
+        .db
+        .game_spell_effect()
+        .by_spell()
+        .filter(source_spell)
+        .collect();
+    if source_effects.is_empty() {
+        return Err(format!("seed spell {source_spell} has no effect"));
+    }
+    let effects = ctx.db.game_spell_effect();
+    for row in effects.by_spell().filter(spell_id).collect::<Vec<_>>() {
+        effects.id().delete(row.id);
+    }
+    for mut effect in source_effects {
+        effect.id = (u64::from(spell_id) << 2) | u64::from(effect.effect_index);
+        effect.spell_id = spell_id;
+        effects.insert(effect);
+    }
+    Ok(())
+}
+
+fn provision_offering(
+    ctx: &ReducerContext,
+    id: u64,
+    trainer_entry: u32,
+    spell_id: u32,
+    required_level: u8,
+) {
+    use crate::game_trainer_spell;
+    let rows = ctx.db.game_trainer_spell();
+    rows.id().delete(id);
+    rows.insert(crate::TrainerSpell {
+        id,
+        trainer_entry,
+        spell_id,
+        cost: 0,
+        required_level,
+        learn_skill_line: 0,
+        learn_skill_cap: 75,
+    });
+}
+
+fn provision_kit_spell(ctx: &ReducerContext, bot: &PlayerbotsBot, spell_id: u32) {
+    let kits = ctx.db.pkg_playerbots_kit();
+    if kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .all(|row| row.spell_id != spell_id)
+    {
+        kits.insert(super::PlayerbotsKit {
+            id: 0,
+            class: bot.class,
+            role: bot.role,
+            spell_id,
+        });
+    }
+}
+
+/// Source-derived rows with the same direct and LearnSpell-wrapper shape as imported trainer data.
+/// They prove lookup and Gates only; they are not evidence about an imported World catalogue.
+#[reducer]
+pub fn playerbots_fixture_provision_trainer_catalog(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if bot.class != super::class::WARRIOR {
+        return Err("trainer catalogue fixture requires a Warrior".to_string());
+    }
+    for spell in [355, 2050, 139, 133] {
+        if ctx.db.game_spell().spell_id().find(spell).is_none() {
+            return Err(format!("seed spell {spell} missing"));
+        }
+    }
+    for (spell, source) in [
+        (PROVISION_WRONG_CLASS_SPELL, 133),
+        (PROVISION_LOW_LEVEL_SPELL, 133),
+        (PROVISION_PREVIOUS_RANK_SPELL, 133),
+        (PROVISION_OVERFLOW_SPELL, 133),
+        (PROVISION_PREVIOUS_REQUIRED, 133),
+        (PROVISION_DUPLICATE_SUCCESS_SPELL, 133),
+        (PROVISION_WRONG_WRAPPER_PAYLOAD, 133),
+    ] {
+        provision_spell_clone(ctx, spell, source)?;
+    }
+    for spell in [
+        355,
+        2050,
+        139,
+        133,
+        PROVISION_WRONG_CLASS_SPELL,
+        PROVISION_LOW_LEVEL_SPELL,
+        PROVISION_PREVIOUS_RANK_SPELL,
+        PROVISION_OVERFLOW_SPELL,
+        PROVISION_DUPLICATE_SUCCESS_SPELL,
+        PROVISION_WRONG_WRAPPER,
+    ] {
+        provision_kit_spell(ctx, &bot, spell);
+    }
+    provision_trainer(ctx, PROVISION_WARRIOR_TRAINER, super::class::WARRIOR)?;
+    provision_trainer(ctx, PROVISION_OTHER_TRAINER, super::class::PALADIN)?;
+    provision_wrapper(ctx, PROVISION_LEARN_WRAPPER, 2050, crate::spell::E_SCRIPTED)?;
+    provision_wrapper(
+        ctx,
+        PROVISION_CHANNEL_WRAPPER,
+        139,
+        crate::spell::A_PERIODIC_TRIGGER,
+    )?;
+    provision_wrapper(
+        ctx,
+        PROVISION_PROC_WRAPPER,
+        133,
+        crate::spell::A_PROC_TRIGGER,
+    )?;
+    provision_wrapper(
+        ctx,
+        PROVISION_WRONG_WRAPPER,
+        PROVISION_WRONG_WRAPPER_PAYLOAD,
+        crate::spell::E_SCRIPTED,
+    )?;
+
+    for ordinal in 0..40u64 {
+        provision_offering(
+            ctx,
+            5_091_000 + ordinal,
+            PROVISION_WARRIOR_TRAINER,
+            5_099_000 + ordinal as u32,
+            1,
+        );
+    }
+    provision_offering(ctx, 5_092_000, PROVISION_WARRIOR_TRAINER, 355, 1);
+    provision_offering(
+        ctx,
+        5_092_001,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_LEARN_WRAPPER,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_002,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_CHANNEL_WRAPPER,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_003,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_PROC_WRAPPER,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_004,
+        PROVISION_OTHER_TRAINER,
+        PROVISION_WRONG_CLASS_SPELL,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_005,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_LOW_LEVEL_SPELL,
+        60,
+    );
+    provision_offering(
+        ctx,
+        5_092_006,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_PREVIOUS_RANK_SPELL,
+        1,
+    );
+    provision_offering(
+        ctx,
+        5_092_007,
+        PROVISION_WARRIOR_TRAINER,
+        PROVISION_WRONG_WRAPPER,
+        1,
+    );
+    for ordinal in 0..17u64 {
+        provision_offering(
+            ctx,
+            5_093_000 + ordinal,
+            if ordinal < 16 {
+                PROVISION_OTHER_TRAINER
+            } else {
+                PROVISION_WARRIOR_TRAINER
+            },
+            PROVISION_OVERFLOW_SPELL,
+            1,
+        );
+    }
+    for ordinal in 0..17u64 {
+        provision_offering(
+            ctx,
+            5_094_000 + ordinal,
+            PROVISION_WARRIOR_TRAINER,
+            PROVISION_DUPLICATE_SUCCESS_SPELL,
+            1,
+        );
+    }
+    use crate::game_spell_chain;
+    ctx.db
+        .game_spell_chain()
+        .spell_id()
+        .delete(PROVISION_PREVIOUS_RANK_SPELL);
+    ctx.db.game_spell_chain().insert(crate::spell::SpellChain {
+        spell_id: PROVISION_PREVIOUS_RANK_SPELL,
+        prev_spell: PROVISION_PREVIOUS_REQUIRED,
+        first_spell: PROVISION_PREVIOUS_REQUIRED,
+        rank: 2,
+        req_spell: 0,
+    });
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_spell_action(
+    ctx: &ReducerContext,
+    guid: u64,
+    spell_id: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if !matches!(
+        spell_id,
+        355 | 2050
+            | 139
+            | 133
+            | PROVISION_WRONG_CLASS_SPELL
+            | PROVISION_LOW_LEVEL_SPELL
+            | PROVISION_PREVIOUS_RANK_SPELL
+            | PROVISION_OVERFLOW_SPELL
+            | PROVISION_DUPLICATE_SUCCESS_SPELL
+            | PROVISION_WRONG_WRAPPER
+    ) {
+        return Err("spell is outside the provisioning trainer fixture".to_string());
+    }
+    set_provision_action(ctx, guid, |action| {
+        action == super::provisioning::ProvisionAction::Spell(spell_id)
+    })
+}
+
+fn provision_state(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<super::provisioning::PlayerbotsProvisioning, String> {
+    use super::provisioning::pkg_playerbots_provisioning;
+    ctx.db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .find(guid)
+        .ok_or_else(|| format!("provisioning state missing for {guid}"))
+}
+
+fn set_provision_action(
+    ctx: &ReducerContext,
+    guid: u64,
+    wanted: impl Fn(super::provisioning::ProvisionAction) -> bool,
+) -> Result<(), String> {
+    use super::provisioning::pkg_playerbots_provisioning;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    let cursor = super::provisioning::profile_actions(ctx, &bot)
+        .map_err(|refusal| refusal.detail)?
+        .iter()
+        .position(|action| wanted(*action))
+        .ok_or("profile action missing")?;
+    let mut state = provision_state(ctx, guid)?;
+    state.action_cursor = cursor as u16;
+    state.next_repair_micros = 0;
+    state.history.clear();
+    ctx.db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_steps(
+    ctx: &ReducerContext,
+    guid: u64,
+    count: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if count > 64 {
+        return Err("provisioning fixture step count exceeds 64".to_string());
+    }
+    for _ in 0..count {
+        use super::provisioning::pkg_playerbots_provisioning;
+        let mut state = provision_state(ctx, guid)?;
+        state.next_repair_micros = 0;
+        ctx.db
+            .pkg_playerbots_provisioning()
+            .character_guid()
+            .update(state);
+        let bot = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next()
+            .ok_or("bot missing")?;
+        let _ = super::provisioning::reconcile_due(
+            ctx,
+            &bot,
+            ctx.timestamp.to_micros_since_unix_epoch(),
+        );
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_due(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::provisioning::pkg_playerbots_provisioning;
+    let mut state = provision_state(ctx, guid)?;
+    state.next_repair_micros = 0;
+    ctx.db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_reset(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::provisioning::pkg_playerbots_provisioning;
+    let mut state = provision_state(ctx, guid)?;
+    state.action_cursor = 0;
+    state.next_repair_micros = 0;
+    state.history.clear();
+    ctx.db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_remove_recovery(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::game_player_spell;
+    let spells = ctx.db.game_player_spell();
+    for row in spells.by_character().filter(guid).collect::<Vec<_>>() {
+        spells.id().delete(row.id);
+    }
+    use crate::game_item_instance;
+    let items = ctx.db.game_item_instance();
+    let mut banked_food = false;
+    for mut row in items
+        .by_owner_guid()
+        .filter(guid)
+        .filter(|row| matches!(row.entry, 117 | 118 | 159))
+        .collect::<Vec<_>>()
+    {
+        if row.entry == 117 && !banked_food {
+            row.slot = 39;
+            row.stack_count = 9;
+            items.guid().update(row);
+            banked_food = true;
+        } else {
+            items.guid().delete(row.guid);
+        }
+    }
+    use super::pkg_playerbots_recovery_scan;
+    ctx.db
+        .pkg_playerbots_recovery_scan()
+        .character_guid()
+        .delete(guid);
+    let mut state = provision_state(ctx, guid)?;
+    state.action_cursor = 0;
+    state.next_repair_micros = 0;
+    state.history.clear();
+    use super::provisioning::pkg_playerbots_provisioning;
+    ctx.db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_full_bag(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_provision_catalog(ctx)?;
+    use crate::{game_item_instance, game_item_template};
+    let items = ctx.db.game_item_instance();
+    for row in items
+        .by_owner_guid()
+        .filter(guid)
+        .filter(|row| row.slot >= 19)
+        .collect::<Vec<_>>()
+    {
+        items.guid().delete(row.guid);
+    }
+    ensure_profile_item(
+        ctx,
+        PROVISION_QUEST_ITEM,
+        "Quest Keepsake",
+        1,
+        0,
+        0,
+        0,
+        false,
+    )?;
+    ensure_profile_item(ctx, PROVISION_FILLER, "Bag Filler", 1, 0, 0, 0, false)?;
+    let mut quest = ctx
+        .db
+        .game_item_template()
+        .entry()
+        .find(PROVISION_QUEST_ITEM)
+        .ok_or("quest item template missing")?;
+    quest.bonding = 4;
+    ctx.db.game_item_template().entry().update(quest);
+    crate::items::grant_item(ctx, guid, PROVISION_QUEST_ITEM, 1)?;
+    crate::items::grant_item(ctx, guid, PROVISION_FILLER, 15)?;
+    set_provision_action(ctx, guid, |action| {
+        matches!(
+            action,
+            super::provisioning::ProvisionAction::Item(item)
+                if item.kind == super::provisioning::ProvisionItemKind::Food
+        )
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_missing_resource(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_provision_catalog(ctx)?;
+    use crate::game_item_template;
+    ctx.db.game_item_template().entry().delete(1251);
+    set_provision_action(ctx, guid, |action| {
+        matches!(
+            action,
+            super::provisioning::ProvisionAction::Item(item)
+                if item.kind == super::provisioning::ProvisionItemKind::Supply
+                    && item.entry == 1251
+        )
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_missing_spell(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::{game_player_spell, game_spell, game_spell_effect};
+    let spells = ctx.db.game_player_spell();
+    for row in spells
+        .by_character_spell()
+        .filter((guid, 7386u32))
+        .collect::<Vec<_>>()
+    {
+        spells.id().delete(row.id);
+    }
+    ctx.db.game_spell().spell_id().delete(7386);
+    let effects = ctx.db.game_spell_effect();
+    for row in effects.by_spell().filter(7386u32).collect::<Vec<_>>() {
+        effects.id().delete(row.id);
+    }
+    set_provision_action(ctx, guid, |action| {
+        action == super::provisioning::ProvisionAction::Spell(7386)
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_wrong_class_spell(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if ctx
+        .db
+        .pkg_playerbots_kit()
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .all(|row| row.spell_id != 133)
+    {
+        ctx.db.pkg_playerbots_kit().insert(super::PlayerbotsKit {
+            id: 0,
+            class: bot.class,
+            role: bot.role,
+            spell_id: 133,
+        });
+    }
+    set_provision_action(ctx, guid, |action| {
+        action == super::provisioning::ProvisionAction::Spell(133)
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_profile_overflow(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    let kits = ctx.db.pkg_playerbots_kit();
+    let count = kits.by_class_role().filter((bot.class, bot.role)).count();
+    for ordinal in count..=12 {
+        kits.insert(super::PlayerbotsKit {
+            id: 0,
+            class: bot.class,
+            role: bot.role,
+            spell_id: 600_000 + ordinal as u32,
+        });
+    }
+    playerbots_fixture_provision_reset(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_skill_overflow(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    replace_profile_skill_availability(ctx, false)?;
+    use crate::game_player_skill;
+    let skills = ctx.db.game_player_skill();
+    for row in skills.by_character().filter(guid).collect::<Vec<_>>() {
+        if row.skill_line == super::provisioning::WARRIOR_PROFILE_SKILL {
+            skills.id().delete(row.id);
+        }
+    }
+    set_provision_action(ctx, guid, |action| {
+        action
+            == super::provisioning::ProvisionAction::Skill(
+                super::provisioning::WARRIOR_PROFILE_SKILL,
+            )
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_stronger_weapon(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::items::grant_item(ctx, guid, 50, 1)?;
+    use crate::game_item_instance;
+    let slot = ctx
+        .db
+        .game_item_instance()
+        .by_owner_guid()
+        .filter(guid)
+        .find(|row| row.entry == 50 && row.slot >= 23)
+        .map(|row| row.slot)
+        .ok_or("stronger weapon was not stored")?;
+    crate::actor::equip_profile_upgrade(ctx, guid, slot)
+        .map_err(|refusal| refusal.as_tag().to_string())?;
+    set_provision_action(ctx, guid, |action| {
+        matches!(
+            action,
+            super::provisioning::ProvisionAction::Equip(item)
+                if item.kind == super::provisioning::ProvisionItemKind::Gear
+        )
+    })
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_bank_weapon(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::game_item_instance;
+    let items = ctx.db.game_item_instance();
+    let mut weapon = items
+        .by_owner_guid()
+        .filter(guid)
+        .find(|row| row.entry == 50)
+        .ok_or("stronger weapon missing")?;
+    weapon.slot = 39;
+    items.guid().update(weapon);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_equip_bank_weapon(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::actor::equip_profile_upgrade(ctx, guid, 39)
+        .map(|_| ())
+        .map_err(|refusal| refusal.as_tag().to_string())
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_dead(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut entity = crate::helpers::live_entity(ctx, guid)?;
+    entity.dead = true;
+    entity.health = 0;
+    ctx.db.game_world_entity().guid().update(entity);
+    let mut state = provision_state(ctx, guid)?;
+    state.next_repair_micros = 0;
+    state.history.clear();
+    use super::provisioning::pkg_playerbots_provisioning;
+    ctx.db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .update(state);
+    runner_park_for(ctx, guid)
+}
+
+#[reducer]
+pub fn playerbots_fixture_provision_levelup(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::stats::set_character_level(ctx, guid, 9)?;
+    let mut entity = crate::helpers::live_entity(ctx, guid)?;
+    crate::xp::grant_xp(ctx, &mut entity, 1_000_000);
+    ctx.db.game_world_entity().guid().update(entity);
+    runner_park_for(ctx, guid)
 }
