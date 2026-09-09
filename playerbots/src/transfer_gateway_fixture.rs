@@ -207,6 +207,159 @@ pub fn playerbots_transfer_gateway_realm_stage(
     Ok(())
 }
 
+fn restage_completed_member_crossing(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    source_map: u32,
+    source_instance: u64,
+    destination_map: u32,
+    destination_instance: u64,
+) -> Result<(), String> {
+    let locators = ctx.db.game_character_shard();
+    if locators.character_guid().find(character_guid).is_some() {
+        locators.character_guid().delete(character_guid);
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    locators.insert(locator(character_guid, source_map, source_instance, now));
+    crate::realm_core::record_shard(ctx, character_guid, destination_map, destination_instance);
+    let settled = locators
+        .character_guid()
+        .find(character_guid)
+        .filter(|row| {
+            row.map_id == destination_map
+                && row.instance_id == destination_instance
+                && row.revision == 2
+                && !row.transfer_pending
+        })
+        .ok_or("Assist Realm fixture did not settle its member locator")?;
+    let partitions = ctx.db.game_group_member_partition();
+    let mut partition = partitions
+        .character_guid()
+        .find(character_guid)
+        .filter(|row| row.group_id == GROUP && row.member_active)
+        .ok_or("Assist Realm fixture member partition is absent")?;
+    partition.map_id = settled.map_id;
+    partition.instance_id = settled.instance_id;
+    partition.locator_revision = settled.revision;
+    partition.state = crate::PartyPartitionState::Known;
+    partitions.character_guid().update(partition);
+    Ok(())
+}
+
+/// Stage the same Realm roster as the generic Gateway fixture after the leader and selected Priest
+/// have completed distinct crossings to the destination partition.
+#[reducer]
+#[allow(clippy::too_many_arguments)] // The fixture carries four identities and both partitions.
+pub fn playerbots_transfer_gateway_assist_realm_stage(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    source_map: u32,
+    source_instance: u64,
+    destination_map: u32,
+    destination_instance: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let _group = ctx
+        .db
+        .game_group()
+        .group_id()
+        .find(GROUP)
+        .filter(|group| {
+            group.leader_guid == leader_guid
+                && group.loot_method == 3
+                && group.loot_threshold == 2
+                && group.rr_cursor == 0
+                && group.master_looter_guid == 0
+        })
+        .ok_or("Assist Realm fixture requires the staged party")?;
+    let _roster = ctx
+        .db
+        .game_group_roster_revision()
+        .group_id()
+        .find(GROUP)
+        .filter(|roster| roster.revision == 1 && roster.active)
+        .ok_or("Assist Realm fixture requires the staged roster")?;
+    let mut members: Vec<_> = ctx
+        .db
+        .game_group_member()
+        .by_group()
+        .filter(&GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    members.sort_by_key(|member| member.character_guid);
+    let mut expected = vec![companion_guid, leader_guid, priest_guid, mage_guid];
+    expected.sort_unstable();
+    if members.len() != expected.len()
+        || members
+            .iter()
+            .map(|member| member.character_guid)
+            .ne(expected.iter().copied())
+    {
+        return Err("Assist Realm fixture party members changed".to_string());
+    }
+    let partitions = ctx.db.game_group_member_partition();
+    let current: Vec<_> = partitions
+        .by_group()
+        .filter(&GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    if current.len() != expected.len()
+        || current.iter().any(|partition| {
+            let expected_partition = if partition.character_guid == leader_guid {
+                (destination_map, destination_instance)
+            } else {
+                (source_map, source_instance)
+            };
+            !expected.contains(&partition.character_guid)
+                || !partition.member_active
+                || partition.state != crate::PartyPartitionState::Known
+                || partition.locator_revision != 1
+                || (partition.map_id, partition.instance_id) != expected_partition
+        })
+    {
+        return Err("Assist Realm fixture member partitions changed".to_string());
+    }
+    let leader_locator = ctx
+        .db
+        .game_character_shard()
+        .character_guid()
+        .find(leader_guid)
+        .filter(|row| {
+            (row.map_id, row.instance_id) == (destination_map, destination_instance)
+                && row.revision == 1
+                && !row.transfer_pending
+        });
+    if leader_locator.is_none()
+        || ctx
+            .db
+            .game_character_shard()
+            .character_guid()
+            .find(priest_guid)
+            .is_some()
+    {
+        return Err("Assist Realm fixture member locators changed".to_string());
+    }
+    restage_completed_member_crossing(
+        ctx,
+        leader_guid,
+        source_map,
+        source_instance,
+        destination_map,
+        destination_instance,
+    )?;
+    restage_completed_member_crossing(
+        ctx,
+        priest_guid,
+        source_map,
+        source_instance,
+        destination_map,
+        destination_instance,
+    )
+}
+
 /// Install or remove one fixture-owned equal-revision rules conflict. The first arrival mirror
 /// refuses it, and the next real Gateway worker can succeed after the test removes it.
 #[reducer]

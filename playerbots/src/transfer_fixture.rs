@@ -165,6 +165,58 @@ fn move_partition(
     Ok(())
 }
 
+/// Declare the audited entry and admitted instance while the command issuer and selected member
+/// are still local. A later fixture step may then model their completed crossings without a second
+/// route writer.
+#[reducer]
+pub fn playerbots_transfer_fixture_entry_route_stage(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let group = ctx
+        .db
+        .game_group()
+        .group_id()
+        .find(GROUP)
+        .filter(|group| group.leader_guid == leader_guid)
+        .ok_or("Transfer entry fixture party missing")?;
+    let members: Vec<_> = ctx
+        .db
+        .game_group_member()
+        .by_group()
+        .filter(&GROUP)
+        .take(crate::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    if members.len() > crate::group::GROUP_MAX_MEMBERS
+        || !members
+            .iter()
+            .any(|member| member.character_guid == companion_guid)
+    {
+        return Err("Transfer entry fixture companion is outside its bounded party".to_string());
+    }
+    let companion = crate::helpers::live_entity(ctx, companion_guid)?;
+    let leader = crate::helpers::live_entity(ctx, leader_guid)?;
+    if (companion.map_id, companion.instance_id) != (leader.map_id, leader.instance_id) {
+        return Err("Transfer entry fixture requires the local command partition".to_string());
+    }
+    let (route, _) = fixture_route(2)?;
+    declare_route(ctx, route)?;
+    place_live(ctx, companion_guid, 0, 0, ENTRY_SOURCE)?;
+    let actor = crate::SessionActor {
+        guid: leader_guid,
+        ownership: None,
+    };
+    crate::instance::ensure_instance(ctx, DESTINATION_INSTANCE, 36, GROUP, actor)?;
+    if crate::instance::resolve_or_create_instance(ctx, group.leader_guid, 36)?
+        != DESTINATION_INSTANCE
+    {
+        return Err("Transfer entry fixture resolved another instance".to_string());
+    }
+    Ok(())
+}
+
 /// Put the private role-fixture leader in Deadmines and optionally declare the source-side portal.
 /// Mode 0 omits the entry route, mode 1 leaves the companion outside it, mode 2 starts inside it,
 /// and mode 3 starts inside the imported Deadmines exit sphere.

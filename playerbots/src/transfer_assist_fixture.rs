@@ -1,5 +1,3 @@
-#![cfg(feature = "debug_reducers")]
-
 //! Source inputs for the post-arrival Assist witness.
 
 use super::orders::{CommandRecord, CompanionOrder, CompanionOrderState};
@@ -8,13 +6,15 @@ use super::{
 };
 use crate::{
     game_character, game_group, game_group_member, game_group_member_partition,
-    game_group_roster_revision,
+    game_group_roster_revision, game_world_entity,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
 const DESTINATION_MAP: u32 = 36;
 const DESTINATION_INSTANCE: u64 = 5_098_078;
+#[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
 const PRIEST_DESTINATION: (f32, f32, f32, f32) = (-10.0, -385.475, 62.4561, 1.5708);
+#[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
 const LEADER_DESTINATION: (f32, f32, f32, f32) = (-14.5732, -410.475, 62.4561, 1.5708);
 
 #[table(accessor = pkg_playerbots_transfer_assist_source, public)]
@@ -272,6 +272,28 @@ fn relocate_character(
     Ok(())
 }
 
+fn relocate_live_character(
+    ctx: &ReducerContext,
+    guid: u64,
+    destination: (f32, f32, f32, f32),
+) -> Result<(), String> {
+    let entities = ctx.db.game_world_entity();
+    let mut entity = entities
+        .guid()
+        .find(guid)
+        .filter(|entity| entity.is_player() && entity.map_id == 0 && entity.instance_id == 0)
+        .ok_or("Assist destination fixture requires a local player body")?;
+    entity.map_id = DESTINATION_MAP;
+    entity.instance_id = DESTINATION_INSTANCE;
+    (entity.x, entity.y, entity.z, entity.orientation) = destination;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+    entity.grid_x = grid_x;
+    entity.grid_y = grid_y;
+    entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(entity);
+    relocate_character(ctx, guid, destination)
+}
+
 fn relocate_partition(
     ctx: &ReducerContext,
     mut partition: crate::GroupMemberPartition,
@@ -458,5 +480,71 @@ pub fn playerbots_transfer_assist_source_stage(
             runner_companion_order_revision: runner.companion_order_revision,
             staged_micros: ctx.timestamp.to_micros_since_unix_epoch(),
         });
+    Ok(())
+}
+
+/// Place the already allocated leader and selected Priest on the destination Shard before the
+/// companion starts crossing. The Gateway still owns the party mirror and arriving companion.
+#[reducer]
+pub fn playerbots_transfer_assist_destination_stage(
+    ctx: &ReducerContext,
+    bot_guid: u64,
+    leader_guid: u64,
+    priest_guid: u64,
+    unused_mage_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let guids = [bot_guid, leader_guid, priest_guid, unused_mage_guid];
+    if guids.contains(&0)
+        || guids
+            .iter()
+            .enumerate()
+            .any(|(index, guid)| guids[index + 1..].contains(guid))
+    {
+        return Err("Assist destination fixture requires four distinct Characters".to_string());
+    }
+    if ctx.db.game_character().guid().find(bot_guid).is_some()
+        || ctx
+            .db
+            .game_character()
+            .guid()
+            .find(unused_mage_guid)
+            .is_some()
+        || ctx
+            .db
+            .game_group_member()
+            .by_group()
+            .filter(&5_098_000)
+            .next()
+            .is_some()
+        || ctx.db.game_group().group_id().find(5_098_000).is_some()
+    {
+        return Err("Assist destination fixture requires fresh arrival and party rows".to_string());
+    }
+    super::runner::playerbots_select_controller(ctx, leader_guid, Controller::Cohort)?;
+    super::runner::playerbots_select_controller(ctx, priest_guid, Controller::Cohort)?;
+    let leader = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(leader_guid)
+        .next()
+        .filter(|bot| bot.class == super::class::WARRIOR && bot.role == super::ROLE_TANK)
+        .ok_or("Assist destination fixture requires the staged leader")?;
+    let priest = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(priest_guid)
+        .next()
+        .filter(|bot| bot.class == super::class::PRIEST && bot.role == super::ROLE_HEALER)
+        .ok_or("Assist destination fixture requires the selected Priest")?;
+    if leader.controller != Controller::Cohort || priest.controller != Controller::Cohort {
+        return Err("Assist destination fixture requires Cohort party members".to_string());
+    }
+    super::fixture::playerbots_fixture_freeze(ctx, leader_guid)?;
+    super::fixture::playerbots_fixture_freeze(ctx, priest_guid)?;
+    relocate_live_character(ctx, leader_guid, LEADER_DESTINATION)?;
+    relocate_live_character(ctx, priest_guid, PRIEST_DESTINATION)?;
     Ok(())
 }
