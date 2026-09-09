@@ -10,6 +10,13 @@ pub(crate) const ASSIST: u8 = 2;
 pub(crate) const TARGET: u8 = 3;
 const HISTORY_LIMIT: usize = 8;
 
+#[derive(spacetimedb::SpacetimeType, Clone, Debug)]
+pub struct CommandIssuerFence {
+    pub issuer_guid: u64,
+    pub sequence: u64,
+    pub retain_until_micros: i64,
+}
+
 #[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
 pub struct FollowOrder {
     pub leader_guid: u64,
@@ -65,6 +72,7 @@ pub struct CompanionOrderState {
     pub order: CompanionOrder,
     pub last_outcome: crate::actor::CommandOutcome,
     pub history: Vec<CommandRecord>,
+    pub issuer_fences: Vec<CommandIssuerFence>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_companion_order(ctx, character_guid) {
@@ -150,11 +158,32 @@ pub(crate) fn apply_command(
     };
     let states = ctx.db.pkg_playerbots_companion_order();
     let current = states.character_guid().find(admitted.command.bot_guid);
-    if current.as_ref().is_some_and(|state| {
-        state.issuer_guid == admitted.issuer_guid
-            && state.issuer_sequence > admitted.issuer_sequence
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let mut issuer_fences = current
+        .as_ref()
+        .map(|state| state.issuer_fences.clone())
+        .unwrap_or_default();
+    issuer_fences.retain(|fence| fence.retain_until_micros > now);
+    if issuer_fences.iter().any(|fence| {
+        fence.issuer_guid == admitted.issuer_guid && fence.sequence >= admitted.issuer_sequence
     }) {
         return crate::actor::CommandOutcome::Superseded;
+    }
+    if let Some(fence) = issuer_fences
+        .iter_mut()
+        .find(|fence| fence.issuer_guid == admitted.issuer_guid)
+    {
+        fence.sequence = admitted.issuer_sequence;
+        fence.retain_until_micros = admitted.receipt_retain_until_micros;
+    } else {
+        if issuer_fences.len() >= crate::actor::COMMAND_RECEIPT_CAPACITY {
+            return crate::actor::CommandOutcome::WaitingForCapacity;
+        }
+        issuer_fences.push(CommandIssuerFence {
+            issuer_guid: admitted.issuer_guid,
+            sequence: admitted.issuer_sequence,
+            retain_until_micros: admitted.receipt_retain_until_micros,
+        });
     }
     let outcome = if current.as_ref().is_some_and(|state| {
         state.active
@@ -200,6 +229,7 @@ pub(crate) fn apply_command(
             .map_or(order, |state| state.order.clone()),
         last_outcome: outcome,
         history,
+        issuer_fences,
     };
     if current.is_some() {
         states.character_guid().update(row);
