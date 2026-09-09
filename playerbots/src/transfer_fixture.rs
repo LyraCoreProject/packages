@@ -7,13 +7,166 @@ use crate::{
 use spacetimedb::{reducer, ReducerContext, Table};
 
 const GROUP: u64 = 5_098_000;
-const TRIGGER: u32 = 78;
+const ENTRY_TRIGGER: u32 = 78;
+const EXIT_TRIGGER: u32 = 119;
 const DESTINATION_INSTANCE: u64 = 5_098_078;
-const SOURCE: (f32, f32, f32) = (1208.0, 1200.0, 50.0);
-const LANDING: (f32, f32, f32, f32) = (-14.5732, -385.475, 62.4561, 1.5708);
+const ENTRY_SOURCE: (f32, f32, f32) = (1208.0, 1200.0, 50.0);
+const ENTRY_LANDING: (f32, f32, f32, f32) = (-14.5732, -385.475, 62.4561, 1.5708);
+const EXIT_SOURCE: (f32, f32, f32) = (-14.3628, -393.38, 64.5605);
+const EXIT_LANDING: (f32, f32, f32, f32) = (-11208.7, 1675.9, 24.5733, 4.71239);
+
+#[derive(Clone, Copy)]
+struct FixtureRoute {
+    trigger: u32,
+    source_map: u32,
+    source: (f32, f32, f32),
+    radius: f32,
+    target_map: u32,
+    landing: (f32, f32, f32, f32),
+    name: &'static str,
+}
+
+fn fixture_route(mode: u8) -> Result<(FixtureRoute, bool), String> {
+    let entry = FixtureRoute {
+        trigger: ENTRY_TRIGGER,
+        source_map: 0,
+        source: ENTRY_SOURCE,
+        radius: 2.0,
+        target_map: 36,
+        landing: ENTRY_LANDING,
+        name: "Deadmines - Entering (private Transfer fixture)",
+    };
+    match mode {
+        0 => Ok((entry, false)),
+        1 | 2 => Ok((entry, true)),
+        3 => Ok((
+            FixtureRoute {
+                trigger: EXIT_TRIGGER,
+                source_map: 36,
+                source: EXIT_SOURCE,
+                radius: 6.0,
+                target_map: 0,
+                landing: EXIT_LANDING,
+                name: "Deadmines - Leaving (private Transfer fixture)",
+            },
+            true,
+        )),
+        _ => Err("unknown Transfer fixture mode".to_string()),
+    }
+}
+
+fn declare_route(ctx: &ReducerContext, route: FixtureRoute) -> Result<(), String> {
+    if ctx
+        .db
+        .game_area_trigger()
+        .id()
+        .find(route.trigger)
+        .is_some()
+        || ctx
+            .db
+            .game_areatrigger_teleport()
+            .trigger_id()
+            .find(route.trigger)
+            .is_some()
+    {
+        return Err(format!(
+            "Transfer fixture refuses to replace imported AreaTrigger {}",
+            route.trigger
+        ));
+    }
+    ctx.db.game_area_trigger().insert(crate::GameAreaTrigger {
+        id: route.trigger,
+        map_id: route.source_map,
+        x: route.source.0,
+        y: route.source.1,
+        z: route.source.2,
+        radius: route.radius,
+        box_length: 0.0,
+        box_width: 0.0,
+        box_height: 0.0,
+        box_yaw: 0.0,
+    });
+    ctx.db
+        .game_areatrigger_teleport()
+        .insert(crate::AreatriggerTeleport {
+            trigger_id: route.trigger,
+            target_map: route.target_map,
+            x: route.landing.0,
+            y: route.landing.1,
+            z: route.landing.2,
+            o: route.landing.3,
+            name: route.name.to_string(),
+        });
+    Ok(())
+}
+
+fn place_live(
+    ctx: &ReducerContext,
+    guid: u64,
+    map_id: u32,
+    instance_id: u64,
+    position: (f32, f32, f32),
+) -> Result<(), String> {
+    let entities = ctx.db.game_world_entity();
+    let mut entity = entities
+        .guid()
+        .find(guid)
+        .ok_or("Transfer fixture body missing")?;
+    entity.map_id = map_id;
+    entity.instance_id = instance_id;
+    (entity.x, entity.y, entity.z) = position;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+    entity.grid_x = grid_x;
+    entity.grid_y = grid_y;
+    entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(entity);
+    Ok(())
+}
+
+fn place_character(
+    ctx: &ReducerContext,
+    guid: u64,
+    map_id: u32,
+    instance_id: u64,
+    landing: (f32, f32, f32, f32),
+) -> Result<(), String> {
+    let characters = ctx.db.game_character();
+    let mut character = characters
+        .guid()
+        .find(guid)
+        .ok_or("Transfer fixture Character missing")?;
+    character.map_id = map_id;
+    character.pending_instance_id = instance_id;
+    character.x = landing.0;
+    character.y = landing.1;
+    character.z = landing.2;
+    character.orientation = landing.3;
+    characters.guid().update(character);
+    Ok(())
+}
+
+fn move_partition(
+    partitions: &mut [crate::group::GroupMemberPartition],
+    guid: u64,
+    map_id: u32,
+    instance_id: u64,
+) -> Result<(), String> {
+    let partition = partitions
+        .iter_mut()
+        .find(|partition| partition.character_guid == guid)
+        .ok_or("Transfer fixture member partition missing")?;
+    partition.map_id = map_id;
+    partition.instance_id = instance_id;
+    partition.locator_revision = partition
+        .locator_revision
+        .checked_add(1)
+        .ok_or("Transfer fixture locator revision exhausted")?;
+    Ok(())
+}
 
 /// Put the private role-fixture leader in Deadmines and optionally declare the source-side portal.
-/// Mode 0 omits the route, mode 1 leaves the companion outside it, and mode 2 starts inside it.
+/// Mode 0 omits the entry route, mode 1 leaves the companion outside it, mode 2 starts inside it,
+/// and mode 3 starts inside the imported Deadmines exit sphere.
 #[reducer]
 pub fn playerbots_transfer_fixture_stage(
     ctx: &ReducerContext,
@@ -22,9 +175,7 @@ pub fn playerbots_transfer_fixture_stage(
     mode: u8,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if mode > 2 {
-        return Err("unknown Transfer fixture mode".to_string());
-    }
+    let (route, declared) = fixture_route(mode)?;
     let group = ctx
         .db
         .game_group()
@@ -51,54 +202,12 @@ pub fn playerbots_transfer_fixture_stage(
     {
         return Err("Transfer fixture Characters are outside its party".to_string());
     }
-    if ctx.db.game_area_trigger().id().find(TRIGGER).is_some()
-        || ctx
-            .db
-            .game_areatrigger_teleport()
-            .trigger_id()
-            .find(TRIGGER)
-            .is_some()
-    {
-        return Err("Transfer fixture refuses to replace imported AreaTrigger 78".to_string());
-    }
-    if mode != 0 {
-        ctx.db.game_area_trigger().insert(crate::GameAreaTrigger {
-            id: TRIGGER,
-            map_id: 0,
-            x: SOURCE.0,
-            y: SOURCE.1,
-            z: SOURCE.2,
-            radius: 2.0,
-            box_length: 0.0,
-            box_width: 0.0,
-            box_height: 0.0,
-            box_yaw: 0.0,
-        });
-        ctx.db
-            .game_areatrigger_teleport()
-            .insert(crate::AreatriggerTeleport {
-                trigger_id: TRIGGER,
-                target_map: 36,
-                x: LANDING.0,
-                y: LANDING.1,
-                z: LANDING.2,
-                o: LANDING.3,
-                name: "Deadmines - Entering (private Transfer fixture)".to_string(),
-            });
+    if declared {
+        declare_route(ctx, route)?;
     }
 
     if mode == 2 {
-        let entities = ctx.db.game_world_entity();
-        let mut companion = entities
-            .guid()
-            .find(companion_guid)
-            .ok_or("Transfer fixture companion body missing")?;
-        (companion.x, companion.y, companion.z) = SOURCE;
-        let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(companion.x, companion.y);
-        companion.grid_x = grid_x;
-        companion.grid_y = grid_y;
-        companion.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-        entities.guid().update(companion);
+        place_live(ctx, companion_guid, 0, 0, ENTRY_SOURCE)?;
     }
 
     let ensure_instance = crate::instance::ensure_instance; // package-api: exempt private fixture stages the admitted party instance
@@ -112,25 +221,41 @@ pub fn playerbots_transfer_fixture_stage(
             ownership: None,
         },
     )?;
-    let leader_instance = crate::instance::resolve_or_create_instance(ctx, leader_guid, 36); // package-api: exempt private fixture stages the leader's ordinary instance binding
-    if leader_instance? != DESTINATION_INSTANCE {
-        return Err("Transfer fixture leader resolved another instance".to_string());
+    let bound_guid = if mode == 3 {
+        companion_guid
+    } else {
+        leader_guid
+    };
+    let admitted_instance = crate::instance::resolve_or_create_instance(ctx, bound_guid, 36); // package-api: exempt private fixture stages an ordinary party instance binding
+    if admitted_instance? != DESTINATION_INSTANCE {
+        return Err("Transfer fixture resolved another instance".to_string());
+    }
+
+    if mode == 3 {
+        place_live(ctx, companion_guid, 36, DESTINATION_INSTANCE, EXIT_SOURCE)?;
+        place_character(
+            ctx,
+            companion_guid,
+            36,
+            DESTINATION_INSTANCE,
+            (EXIT_SOURCE.0, EXIT_SOURCE.1, EXIT_SOURCE.2, 0.0),
+        )?;
     }
 
     let leader = crate::helpers::live_entity(ctx, leader_guid)?;
     crate::world::remove_live_character(ctx, leader); // package-api: exempt private fixture models a completed leader Transfer
-    let characters = ctx.db.game_character();
-    let mut leader = characters
-        .guid()
-        .find(leader_guid)
-        .ok_or("Transfer fixture leader Character missing")?;
-    leader.map_id = 36;
-    leader.pending_instance_id = DESTINATION_INSTANCE;
-    leader.x = LANDING.0;
-    leader.y = LANDING.1;
-    leader.z = LANDING.2;
-    leader.orientation = LANDING.3;
-    characters.guid().update(leader);
+    let leader_instance = if route.target_map == 36 {
+        DESTINATION_INSTANCE
+    } else {
+        0
+    };
+    place_character(
+        ctx,
+        leader_guid,
+        route.target_map,
+        leader_instance,
+        route.landing,
+    )?;
 
     let mut partitions: Vec<_> = members
         .iter()
@@ -142,16 +267,15 @@ pub fn playerbots_transfer_fixture_stage(
                 .ok_or("Transfer fixture member partition missing")
         })
         .collect::<Result<_, _>>()?;
-    let leader_partition = partitions
-        .iter_mut()
-        .find(|partition| partition.character_guid == leader_guid)
-        .ok_or("Transfer fixture leader partition missing")?;
-    leader_partition.map_id = 36;
-    leader_partition.instance_id = DESTINATION_INSTANCE;
-    leader_partition.locator_revision = leader_partition
-        .locator_revision
-        .checked_add(1)
-        .ok_or("Transfer fixture locator revision exhausted")?;
+    move_partition(
+        &mut partitions,
+        leader_guid,
+        route.target_map,
+        leader_instance,
+    )?;
+    if mode == 3 {
+        move_partition(&mut partitions, companion_guid, 36, DESTINATION_INSTANCE)?;
+    }
     let roster_revision = ctx
         .db
         .game_group_roster_revision()
