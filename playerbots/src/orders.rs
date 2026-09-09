@@ -48,6 +48,7 @@ pub struct CommandRecord {
     pub source_identity: spacetimedb::Identity,
     pub intent_id: u64,
     pub issuer_guid: u64,
+    pub issuer_sequence: u64,
     pub order: CompanionOrder,
     pub outcome: crate::actor::CommandOutcome,
 }
@@ -57,7 +58,9 @@ pub struct CompanionOrderState {
     #[primary_key]
     pub character_guid: u64,
     pub issuer_guid: u64,
+    pub issuer_sequence: u64,
     pub group_id: u64,
+    pub active: bool,
     pub revision: u64,
     pub order: CompanionOrder,
     pub last_outcome: crate::actor::CommandOutcome,
@@ -147,8 +150,15 @@ pub(crate) fn apply_command(
     };
     let states = ctx.db.pkg_playerbots_companion_order();
     let current = states.character_guid().find(admitted.command.bot_guid);
-    let outcome = if current.as_ref().is_some_and(|state| {
+    if current.as_ref().is_some_and(|state| {
         state.issuer_guid == admitted.issuer_guid
+            && state.issuer_sequence > admitted.issuer_sequence
+    }) {
+        return crate::actor::CommandOutcome::Superseded;
+    }
+    let outcome = if current.as_ref().is_some_and(|state| {
+        state.active
+            && state.issuer_guid == admitted.issuer_guid
             && state.group_id == admitted.group_id
             && state.order == order
     }) {
@@ -165,6 +175,7 @@ pub(crate) fn apply_command(
         source_identity: admitted.source_identity,
         intent_id: admitted.intent_id,
         issuer_guid: admitted.issuer_guid,
+        issuer_sequence: admitted.issuer_sequence,
         order: order.clone(),
         outcome,
     });
@@ -179,7 +190,9 @@ pub(crate) fn apply_command(
     let row = CompanionOrderState {
         character_guid: admitted.command.bot_guid,
         issuer_guid: admitted.issuer_guid,
+        issuer_sequence: admitted.issuer_sequence,
         group_id: admitted.group_id,
+        active: true,
         revision,
         order: current
             .as_ref()
@@ -217,13 +230,17 @@ pub(crate) fn active(ctx: &ReducerContext, character_guid: u64) -> Option<Compan
         .pkg_playerbots_companion_order()
         .character_guid()
         .find(character_guid)
+        .filter(|state| state.active)
 }
 
 pub(crate) fn clear(ctx: &ReducerContext, character_guid: u64) {
-    ctx.db
-        .pkg_playerbots_companion_order()
-        .character_guid()
-        .delete(character_guid);
+    let states = ctx.db.pkg_playerbots_companion_order();
+    if let Some(mut state) = states.character_guid().find(character_guid) {
+        if state.active {
+            state.active = false;
+            states.character_guid().update(state);
+        }
+    }
 }
 
 pub(crate) fn record_runtime_outcome(
@@ -235,7 +252,7 @@ pub(crate) fn record_runtime_outcome(
     let Some(mut state) = states.character_guid().find(character_guid) else {
         return;
     };
-    if state.last_outcome == outcome {
+    if !state.active || state.last_outcome == outcome {
         return;
     }
     let (source_identity, intent_id) = state
@@ -249,6 +266,7 @@ pub(crate) fn record_runtime_outcome(
         source_identity,
         intent_id,
         issuer_guid: state.issuer_guid,
+        issuer_sequence: state.issuer_sequence,
         order: state.order.clone(),
         outcome,
     });
