@@ -9,6 +9,8 @@ use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 const GROUP: u64 = 5_098_000;
 const LEADER_MEMBER: u64 = 5_098_001;
 const COMPANION_MEMBER: u64 = 5_098_002;
+const PRIEST_MEMBER: u64 = 5_098_003;
+const MAGE_MEMBER: u64 = 5_098_004;
 const FAULT_CURSOR: u32 = u32::MAX;
 
 #[table(accessor = pkg_playerbots_transfer_gateway_identity, public)]
@@ -74,14 +76,22 @@ pub fn playerbots_transfer_gateway_realm_stage(
     ctx: &ReducerContext,
     companion_guid: u64,
     leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
     source_map: u32,
     source_instance: u64,
     destination_map: u32,
     destination_instance: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if companion_guid == 0 || leader_guid == 0 || companion_guid == leader_guid {
-        return Err("Gateway Transfer fixture requires two Characters".to_string());
+    let character_guids = [companion_guid, leader_guid, priest_guid, mage_guid];
+    if character_guids.iter().any(|guid| *guid == 0)
+        || character_guids
+            .iter()
+            .enumerate()
+            .any(|(index, guid)| character_guids[index + 1..].contains(guid))
+    {
+        return Err("Gateway Transfer fixture requires four distinct Characters".to_string());
     }
     if ctx.db.game_group().group_id().find(GROUP).is_some()
         || ctx
@@ -137,6 +147,18 @@ pub fn playerbots_transfer_gateway_realm_stage(
         owner_identity: Identity::ZERO,
     });
     members.insert(crate::GroupMember {
+        id: PRIEST_MEMBER,
+        group_id: GROUP,
+        character_guid: priest_guid,
+        owner_identity: Identity::ZERO,
+    });
+    members.insert(crate::GroupMember {
+        id: MAGE_MEMBER,
+        group_id: GROUP,
+        character_guid: mage_guid,
+        owner_identity: Identity::ZERO,
+    });
+    members.insert(crate::GroupMember {
         id: COMPANION_MEMBER,
         group_id: GROUP,
         character_guid: companion_guid,
@@ -151,6 +173,18 @@ pub fn playerbots_transfer_gateway_realm_stage(
     ctx.db.game_group_member_partition().insert(partition(
         companion_guid,
         COMPANION_MEMBER,
+        source_map,
+        source_instance,
+    ));
+    ctx.db.game_group_member_partition().insert(partition(
+        priest_guid,
+        PRIEST_MEMBER,
+        source_map,
+        source_instance,
+    ));
+    ctx.db.game_group_member_partition().insert(partition(
+        mage_guid,
+        MAGE_MEMBER,
         source_map,
         source_instance,
     ));
@@ -180,6 +214,8 @@ pub fn playerbots_transfer_gateway_mirror_fault(
     enabled: bool,
     companion_guid: u64,
     leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     let groups = ctx.db.game_group();
@@ -205,7 +241,7 @@ pub fn playerbots_transfer_gateway_mirror_fault(
     let expected_cursor = if enabled { 0 } else { FAULT_CURSOR };
     let mut member_guids: Vec<_> = members.iter().map(|member| member.character_guid).collect();
     member_guids.sort_unstable();
-    let mut expected_guids = vec![companion_guid, leader_guid];
+    let mut expected_guids = vec![companion_guid, leader_guid, priest_guid, mage_guid];
     expected_guids.sort_unstable();
     if (
         current.leader_guid,
@@ -218,7 +254,7 @@ pub fn playerbots_transfer_gateway_mirror_fault(
             .as_ref()
             .is_none_or(|revision| revision.revision != 1 || !revision.active)
         || member_guids != expected_guids
-        || partitions.len() != 2
+        || partitions.len() != 4
         || partitions.iter().any(|partition| {
             partition.group_id != GROUP
                 || !partition.member_active
