@@ -1,8 +1,8 @@
 //! Private three-database authority and mirror-failure staging for Gateway Transfer cases.
 
 use crate::{
-    game_character_shard, game_group, game_group_member, game_group_member_partition,
-    game_group_roster_revision,
+    game_character, game_character_shard, game_group, game_group_member,
+    game_group_member_partition, game_group_roster_revision, game_world_entity, pkg_playerbots_bot,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
@@ -11,7 +11,11 @@ const LEADER_MEMBER: u64 = 5_098_001;
 const COMPANION_MEMBER: u64 = 5_098_002;
 const PRIEST_MEMBER: u64 = 5_098_003;
 const MAGE_MEMBER: u64 = 5_098_004;
-const FAULT_CURSOR: u32 = u32::MAX;
+const PARTY_LOOT_METHOD: u8 = 0;
+const FAULT_LOOT_METHOD: u8 = 3;
+const DESTINATION_POSITION: (f32, f32, f32) = (-14.5732, -385.475, 62.4561);
+#[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
+const DESTINATION_ORIENTATION: f32 = 1.5708;
 
 #[table(accessor = pkg_playerbots_transfer_gateway_identity, public)]
 pub struct PlayerbotsTransferGatewayIdentity {
@@ -115,18 +119,13 @@ pub fn playerbots_transfer_gateway_realm_stage(
             .filter(&GROUP)
             .next()
             .is_some()
-        || ctx
-            .db
-            .game_character_shard()
-            .character_guid()
-            .find(companion_guid)
-            .is_some()
-        || ctx
-            .db
-            .game_character_shard()
-            .character_guid()
-            .find(leader_guid)
-            .is_some()
+        || character_guids.iter().any(|guid| {
+            ctx.db
+                .game_character_shard()
+                .character_guid()
+                .find(*guid)
+                .is_some()
+        })
     {
         return Err("Gateway Transfer fixture requires fresh Realm rows".to_string());
     }
@@ -135,7 +134,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
     ctx.db.game_group().insert(crate::Group {
         group_id: GROUP,
         leader_guid,
-        loot_method: 3,
+        loot_method: PARTY_LOOT_METHOD,
         loot_threshold: 2,
         rr_cursor: 0,
         master_looter_guid: 0,
@@ -168,8 +167,8 @@ pub fn playerbots_transfer_gateway_realm_stage(
     ctx.db.game_group_member_partition().insert(partition(
         leader_guid,
         LEADER_MEMBER,
-        destination_map,
-        destination_instance,
+        source_map,
+        source_instance,
     ));
     ctx.db.game_group_member_partition().insert(partition(
         companion_guid,
@@ -198,12 +197,147 @@ pub fn playerbots_transfer_gateway_realm_stage(
         });
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     locators.insert(locator(companion_guid, source_map, source_instance, now));
-    locators.insert(locator(
+    locators.insert(locator(leader_guid, source_map, source_instance, now));
+    locators.insert(locator(priest_guid, source_map, source_instance, now));
+    locators.insert(locator(mage_guid, source_map, source_instance, now));
+    crate::realm_core::record_shard(ctx, leader_guid, destination_map, destination_instance);
+    let leader = locators
+        .character_guid()
+        .find(leader_guid)
+        .filter(|row| {
+            (row.map_id, row.instance_id) == (destination_map, destination_instance)
+                && row.revision == 2
+                && !row.transfer_pending
+        })
+        .ok_or("Gateway Transfer fixture did not settle its leader locator")?;
+    let leader_partition = ctx
+        .db
+        .game_group_member_partition()
+        .character_guid()
+        .find(leader_guid)
+        .filter(|row| {
+            (row.map_id, row.instance_id) == (leader.map_id, leader.instance_id)
+                && row.locator_revision == leader.revision
+                && row.state == crate::PartyPartitionState::Known
+        });
+    if leader_partition.is_none() {
+        return Err("Gateway Transfer fixture did not project its leader crossing".to_string());
+    }
+    Ok(())
+}
+
+/// Keep the generic Gateway fixture's human leader on the World Shard named by Realm-core.
+#[reducer]
+#[allow(clippy::too_many_arguments)] // The fixture binds all four identities and one partition.
+pub fn playerbots_transfer_gateway_destination_leader_stage(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    source_map: u32,
+    source_instance: u64,
+    destination_map: u32,
+    destination_instance: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let guids = [companion_guid, leader_guid, priest_guid, mage_guid];
+    if guids.contains(&0)
+        || guids
+            .iter()
+            .enumerate()
+            .any(|(index, guid)| guids[index + 1..].contains(guid))
+    {
+        return Err("Gateway Transfer destination requires four distinct Characters".to_string());
+    }
+    if [companion_guid, priest_guid, mage_guid]
+        .iter()
+        .any(|guid| ctx.db.game_character().guid().find(*guid).is_some())
+        || ctx.db.game_group().group_id().find(GROUP).is_some()
+        || ctx
+            .db
+            .game_group_member()
+            .by_group()
+            .filter(&GROUP)
+            .next()
+            .is_some()
+    {
+        return Err("Gateway Transfer destination rows are not fresh".to_string());
+    }
+    let leader = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(leader_guid)
+        .next()
+        .filter(|bot| {
+            bot.class == super::class::WARRIOR
+                && bot.role == super::ROLE_TANK
+                && bot.controller == super::Controller::Legacy
+        })
+        .ok_or("Gateway Transfer destination leader changed")?;
+    ctx.db.pkg_playerbots_bot().id().delete(leader.id);
+    crate::actor::set_sessionless_action_consent(ctx, leader_guid, true);
+
+    let characters = ctx.db.game_character();
+    let mut character = characters
+        .guid()
+        .find(leader_guid)
+        .ok_or("Gateway Transfer destination leader Character is absent")?;
+    character.map_id = destination_map;
+    character.pending_instance_id = destination_instance;
+    (character.x, character.y, character.z) = DESTINATION_POSITION;
+    character.orientation = DESTINATION_ORIENTATION;
+    characters.guid().update(character);
+
+    let entities = ctx.db.game_world_entity();
+    let mut entity = entities
+        .guid()
+        .find(leader_guid)
+        .filter(|entity| entity.is_player())
+        .ok_or("Gateway Transfer destination leader body is absent")?;
+    entity.map_id = destination_map;
+    entity.instance_id = destination_instance;
+    (entity.x, entity.y, entity.z) = DESTINATION_POSITION;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+    entity.grid_x = grid_x;
+    entity.grid_y = grid_y;
+    entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(entity);
+    crate::group::sync_group_mirror(
+        ctx,
+        GROUP,
         leader_guid,
-        destination_map,
-        destination_instance,
-        now,
-    ));
+        PARTY_LOOT_METHOD,
+        2,
+        0,
+        vec![leader_guid, companion_guid, priest_guid, mage_guid],
+        crate::SessionActor {
+            guid: leader_guid,
+            ownership: None,
+        },
+        vec![
+            {
+                let mut leader = partition(
+                    leader_guid,
+                    LEADER_MEMBER,
+                    destination_map,
+                    destination_instance,
+                );
+                leader.locator_revision = 2;
+                leader
+            },
+            partition(
+                companion_guid,
+                COMPANION_MEMBER,
+                source_map,
+                source_instance,
+            ),
+            partition(priest_guid, PRIEST_MEMBER, source_map, source_instance),
+            partition(mage_guid, MAGE_MEMBER, source_map, source_instance),
+        ],
+        1,
+    )?;
     Ok(())
 }
 
@@ -269,7 +403,7 @@ pub fn playerbots_transfer_gateway_assist_realm_stage(
         .find(GROUP)
         .filter(|group| {
             group.leader_guid == leader_guid
-                && group.loot_method == 3
+                && group.loot_method == PARTY_LOOT_METHOD
                 && group.loot_threshold == 2
                 && group.rr_cursor == 0
                 && group.master_looter_guid == 0
@@ -308,15 +442,16 @@ pub fn playerbots_transfer_gateway_assist_realm_stage(
         .collect();
     if current.len() != expected.len()
         || current.iter().any(|partition| {
-            let expected_partition = if partition.character_guid == leader_guid {
-                (destination_map, destination_instance)
+            let (expected_partition, expected_revision) = if partition.character_guid == leader_guid
+            {
+                ((destination_map, destination_instance), 2)
             } else {
-                (source_map, source_instance)
+                ((source_map, source_instance), 1)
             };
             !expected.contains(&partition.character_guid)
                 || !partition.member_active
                 || partition.state != crate::PartyPartitionState::Known
-                || partition.locator_revision != 1
+                || partition.locator_revision != expected_revision
                 || (partition.map_id, partition.instance_id) != expected_partition
         })
     {
@@ -329,27 +464,26 @@ pub fn playerbots_transfer_gateway_assist_realm_stage(
         .find(leader_guid)
         .filter(|row| {
             (row.map_id, row.instance_id) == (destination_map, destination_instance)
-                && row.revision == 1
+                && row.revision == 2
                 && !row.transfer_pending
         });
-    if leader_locator.is_none()
-        || ctx
-            .db
+    let source_locator = |guid| {
+        ctx.db
             .game_character_shard()
             .character_guid()
-            .find(priest_guid)
-            .is_some()
+            .find(guid)
+            .filter(|row| {
+                (row.map_id, row.instance_id) == (source_map, source_instance)
+                    && row.revision == 1
+                    && !row.transfer_pending
+            })
+    };
+    if leader_locator.is_none()
+        || source_locator(priest_guid).is_none()
+        || source_locator(mage_guid).is_none()
     {
         return Err("Assist Realm fixture member locators changed".to_string());
     }
-    restage_completed_member_crossing(
-        ctx,
-        leader_guid,
-        source_map,
-        source_instance,
-        destination_map,
-        destination_instance,
-    )?;
     restage_completed_member_crossing(
         ctx,
         priest_guid,
@@ -392,7 +526,11 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         .filter(&GROUP)
         .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
-    let expected_cursor = if enabled { 0 } else { FAULT_CURSOR };
+    let expected_method = if enabled {
+        PARTY_LOOT_METHOD
+    } else {
+        FAULT_LOOT_METHOD
+    };
     let mut member_guids: Vec<_> = members.iter().map(|member| member.character_guid).collect();
     member_guids.sort_unstable();
     let mut expected_guids = vec![companion_guid, leader_guid, priest_guid, mage_guid];
@@ -403,7 +541,7 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         current.loot_threshold,
         current.rr_cursor,
         current.master_looter_guid,
-    ) != (leader_guid, 3, 2, expected_cursor, 0)
+    ) != (leader_guid, expected_method, 2, 0, 0)
         || revision
             .as_ref()
             .is_none_or(|revision| revision.revision != 1 || !revision.active)
@@ -417,7 +555,11 @@ pub fn playerbots_transfer_gateway_mirror_fault(
     {
         return Err("Gateway Transfer fixture refuses to alter another party".to_string());
     }
-    current.rr_cursor = if enabled { FAULT_CURSOR } else { 0 };
+    current.loot_method = if enabled {
+        FAULT_LOOT_METHOD
+    } else {
+        PARTY_LOOT_METHOD
+    };
     groups.group_id().update(current);
     Ok(())
 }
