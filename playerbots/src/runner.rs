@@ -1054,24 +1054,30 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         match &order.order {
             super::orders::CompanionOrder::Assist(assist) => {
                 let member = party
-                        .members
-                        .iter()
-                        .find(|member| member.character_guid == assist.member_guid)
+                    .members
+                    .iter()
+                    .find(|member| member.character_guid == assist.member_guid)
                     .and_then(|member| member.unit.as_ref());
                 let target_guid = member.map_or(0, |member| member.target_guid);
-                let outcome = if member.is_none() {
-                    Err(crate::actor::CommandOutcome::WrongPartition)
-                } else if target_guid == 0 {
-                    Err(crate::actor::CommandOutcome::TargetUnavailable)
-                } else {
-                    crate::actor::companion_target_facts(ctx, me.guid, target_guid).and_then(|_| {
-                        party
-                            .enemies
-                            .iter()
-                            .any(|enemy| enemy.guid == target_guid)
-                            .then_some(())
-                            .ok_or(crate::actor::CommandOutcome::TargetUnavailable)
-                    })
+                let outcome = match member {
+                    None => Err(crate::actor::CommandOutcome::TargetUnavailable),
+                    Some(member)
+                        if (member.map_id, member.instance_id) != (me.map_id, me.instance_id) =>
+                    {
+                        Err(crate::actor::CommandOutcome::WrongPartition)
+                    }
+                    Some(_) if target_guid == 0 => {
+                        Err(crate::actor::CommandOutcome::TargetUnavailable)
+                    }
+                    Some(_) => crate::actor::companion_target_facts(ctx, me.guid, target_guid)
+                        .and_then(|_| {
+                            party
+                                .enemies
+                                .iter()
+                                .any(|enemy| enemy.guid == target_guid)
+                                .then_some(())
+                                .ok_or(crate::actor::CommandOutcome::TargetUnavailable)
+                        }),
                 };
                 match outcome {
                     Ok(()) => {
@@ -1080,12 +1086,14 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                             ctx,
                             me.guid,
                             crate::actor::CommandOutcome::Applied,
-                );
-            }
+                        );
+                    }
                     Err(outcome) => {
                         party.fight_constraint = Some(u64::MAX);
                         super::orders::record_runtime_outcome(ctx, me.guid, outcome);
-                        stop(ctx, me.guid, &mut state);
+                        if bot.controller == Controller::Cohort {
+                            stop(ctx, me.guid, &mut state);
+                        }
                     }
                 }
             }
@@ -1099,26 +1107,28 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                             crate::actor::CommandOutcome::Applied,
                         );
                         party.enemies.push(crate::group::PartyEnemyFacts {
-                        guid: target.guid,
-                        map_id: target.map_id,
-                        instance_id: target.instance_id,
-                        x: target.x,
-                        y: target.y,
-                        z: target.z,
-                        health: target.health,
-                        max_health: target.max_health,
-                        attacking_party: false,
-                        party_attacking: false,
-                        party_casting: false,
-                        party_has_threat: false,
-                        current_target_guid: None,
-                        top_threat_guid: None,
-                        control: None,
+                            guid: target.guid,
+                            map_id: target.map_id,
+                            instance_id: target.instance_id,
+                            x: target.x,
+                            y: target.y,
+                            z: target.z,
+                            health: target.health,
+                            max_health: target.max_health,
+                            attacking_party: false,
+                            party_attacking: false,
+                            party_casting: false,
+                            party_has_threat: false,
+                            current_target_guid: None,
+                            top_threat_guid: None,
+                            control: None,
                         });
                     }
                     Err(outcome) => {
                         super::orders::record_runtime_outcome(ctx, me.guid, outcome);
-                        stop(ctx, me.guid, &mut state);
+                        if bot.controller == Controller::Cohort {
+                            stop(ctx, me.guid, &mut state);
+                        }
                     }
                 }
             }
