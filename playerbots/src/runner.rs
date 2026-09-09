@@ -1378,6 +1378,25 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     }
+    if matches!(
+        quest_plan,
+        Some(super::quest_loop::QuestPlan::Wait(
+            super::quest_loop::WaitReason::Controlled
+        ))
+    ) && state
+        .failures
+        .last()
+        .is_none_or(|failure| failure.reason != Failure::QuestControlled)
+    {
+        bounded_push(
+            &mut state.failures,
+            FailureRecord {
+                reason: Failure::QuestControlled,
+                at_micros: now,
+            },
+            FAILURE_LIMIT,
+        );
+    }
     if chosen.is_none_or(|candidate| candidate.id.action == Action::Hold)
         && state.recovery.as_ref().is_some_and(|recovery| {
             state
@@ -1481,7 +1500,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 action: Action::Move(MoveTarget::RecoveryPosition(_)),
                 reason: Reason::Quest,
                 ..
-            } => matches!(quest_plan, Some(super::quest_loop::QuestPlan::Wait(_))),
+            } => true,
             decision::CandidateId {
                 action: Action::Move(MoveTarget::CastingPosition(target)),
                 reason: Reason::CastingPosition,
@@ -1594,16 +1613,18 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         if matches!(candidate.id.reason, Reason::Quest | Reason::CrowdControl)
             && candidate.id.action == Action::Hold
         {
-            state.failure(
-                match reason {
-                    super::quest_loop::WaitReason::MissingTarget => Failure::QuestTargetMissing,
-                    super::quest_loop::WaitReason::ReadLimit => Failure::QuestReadLimit,
-                    super::quest_loop::WaitReason::Respawn => Failure::QuestRespawn,
-                    super::quest_loop::WaitReason::Deferred => Failure::NoMovement,
-                    super::quest_loop::WaitReason::Controlled => Failure::QuestControlled,
-                },
-                now,
-            );
+            let failure = match reason {
+                super::quest_loop::WaitReason::MissingTarget => Failure::QuestTargetMissing,
+                super::quest_loop::WaitReason::ReadLimit => Failure::QuestReadLimit,
+                super::quest_loop::WaitReason::Respawn => Failure::QuestRespawn,
+                super::quest_loop::WaitReason::Deferred => Failure::NoMovement,
+                super::quest_loop::WaitReason::Controlled => Failure::QuestControlled,
+            };
+            if reason == super::quest_loop::WaitReason::Controlled {
+                state.last_outcome = RunnerOutcome::Refused(failure);
+            } else {
+                state.failure(failure, now);
+            }
             state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
             state.next_eligible_micros =
                 state.next_eligible_micros.max(now.saturating_add(INTERVAL));
