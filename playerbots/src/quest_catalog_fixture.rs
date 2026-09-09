@@ -5,8 +5,8 @@
 use super::pkg_playerbots_bot;
 use super::quest_catalog::{
     self, pkg_playerbots_catalog_objective, pkg_playerbots_catalog_quest,
-    pkg_playerbots_quest_catalog, pkg_playerbots_quest_objective, AdmissionRefusal,
-    CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
+    pkg_playerbots_catalog_seed, pkg_playerbots_quest_catalog, pkg_playerbots_quest_objective,
+    AdmissionRefusal, CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
     ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, CATALOG_REVISION,
     CATALOG_WALK_LIMIT,
 };
@@ -2454,4 +2454,127 @@ pub fn playerbots_quest_fixture_recheck_unchanged(ctx: &ReducerContext) -> Resul
     headers.revision().update(header);
     quest_catalog::ensure_catalog(ctx);
     Ok(())
+}
+
+/// Keep the existing no-prerequisite path to Quest 33, then fill every inventory slot. The runner
+/// must complete Quests 783 and 5261 through the Core before it can reach the loot refusal.
+#[reducer]
+pub fn playerbots_recovery_fixture_stage_full_bag(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_quest_loop_fixture_stage_named(ctx, character_guid)?;
+    require_fixture(ctx)?;
+    let objectives = ctx.db.pkg_playerbots_catalog_objective();
+    let removed: Vec<_> = objectives.by_quest().filter(7).take(5).collect();
+    if removed.len() > 4 {
+        return Err("Quest 7 fixture objectives exceed their read limit".to_string());
+    }
+    ctx.db
+        .pkg_playerbots_catalog_quest()
+        .quest_entry()
+        .delete(7);
+    for row in removed {
+        objectives.id().delete(row.id);
+    }
+    let headers = ctx.db.pkg_playerbots_quest_catalog();
+    let mut header = headers
+        .revision()
+        .find(CATALOG_REVISION)
+        .ok_or("quest catalog header missing")?;
+    header.quest_count = QUESTS.len().saturating_sub(1) as u32;
+    header.refresh_after_micros = i64::MAX;
+    headers.revision().update(header);
+    let seeds = ctx.db.pkg_playerbots_catalog_seed();
+    for class in [1, 5, 8] {
+        let mut seed = seeds
+            .class()
+            .find(class)
+            .ok_or("quest catalog class seed missing")?;
+        seed.quest_order.retain(|quest| *quest != 7);
+        seeds.class().update(seed);
+    }
+    playerbots_quest_fixture_fill_inventory(ctx, character_guid)
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_clear_one_inventory_slot(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let items = ctx.db.game_item_instance();
+    let filler = items
+        .by_owner_guid()
+        .filter(character_guid)
+        .find(|item| item.entry == INVENTORY_FILLER)
+        .ok_or("inventory filler missing")?;
+    items.guid().delete(filler.guid);
+    if !crate::items::has_free_slot(ctx, character_guid) {
+        return Err("one inventory slot did not become available".to_string());
+    }
+    Ok(())
+}
+
+/// Exercise three parked runner passes at one observed time so a one-second retry deadline cannot
+/// elapse between calls from the test process.
+#[reducer]
+pub fn playerbots_recovery_fixture_three_parked_passes(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    for _ in 0..3 {
+        super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_arm_gameobject_respawn(
+    ctx: &ReducerContext,
+    delay_seconds: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    if !(2..=10).contains(&delay_seconds) {
+        return Err("respawn delay must be 2 through 10 seconds".to_string());
+    }
+    let rows = ctx.db.game_gameobject();
+    let mut gameobject = rows
+        .guid()
+        .find(gameobject_guid(SEEDED_USE_GAMEOBJECT))
+        .ok_or("simple GameObject missing")?;
+    gameobject.state = 1;
+    gameobject.respawn_at_micros = (ctx.timestamp.to_micros_since_unix_epoch() as u64)
+        .saturating_add(u64::from(delay_seconds) * 1_000_000);
+    rows.guid().update(gameobject);
+    Ok(())
+}
+
+/// Move Quest 783's live ender and spawn before rebuilding its catalog destination, then make the
+/// route unreachable. Acceptance remains available at the separate nearby start giver.
+#[reducer]
+pub fn playerbots_recovery_fixture_stage_unreachable_ender(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_quest_fixture_stage(ctx, character_guid)?;
+    require_fixture(ctx)?;
+    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let ender_guid = creature_guid(197);
+    super::fixture::playerbots_fixture_position(ctx, ender_guid, character.x + 40.0)?;
+    let spawns = ctx.db.game_creature_spawn();
+    let mut spawn = spawns
+        .guid()
+        .find(ender_guid)
+        .ok_or("Quest 783 ender spawn missing")?;
+    spawn.x = character.x + 40.0;
+    spawns.guid().update(spawn);
+    quest_catalog::refresh_catalog(ctx, "unknown");
+    block_navigation(ctx, &character)
 }
