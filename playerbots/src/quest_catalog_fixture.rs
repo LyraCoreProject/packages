@@ -2555,6 +2555,52 @@ pub fn playerbots_recovery_fixture_arm_gameobject_respawn(
     Ok(())
 }
 
+#[reducer]
+pub fn playerbots_recovery_fixture_position_simple_gameobject(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let rows = ctx.db.game_gameobject();
+    let mut gameobject = rows
+        .guid()
+        .find(gameobject_guid(SEEDED_USE_GAMEOBJECT))
+        .ok_or("simple GameObject is absent")?;
+    gameobject.x = character.x + 30.0;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(gameobject.x, gameobject.y);
+    gameobject.grid_x = grid_x;
+    gameobject.grid_y = grid_y;
+    gameobject.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    rows.guid().update(gameobject);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_remove_simple_gameobject(
+    ctx: &ReducerContext,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    if ctx
+        .db
+        .pkg_playerbots_seeded_quest_fixture()
+        .quest_entry()
+        .find(SEEDED_USE_QUEST)
+        .is_none()
+    {
+        return Err("simple GameObject fixture is absent".to_string());
+    }
+    let guid = gameobject_guid(SEEDED_USE_GAMEOBJECT);
+    let gameobjects = ctx.db.game_gameobject();
+    if gameobjects.guid().find(guid).is_none() {
+        return Err("simple GameObject is absent".to_string());
+    }
+    gameobjects.guid().delete(guid);
+    Ok(())
+}
+
 /// Move Quest 783's live ender and spawn before rebuilding its catalog destination, then make the
 /// route unreachable. Acceptance remains available at the separate nearby start giver.
 #[reducer]

@@ -1508,6 +1508,11 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                 ..
             } => !quest_plan.is_some_and(|plan| plan.target() == Some(target)),
             decision::CandidateId {
+                action: Action::Move(MoveTarget::GameObject(target)),
+                reason: Reason::Quest,
+                ..
+            } => !quest_plan.is_some_and(|plan| plan.target() == Some(target)),
+            decision::CandidateId {
                 action: Action::Move(MoveTarget::RecoveryPosition(_)),
                 reason: Reason::Quest,
                 ..
