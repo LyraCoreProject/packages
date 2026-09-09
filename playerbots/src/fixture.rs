@@ -24,8 +24,8 @@ const ROLES_GROUP: u64 = 5_098_000;
 const ROLES_PRIEST_TRAINER: u32 = 5_098_200;
 const ROLES_FORTITUDE_OFFERING: u64 = 5_098_201;
 
-/// Move the fixture's human stand-in onto its own Account before exercising the authenticated
-/// Gateway Actor Gate. No bot shares this Account.
+/// Move the fixture's human stand-in onto an Account no other private party member uses before
+/// exercising the authenticated Gateway Actor Gate.
 #[reducer]
 pub fn playerbots_fixture_orders_account(
     ctx: &ReducerContext,
@@ -36,20 +36,33 @@ pub fn playerbots_fixture_orders_account(
     if ctx.db.game_account().id().find(account_id).is_none() {
         return Err("order fixture account missing".to_string());
     }
-    let characters = ctx.db.game_character();
-    let mut leader = characters
-        .guid()
-        .find(leader_guid)
+    let mut leader = crate::helpers::character_by_guid(ctx, leader_guid)
         .ok_or("order fixture leader missing")?;
-    if characters
-        .by_account()
-        .filter(&account_id)
-        .any(|character| character.guid != leader_guid)
-    {
-        return Err("order fixture account is not empty".to_string());
+    let party_members: Vec<_> = ctx
+        .db
+        .game_group_member()
+        .by_group()
+        .filter(&ROLES_GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    if party_members.len() > lyracore_shared::group::GROUP_MAX_MEMBERS {
+        return Err("order fixture private party exceeds its member bound".to_string());
+    }
+    let party_uses_account = party_members
+        .into_iter()
+        .filter(|member| member.character_guid != leader_guid)
+        .map(|member| {
+            crate::helpers::character_by_guid(ctx, member.character_guid)
+                .ok_or("order fixture party Character missing")
+        })
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|character| character.account_id == account_id);
+    if party_uses_account {
+        return Err("order fixture private party already uses account".to_string());
     }
     leader.account_id = account_id;
-    characters.guid().update(leader);
+    ctx.db.game_character().guid().update(leader);
     Ok(())
 }
 
@@ -162,7 +175,6 @@ pub fn playerbots_fixture_orders_names(
     {
         return Err("order fixture naming requires distinct Characters".to_string());
     }
-    let characters = ctx.db.game_character();
     let staged: Vec<_> = character_guids
         .iter()
         .zip(names)
@@ -187,13 +199,9 @@ pub fn playerbots_fixture_orders_names(
             if !(is_bot || is_fixture_leader) {
                 return Err("order fixture Character is outside the private role party".to_string());
             }
-            let character = characters
-                .guid()
-                .find(*guid)
+            let character = crate::helpers::character_by_guid(ctx, *guid)
                 .ok_or_else(|| "order fixture Character missing".to_string())?;
-            if characters
-                .name()
-                .find(&name)
+            if crate::helpers::character_by_name(ctx, &name)
                 .is_some_and(|held| held.guid != *guid)
             {
                 return Err(format!("order fixture name '{name}' is already in use"));
@@ -203,7 +211,7 @@ pub fn playerbots_fixture_orders_names(
         .collect::<Result<_, String>>()?;
     for (mut character, name) in staged {
         character.name = name;
-        characters.guid().update(character);
+        ctx.db.game_character().guid().update(character);
     }
     Ok(())
 }
@@ -299,13 +307,7 @@ pub fn playerbots_fixture_orders_partition(
     instance_id: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if ctx
-        .db
-        .game_character()
-        .guid()
-        .find(character_guid)
-        .is_none()
-    {
+    if crate::helpers::character_by_guid(ctx, character_guid).is_none() {
         return Err("order fixture Character missing".to_string());
     }
     let entities = ctx.db.game_world_entity();
