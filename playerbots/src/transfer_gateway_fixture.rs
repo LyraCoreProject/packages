@@ -4,12 +4,34 @@ use crate::{
     game_character_shard, game_group, game_group_member, game_group_member_partition,
     game_group_roster_revision,
 };
-use spacetimedb::{reducer, Identity, ReducerContext, Table};
+use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
 const GROUP: u64 = 5_098_000;
 const LEADER_MEMBER: u64 = 5_098_001;
 const COMPANION_MEMBER: u64 = 5_098_002;
 const FAULT_CURSOR: u32 = u32::MAX;
+
+#[table(accessor = pkg_playerbots_transfer_gateway_identity, public)]
+pub struct PlayerbotsTransferGatewayIdentity {
+    #[primary_key]
+    pub id: u8,
+    pub identity: Identity,
+}
+
+/// Record the actual Module identity used by one private Gateway Transfer database.
+#[reducer]
+pub fn playerbots_transfer_gateway_identity_stage(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let identities = ctx.db.pkg_playerbots_transfer_gateway_identity();
+    if identities.id().find(0).is_some() {
+        return Err("Gateway Transfer identity fixture requires a fresh row".to_string());
+    }
+    identities.insert(PlayerbotsTransferGatewayIdentity {
+        id: 0,
+        identity: ctx.database_identity(),
+    });
+    Ok(())
+}
 
 fn partition(
     character_guid: u64,
