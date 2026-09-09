@@ -574,14 +574,13 @@ pub fn playerbots_select_controller(
 
 fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
     if let Some(foreground) = state.foreground.take() {
-        if matches!(
-            &foreground.running,
-            Running::Cast(handle)
-                if state.companion_heal_target_guid == Some(handle.target_guid)
-                    || state.companion_buff_target_guid == Some(handle.target_guid)
-        ) {
-            state.companion_heal_target_guid = None;
-            state.companion_buff_target_guid = None;
+        if let Running::Cast(handle) = &foreground.running {
+            if state.companion_heal_target_guid == Some(handle.target_guid) {
+                state.companion_heal_target_guid = None;
+            }
+            if state.companion_buff_target_guid == Some(handle.target_guid) {
+                state.companion_buff_target_guid = None;
+            }
         }
         bounded_push(
             &mut state.history,

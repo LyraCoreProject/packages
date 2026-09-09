@@ -729,6 +729,21 @@ pub fn playerbots_fixture_roles_prepare_fortitude(
     })
 }
 
+/// Give the private role fixture enough cast time to interrupt Fortitude with an urgent heal.
+#[reducer]
+pub fn playerbots_fixture_roles_slow_fortitude(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut fortitude = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(1243)
+        .ok_or("seed Fortitude spell header missing")?;
+    fortitude.cast_time_ms = 60_000;
+    ctx.db.game_spell().spell_id().update(fortitude);
+    Ok(())
+}
+
 /// Give the level-5 Priest a named fixture mana pool for the real 30-power Lesser Heal Gate.
 /// The value is synthetic and makes no claim about an imported class-stat curve.
 #[reducer]
