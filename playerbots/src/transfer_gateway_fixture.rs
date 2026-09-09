@@ -11,41 +11,6 @@ const LEADER_MEMBER: u64 = 5_098_001;
 const COMPANION_MEMBER: u64 = 5_098_002;
 const FAULT_CURSOR: u32 = u32::MAX;
 
-fn remove_fixture_group(ctx: &ReducerContext) -> Result<(), String> {
-    let members: Vec<_> = ctx
-        .db
-        .game_group_member()
-        .by_group()
-        .filter(&GROUP)
-        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
-        .collect();
-    if members.len() > lyracore_shared::group::GROUP_MAX_MEMBERS {
-        return Err("Gateway Transfer fixture party exceeds its member bound".to_string());
-    }
-    for member in members {
-        ctx.db.game_group_member().id().delete(member.id);
-    }
-    let partitions: Vec<_> = ctx
-        .db
-        .game_group_member_partition()
-        .by_group()
-        .filter(&GROUP)
-        .take(lyracore_shared::group::GROUP_MAX_MEMBERS * 2 + 1)
-        .collect();
-    if partitions.len() > lyracore_shared::group::GROUP_MAX_MEMBERS * 2 {
-        return Err("Gateway Transfer fixture partitions exceed their bound".to_string());
-    }
-    for partition in partitions {
-        ctx.db
-            .game_group_member_partition()
-            .character_guid()
-            .delete(partition.character_guid);
-    }
-    ctx.db.game_group().group_id().delete(GROUP);
-    ctx.db.game_group_roster_revision().group_id().delete(GROUP);
-    Ok(())
-}
-
 fn partition(
     character_guid: u64,
     membership_revision: u64,
@@ -191,81 +156,56 @@ pub fn playerbots_transfer_gateway_realm_stage(
 pub fn playerbots_transfer_gateway_mirror_fault(
     ctx: &ReducerContext,
     enabled: bool,
+    companion_guid: u64,
+    leader_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if enabled {
-        if ctx.db.game_group().group_id().find(GROUP).is_some()
-            || ctx
-                .db
-                .game_group_roster_revision()
-                .group_id()
-                .find(GROUP)
-                .is_some()
-            || ctx
-                .db
-                .game_group_member()
-                .by_group()
-                .filter(&GROUP)
-                .next()
-                .is_some()
-            || ctx
-                .db
-                .game_group_member_partition()
-                .by_group()
-                .filter(&GROUP)
-                .next()
-                .is_some()
-        {
-            return Err("Gateway Transfer mirror fault requires a fresh party id".to_string());
-        }
-        ctx.db.game_group().insert(crate::Group {
-            group_id: GROUP,
-            leader_guid: 1,
-            loot_method: 3,
-            loot_threshold: 2,
-            rr_cursor: FAULT_CURSOR,
-            master_looter_guid: 0,
-        });
-        ctx.db
-            .game_group_roster_revision()
-            .insert(crate::GroupRosterRevision {
-                group_id: GROUP,
-                revision: 1,
-                active: true,
-            });
-        return Ok(());
-    }
-    let current = ctx.db.game_group().group_id().find(GROUP);
+    let groups = ctx.db.game_group();
+    let mut current = groups
+        .group_id()
+        .find(GROUP)
+        .ok_or("Gateway Transfer mirror fault requires the exact mirrored party")?;
     let revision = ctx.db.game_group_roster_revision().group_id().find(GROUP);
-    let has_members = ctx
+    let members: Vec<_> = ctx
         .db
         .game_group_member()
         .by_group()
         .filter(&GROUP)
-        .next()
-        .is_some();
-    let has_partitions = ctx
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    let partitions: Vec<_> = ctx
         .db
         .game_group_member_partition()
         .by_group()
         .filter(&GROUP)
-        .next()
-        .is_some();
-    if current.as_ref().is_none_or(|group| {
-        (
-            group.leader_guid,
-            group.loot_method,
-            group.loot_threshold,
-            group.rr_cursor,
-            group.master_looter_guid,
-        ) != (1, 3, 2, FAULT_CURSOR, 0)
-    }) || revision
-        .as_ref()
-        .is_none_or(|revision| revision.revision != 1 || !revision.active)
-        || has_members
-        || has_partitions
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    let expected_cursor = if enabled { 0 } else { FAULT_CURSOR };
+    let mut member_guids: Vec<_> = members.iter().map(|member| member.character_guid).collect();
+    member_guids.sort_unstable();
+    let mut expected_guids = vec![companion_guid, leader_guid];
+    expected_guids.sort_unstable();
+    if (
+        current.leader_guid,
+        current.loot_method,
+        current.loot_threshold,
+        current.rr_cursor,
+        current.master_looter_guid,
+    ) != (leader_guid, 3, 2, expected_cursor, 0)
+        || revision
+            .as_ref()
+            .is_none_or(|revision| revision.revision != 1 || !revision.active)
+        || member_guids != expected_guids
+        || partitions.len() != 2
+        || partitions.iter().any(|partition| {
+            partition.group_id != GROUP
+                || !partition.member_active
+                || !expected_guids.contains(&partition.character_guid)
+        })
     {
-        return Err("Gateway Transfer fixture refuses to remove another party".to_string());
+        return Err("Gateway Transfer fixture refuses to alter another party".to_string());
     }
-    remove_fixture_group(ctx)
+    current.rr_cursor = if enabled { FAULT_CURSOR } else { 0 };
+    groups.group_id().update(current);
+    Ok(())
 }
