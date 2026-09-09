@@ -135,8 +135,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          # Replace with the final PB-009 Core head before opening the Package PR.
-          ref: 014da9d8822f4fdbf5f47c00904bbf13cddcca62
+          # Merged PB-009 Core supplies the companion command relay and Transfer receipts.
+          ref: 50018fcda9f22acdc8f66d1d14d8b91a8513e27a
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
