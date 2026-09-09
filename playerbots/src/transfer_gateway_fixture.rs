@@ -17,9 +17,9 @@ fn remove_fixture_group(ctx: &ReducerContext) -> Result<(), String> {
         .game_group_member()
         .by_group()
         .filter(&GROUP)
-        .take(crate::group::GROUP_MAX_MEMBERS + 1)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
-    if members.len() > crate::group::GROUP_MAX_MEMBERS {
+    if members.len() > lyracore_shared::group::GROUP_MAX_MEMBERS {
         return Err("Gateway Transfer fixture party exceeds its member bound".to_string());
     }
     for member in members {
@@ -30,9 +30,9 @@ fn remove_fixture_group(ctx: &ReducerContext) -> Result<(), String> {
         .game_group_member_partition()
         .by_group()
         .filter(&GROUP)
-        .take(crate::group::GROUP_MAX_MEMBERS * 2 + 1)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS * 2 + 1)
         .collect();
-    if partitions.len() > crate::group::GROUP_MAX_MEMBERS * 2 {
+    if partitions.len() > lyracore_shared::group::GROUP_MAX_MEMBERS * 2 {
         return Err("Gateway Transfer fixture partitions exceed their bound".to_string());
     }
     for partition in partitions {
@@ -236,9 +236,34 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         return Ok(());
     }
     let current = ctx.db.game_group().group_id().find(GROUP);
-    if current
+    let revision = ctx.db.game_group_roster_revision().group_id().find(GROUP);
+    let has_members = ctx
+        .db
+        .game_group_member()
+        .by_group()
+        .filter(&GROUP)
+        .next()
+        .is_some();
+    let has_partitions = ctx
+        .db
+        .game_group_member_partition()
+        .by_group()
+        .filter(&GROUP)
+        .next()
+        .is_some();
+    if current.as_ref().is_none_or(|group| {
+        (
+            group.leader_guid,
+            group.loot_method,
+            group.loot_threshold,
+            group.rr_cursor,
+            group.master_looter_guid,
+        ) != (1, 3, 2, FAULT_CURSOR, 0)
+    }) || revision
         .as_ref()
-        .is_none_or(|group| group.rr_cursor != FAULT_CURSOR)
+        .is_none_or(|revision| revision.revision != 1 || !revision.active)
+        || has_members
+        || has_partitions
     {
         return Err("Gateway Transfer fixture refuses to remove another party".to_string());
     }
