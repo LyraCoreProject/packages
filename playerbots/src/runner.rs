@@ -1026,6 +1026,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
         if quest_read_limited {
             if bot.controller == Controller::Cohort {
+                if let Some(recovery) = &mut state.recovery {
+                    recovery.activate(None, now);
+                }
                 stop(ctx, me.guid, &mut state);
             }
             state.chosen = Some(quest_unavailable);
@@ -1052,14 +1055,16 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             super::quest_loop::invalidate_safe_position(ctx, &me, retained);
         }
     }
-    let quest_plan = retained_quest.as_ref().filter(|_| !quest_read_limited).map(|retained| {
-        super::quest_loop::plan(ctx, &me, retained, |target| {
-            state
-                .recovery
-                .as_ref()
-                .is_none_or(|recovery| recovery.eligible_work(super::recovery::Work::Fight(target)))
-        })
-    });
+    let quest_plan = retained_quest
+        .as_ref()
+        .filter(|_| !quest_read_limited)
+        .map(|retained| {
+            super::quest_loop::plan(ctx, &me, retained, |target| {
+                state.recovery.as_ref().is_none_or(|recovery| {
+                    recovery.eligible_work(super::recovery::Work::Fight(target))
+                })
+            })
+        });
     if bot.controller == Controller::Cohort
         && matches!(
             quest_plan,
@@ -1407,7 +1412,10 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     {
         state.failure(Failure::RecoveryCapacity, now);
     }
-    if let (Some(candidate), Some(purpose)) = (chosen, decision.purpose) {
+    if let (Some(candidate), Some(purpose)) = (
+        chosen.filter(|candidate| !quest_read_limited || *candidate != quest_unavailable),
+        decision.purpose,
+    ) {
         let mut recovery = state.recovery.take().unwrap_or_default();
         let adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
         state.recovery = Some(recovery);
@@ -1440,6 +1448,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         let _ = crate::actor::stop_attack(ctx, me.guid);
     }
     if quest_read_limited && chosen == Some(quest_unavailable) {
+        if let Some(recovery) = &mut state.recovery {
+            recovery.activate(None, now);
+        }
         stop(ctx, me.guid, &mut state);
         state.chosen = chosen;
         state.retry_candidate = Some(quest_unavailable.id);
