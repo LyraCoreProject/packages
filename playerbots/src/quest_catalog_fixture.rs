@@ -1689,7 +1689,10 @@ pub fn playerbots_quest_fixture_admit_accept(
                 Some(quest_entry),
                 None,
             );
-            super::actions::accept_quest(ctx, character_guid, admission.start.guid, quest_entry)
+            let giver = admission
+                .start
+                .ok_or("available quest has no current start giver")?;
+            super::actions::accept_quest(ctx, character_guid, giver.guid, quest_entry)
                 .map_err(Into::into)
         }
         Err(refusal) => {
@@ -2086,7 +2089,10 @@ pub fn playerbots_quest_fixture_mixed_progress(
         return Err("banked collect item changed the selected objective".to_string());
     }
     quest_catalog::record_admission(ctx, character_guid, 7, Some(7), None);
-    super::actions::accept_quest(ctx, character_guid, admission.start.guid, 7).map_err(Into::into)
+    let giver = admission
+        .start
+        .ok_or("available quest has no current start giver")?;
+    super::actions::accept_quest(ctx, character_guid, giver.guid, 7).map_err(Into::into)
 }
 
 #[reducer]
@@ -2177,8 +2183,10 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
             }
         },
     )?;
-    super::actions::accept_quest(ctx, character_guid, alternative.start.guid, 5261)
-        .map_err(String::from)?;
+    let giver = alternative
+        .start
+        .ok_or("available quest has no current start giver")?;
+    super::actions::accept_quest(ctx, character_guid, giver.guid, 5261).map_err(String::from)?;
     let catalog = ctx.db.pkg_playerbots_catalog_objective();
     let id = u64::from(7u32) << 8;
     let previous = catalog.id().find(id).ok_or("catalog objective missing")?;
@@ -2598,6 +2606,88 @@ pub fn playerbots_recovery_fixture_remove_simple_gameobject(
         return Err("simple GameObject is absent".to_string());
     }
     gameobjects.guid().delete(guid);
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_restore_simple_gameobject(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+        .filter(|retained| retained.quest_entry == SEEDED_USE_QUEST)
+        .ok_or("simple GameObject Quest is not retained")?;
+    let destination = retained
+        .target
+        .source
+        .filter(|source| {
+            source.kind == CatalogEntityKind::GameObject
+                && source.entry == SEEDED_USE_GAMEOBJECT
+                && source.guid == gameobject_guid(SEEDED_USE_GAMEOBJECT)
+        })
+        .ok_or("retained simple GameObject destination differs")?;
+    let template = ctx
+        .db
+        .game_gameobject_template()
+        .entry()
+        .find(SEEDED_USE_GAMEOBJECT)
+        .filter(|template| {
+            template.type_id == crate::gameobject::go_type::GOOBER && template.lock_id == 0
+        })
+        .ok_or("simple GameObject template differs")?;
+    let rows = ctx.db.game_gameobject();
+    if rows.guid().find(destination.guid).is_some() {
+        return Err("simple GameObject is already present".to_string());
+    }
+    rows.insert(crate::GameObject {
+        guid: destination.guid,
+        template_entry: template.entry,
+        map_id: destination.map_id,
+        x: destination.x,
+        y: destination.y,
+        z: destination.z,
+        orientation: 0.0,
+        state: 0,
+        created_at: ctx.timestamp,
+        respawn_at_micros: 0,
+        instance_id: destination.instance_id,
+        grid_x: lyracore_shared::spatial::grid_cell(destination.x, destination.y).0,
+        grid_y: lyracore_shared::spatial::grid_cell(destination.x, destination.y).1,
+        cell: lyracore_shared::spatial::cell_id_at(destination.x, destination.y),
+        rotation_0: 0.0,
+        rotation_1: 0.0,
+        rotation_2: 0.0,
+        rotation_3: 0.0,
+    });
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_remove_simple_gameobject_and_objective(
+    ctx: &ReducerContext,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    reject_imported_content(ctx)?;
+    if ctx
+        .db
+        .game_quest_objective()
+        .id()
+        .find(SEEDED_USE_OBJECTIVE)
+        .is_none()
+    {
+        return Err("simple GameObject objective is absent".to_string());
+    }
+    playerbots_recovery_fixture_remove_simple_gameobject(ctx)?;
+    ctx.db
+        .game_quest_objective()
+        .id()
+        .delete(SEEDED_USE_OBJECTIVE);
     Ok(())
 }
 
