@@ -5,7 +5,6 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_kit, PlayerbotsBot,
 };
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
-use crate::game_group_member_partition;
 use crate::nav::game_nav_chunk;
 use crate::spell::stacking::{game_spell_group, SpellGroup};
 use crate::{
@@ -16,6 +15,7 @@ use crate::{
     game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect, game_threat,
     game_world_entity,
 };
+use crate::{game_group_member_partition, game_group_roster_revision};
 use spacetimedb::{reducer, ReducerContext, Table, TimeDuration};
 
 const HEAL: u32 = 5_090_100;
@@ -148,7 +148,71 @@ fn orders_party(
         3 => (leader_guid, vec![leader_guid, warrior_guid, mage_guid]),
         _ => return Err("unknown order fixture party mode".to_string()),
     };
-    crate::group::sync_group_mirror(ctx, ROLES_GROUP, leader, 0, 2, 0, members, request_actor)
+    let roster_revision = ctx
+        .db
+        .game_group_roster_revision()
+        .group_id()
+        .find(ROLES_GROUP)
+        .ok_or("order fixture roster revision missing")?
+        .revision
+        .checked_add(1)
+        .ok_or("order fixture roster revision exhausted")?;
+    let mut partitions: Vec<_> = ctx
+        .db
+        .game_group_member_partition()
+        .by_group()
+        .filter(&ROLES_GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS * 2 + 1)
+        .collect();
+    if partitions.len() > lyracore_shared::group::GROUP_MAX_MEMBERS * 2 {
+        return Err("order fixture party partition history exceeds its bound".to_string());
+    }
+    let mut next_membership = partitions
+        .iter()
+        .map(|partition| partition.membership_revision)
+        .max()
+        .unwrap_or(0);
+    for partition in &mut partitions {
+        let included = members.contains(&partition.character_guid);
+        if partition.member_active && !included {
+            partition.member_active = false;
+            partition.state = crate::group::PartyPartitionState::Unknown;
+        } else if !partition.member_active && included {
+            next_membership = next_membership
+                .checked_add(1)
+                .ok_or("order fixture membership revision exhausted")?;
+            partition.membership_revision = next_membership;
+            partition.member_active = true;
+            partition.state = crate::group::PartyPartitionState::Known;
+        }
+    }
+    if members.iter().any(|guid| {
+        !partitions
+            .iter()
+            .any(|partition| partition.character_guid == *guid && partition.member_active)
+    }) {
+        return Err("order fixture member partition missing".to_string());
+    }
+    let effective_members: Vec<_> = partitions
+        .iter()
+        .filter(|partition| partition.member_active)
+        .map(|partition| (partition.membership_revision, partition.character_guid))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|(_, guid)| guid)
+        .collect();
+    crate::group::sync_group_mirror(
+        ctx,
+        ROLES_GROUP,
+        leader,
+        0,
+        2,
+        0,
+        effective_members,
+        request_actor,
+        partitions,
+        roster_revision,
+    )
 }
 
 /// Give each private multi-shard role fixture a distinct set of Character names.
@@ -202,8 +266,7 @@ pub fn playerbots_fixture_orders_names(
             }
             let character = crate::helpers::character_by_guid(ctx, *guid)
                 .ok_or_else(|| "order fixture Character missing".to_string())?;
-            if crate::helpers::character_by_name(ctx, &name)
-                .is_some_and(|held| held.guid != *guid)
+            if crate::helpers::character_by_name(ctx, &name).is_some_and(|held| held.guid != *guid)
             {
                 return Err(format!("order fixture name '{name}' is already in use"));
             }
@@ -1300,7 +1363,8 @@ pub fn playerbots_fixture_companion_client_cast(
     caster_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::gw::gw_cast_at( // package-api: exempt fixture proves client and bot cast Gate parity
+    crate::gw::gw_cast_at(
+        // package-api: exempt fixture proves client and bot cast Gate parity
         ctx,
         crate::SessionActor {
             guid: caster_guid,
