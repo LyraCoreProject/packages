@@ -1363,8 +1363,7 @@ pub fn playerbots_fixture_companion_client_cast(
     caster_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::gw::gw_cast_at(
-        // package-api: exempt fixture proves client and bot cast Gate parity
+    crate::gw::gw_cast_at( // package-api: exempt fixture proves client and bot cast Gate parity
         ctx,
         crate::SessionActor {
             guid: caster_guid,
