@@ -644,7 +644,8 @@ jobs:
                 stdb::subscriptions::party_command_durable_tests \
                 -- --ignored --nocapture --test-threads=1
               cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
+                --locked -p lyracore-module \
+                --test playerbots_rewrite --test playerbots_companion \
                 --test playerbots_provisioning --test playerbots_quest_catalog \
                 --test playerbots_roles --test playerbots_quest_loops \
                 --test playerbots_recovery --test playerbots_recovery_failures \
