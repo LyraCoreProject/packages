@@ -159,6 +159,7 @@ pub fn playerbots_fixture_orders_names(
         .zip(names)
         .enumerate()
         .map(|(index, (guid, name))| {
+            let name = name.to_string();
             let is_bot = ctx
                 .db
                 .pkg_playerbots_bot()
@@ -183,12 +184,12 @@ pub fn playerbots_fixture_orders_names(
                 .ok_or_else(|| "order fixture Character missing".to_string())?;
             if characters
                 .name()
-                .find(name)
+                .find(&name)
                 .is_some_and(|held| held.guid != *guid)
             {
                 return Err(format!("order fixture name '{name}' is already in use"));
             }
-            Ok((character, name.to_string()))
+            Ok((character, name))
         })
         .collect::<Result<_, String>>()?;
     for (mut character, name) in staged {
