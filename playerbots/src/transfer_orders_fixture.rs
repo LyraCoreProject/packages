@@ -1,11 +1,12 @@
 //! Private party inputs for order decisions around the audited Deadmines entrance.
 
 use super::pkg_playerbots_bot;
+use crate::game_creature_move_schedule;
 use crate::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_group,
     game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, ReducerContext, ScheduleAt, Table, TimeDuration};
 
 const GROUP: u64 = 5_098_000;
 const INSTANCE: u64 = 5_098_078;
@@ -77,6 +78,7 @@ pub fn playerbots_transfer_orders_stage(
         .game_group_member_partition()
         .by_group()
         .filter(&GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
     if partitions.len() != 4 {
         return Err("order Transfer fixture needs the exact initial role party".to_string());
@@ -180,6 +182,19 @@ pub fn playerbots_transfer_orders_stage(
             o: LANDING.3,
             name: "Deadmines - Entering".to_string(),
         });
+    // Keep the first real Target leg pending while the caller records and changes partition facts.
+    let schedules = ctx.db.game_creature_move_schedule(); // package-api: exempt private fixture declares the Core movement tick before orders begin
+    let mut ticks: Vec<_> = schedules.iter().take(2).collect();
+    if ticks.len() != 1 || ticks[0].instance_id != u64::MAX {
+        return Err("order Transfer fixture requires one fresh movement tick".to_string());
+    }
+    let at = ctx
+        .timestamp
+        .checked_add(TimeDuration::from_micros(60_000_000))
+        .ok_or("fixture movement tick timestamp exhausted")?;
+    let mut tick = ticks.remove(0);
+    tick.scheduled_at = ScheduleAt::Time(at);
+    schedules.scheduled_id().update(tick);
     Ok(())
 }
 
@@ -210,6 +225,7 @@ pub fn playerbots_transfer_orders_remote(
         .game_group_member_partition()
         .by_group()
         .filter(&GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
     if partitions.len() != 5 || !partitions.iter().any(|p| p.character_guid == priest) {
         return Err("order Transfer fixture requires its five-member party".to_string());
