@@ -16,6 +16,10 @@
       "power": 100,
       "source": "synthetic private resource Gate fixture"
     },
+    "starter_role_cancel_renew": {
+      "spell": 139,
+      "purpose": "isolate the Lesser Heal cost and direct-heal lifecycle"
+    },
     "starter_role_control_spells": [50020, 50021, 50022, 50023],
     "starter_role_fortitude_trainer": {
       "trainer_entry": 5098200,

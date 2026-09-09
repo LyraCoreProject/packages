@@ -550,6 +550,16 @@ pub fn playerbots_fixture_roles_priest_mana(
     Ok(())
 }
 
+/// End the zero-cost Renew proof before the fixture measures Lesser Heal's cast-time cost and heal.
+#[reducer]
+pub fn playerbots_fixture_roles_cancel_renew(
+    ctx: &ReducerContext,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    crate::spell::do_cancel_aura(ctx, target_guid, 139)
+}
+
 #[reducer]
 pub fn playerbots_fixture_companion_move(
     ctx: &ReducerContext,
