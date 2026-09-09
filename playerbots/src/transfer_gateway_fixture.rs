@@ -200,7 +200,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
     locators.insert(locator(leader_guid, source_map, source_instance, now));
     locators.insert(locator(priest_guid, source_map, source_instance, now));
     locators.insert(locator(mage_guid, source_map, source_instance, now));
-    crate::realm_core::record_shard(ctx, leader_guid, destination_map, destination_instance);
+    crate::realm_core::record_shard(ctx, leader_guid, destination_map, destination_instance); // package-api: exempt private fixture models a completed Realm locator crossing
     let leader = locators
         .character_guid()
         .find(leader_guid)
@@ -355,7 +355,7 @@ fn restage_completed_member_crossing(
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     locators.insert(locator(character_guid, source_map, source_instance, now));
-    crate::realm_core::record_shard(ctx, character_guid, destination_map, destination_instance);
+    crate::realm_core::record_shard(ctx, character_guid, destination_map, destination_instance); // package-api: exempt private fixture models a completed Realm locator crossing
     let settled = locators
         .character_guid()
         .find(character_guid)
