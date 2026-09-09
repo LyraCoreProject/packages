@@ -140,9 +140,9 @@ pub fn playerbots_fixture_orders_names(
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     let names = match namespace {
-        0 => ["CmdSrcWar", "CmdSrcPri", "CmdSrcMag", "CmdSrcLead"],
-        1 => ["CmdTgtWar", "CmdTgtPri", "CmdTgtMag", "CmdTgtLead"],
-        2 => ["CmdDstWar", "CmdDstPri", "CmdDstMag", "CmdDstLead"],
+        0 => ["Cmdsrcwar", "Cmdsrcpri", "Cmdsrcmag", "Cmdsrclead"],
+        1 => ["Cmdtgtwar", "Cmdtgtpri", "Cmdtgtmag", "Cmdtgtlead"],
+        2 => ["Cmddstwar", "Cmddstpri", "Cmddstmag", "Cmddstlead"],
         _ => return Err("unknown order fixture name namespace".to_string()),
     };
     let character_guids = [warrior_guid, priest_guid, mage_guid, leader_guid];
