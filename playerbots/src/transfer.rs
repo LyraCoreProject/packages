@@ -2,8 +2,11 @@
 
 use super::decision::{Action, ActionNode, MoveTarget, Reason, TransferAction};
 use super::quest_catalog::pkg_playerbots_quest_objective;
-use super::runner::{Failure, PlayerbotsRunner, TransferCheckpoint, TransferPurpose};
-use spacetimedb::{ReducerContext, Table};
+use super::runner::{
+    CompanionTransferPurpose, Failure, PlayerbotsRunner, QuestTransferPurpose, TransferCheckpoint,
+    TransferPurpose,
+};
+use spacetimedb::ReducerContext;
 
 const SUPPORTED_AREA_TRIGGERS: [u32; 3] = [78, 119, 121];
 const TRANSFER_PRIORITY: i32 = 700;
@@ -17,18 +20,20 @@ pub(super) fn candidate(
 ) -> ActionNode {
     let route = SUPPORTED_AREA_TRIGGERS
         .into_iter()
-        .filter_map(|trigger| crate::actor::area_trigger_route(ctx, trigger))
-        .filter(|route| route.source_map == me.map_id && route.target_map == partition.map_id)
+        .filter_map(|trigger| {
+            crate::actor::area_trigger_route(ctx, trigger).map(|route| (trigger, route))
+        })
+        .filter(|(_, route)| route.source_map == me.map_id && route.target_map == partition.map_id)
         .min_by(|left, right| {
-            distance_sq(me, left)
-                .total_cmp(&distance_sq(me, right))
-                .then(left.trigger_id.cmp(&right.trigger_id))
+            distance_sq(me, &left.1)
+                .total_cmp(&distance_sq(me, &right.1))
+                .then(left.0.cmp(&right.0))
         });
-    let Some(route) = route else {
+    let Some((trigger, route)) = route else {
         return ActionNode::ready(Action::Hold, Reason::Transfer, TRANSFER_PRIORITY);
     };
     let transfer = TransferAction {
-        trigger: route.trigger_id,
+        trigger,
         destination_map: partition.map_id,
         destination_instance: partition.instance_id,
     };
@@ -40,7 +45,7 @@ pub(super) fn candidate(
     node.candidate.id.objective = objective;
     if !route.contains(me.x, me.y, me.z) {
         let mut position = ActionNode::ready(
-            Action::Move(MoveTarget::AreaTrigger(route.trigger_id)),
+            Action::Move(MoveTarget::AreaTrigger(trigger)),
             Reason::TransferPosition,
             TRANSFER_PRIORITY,
         );
@@ -121,7 +126,7 @@ fn checkpoint_purpose(
                     && attempt.work == super::recovery::Work::Follow(member_guid)
             })
         });
-        return Some(TransferPurpose::Companion {
+        return Some(TransferPurpose::Companion(CompanionTransferPurpose {
             member_guid,
             stalled_micros: attempt.map_or(0, |attempt| attempt.stalled_micros),
             approach: attempt
@@ -130,7 +135,7 @@ fn checkpoint_purpose(
             deferred_micros: attempt
                 .and_then(|attempt| attempt.deferred_until_micros)
                 .map_or(0, |until| until.saturating_sub(now).max(0)),
-        });
+        }));
     }
     let objective = state
         .objective
@@ -148,7 +153,7 @@ fn checkpoint_purpose(
                 && attempt.reason == Reason::Quest
         })
     });
-    Some(TransferPurpose::Quest {
+    Some(TransferPurpose::Quest(QuestTransferPurpose {
         quest: retained.quest_entry,
         objective_index: retained.target.objective_index,
         executor: retained.target.executor,
@@ -164,7 +169,7 @@ fn checkpoint_purpose(
         deferred_micros: attempt
             .and_then(|attempt| attempt.deferred_until_micros)
             .map_or(0, |until| until.saturating_sub(now).max(0)),
-    })
+    }))
 }
 
 pub(super) enum Arrival {
@@ -175,18 +180,18 @@ pub(super) enum Arrival {
 
 pub(super) fn requires_recovery(checkpoint: TransferCheckpoint) -> bool {
     match checkpoint.purpose {
-        Some(TransferPurpose::Companion {
+        Some(TransferPurpose::Companion(CompanionTransferPurpose {
             stalled_micros,
             approach,
             deferred_micros,
             ..
-        })
-        | Some(TransferPurpose::Quest {
+        }))
+        | Some(TransferPurpose::Quest(QuestTransferPurpose {
             stalled_micros,
             approach,
             deferred_micros,
             ..
-        }) => stalled_micros > 0 || approach > 0 || deferred_micros > 0,
+        })) => stalled_micros > 0 || approach > 0 || deferred_micros > 0,
         None => false,
     }
 }
@@ -197,13 +202,13 @@ pub(super) fn retains_quest(
 ) -> bool {
     matches!(
         checkpoint.purpose,
-        Some(TransferPurpose::Quest {
+        Some(TransferPurpose::Quest(QuestTransferPurpose {
             quest,
             objective_index,
             executor,
             source_entry,
             ..
-        }) if admission.quest_entry == quest
+        })) if admission.quest_entry == quest
             && admission.target.objective_index == objective_index
             && admission.target.executor == executor
             && admission
@@ -252,7 +257,7 @@ pub(super) fn arrival(
         return Arrival::Invalid(Failure::TransferDestinationChanged);
     }
     match checkpoint.purpose {
-        Some(TransferPurpose::Companion { member_guid, .. }) => {
+        Some(TransferPurpose::Companion(CompanionTransferPurpose { member_guid, .. })) => {
             let Some(party) = party else {
                 return Arrival::Invalid(Failure::TransferPurposeChanged);
             };
@@ -274,13 +279,13 @@ pub(super) fn arrival(
                 Arrival::Waiting
             }
         }
-        Some(TransferPurpose::Quest {
+        Some(TransferPurpose::Quest(QuestTransferPurpose {
             quest,
             objective_index,
             executor,
             source_entry,
             ..
-        }) => {
+        })) => {
             if ctx
                 .db
                 .pkg_playerbots_quest_objective()
@@ -316,24 +321,24 @@ pub(super) fn restore_recovery(
 ) -> Option<super::recovery::RestoredTransferAttempt> {
     let (reason, member_guid, stalled_micros, approach, deferred_micros) = match checkpoint.purpose
     {
-        Some(TransferPurpose::Companion {
+        Some(TransferPurpose::Companion(CompanionTransferPurpose {
             member_guid,
             stalled_micros,
             approach,
             deferred_micros,
-        }) => (
+        })) => (
             Reason::Follow,
             Some(member_guid),
             stalled_micros,
             approach,
             deferred_micros,
         ),
-        Some(TransferPurpose::Quest {
+        Some(TransferPurpose::Quest(QuestTransferPurpose {
             stalled_micros,
             approach,
             deferred_micros,
             ..
-        }) => (
+        })) => (
             Reason::Quest,
             None,
             stalled_micros,
