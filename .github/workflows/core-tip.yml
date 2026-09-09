@@ -115,7 +115,7 @@ jobs:
   playerbots-durable:
     needs: firewall
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       RUSTUP_TOOLCHAIN: 1.93.0
       SPACETIME_VERSION: 2.7.1
@@ -447,6 +447,95 @@ jobs:
           echo "PLAYERBOTS_QUEST_PRECEDING_MANIFEST=$manifest_path" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_QUEST_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-quest-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_QUEST_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-quest-collection" >> "$GITHUB_ENV"
+      - name: Check out the merged PB-007 Module source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: c600a7cc3887508012a512c77d7fefc128cf791d
+          path: preceding-recovery-core
+          persist-credentials: false
+      - name: Check out the merged PB-007 Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: a17e5ec7120de21fe9ccc75c3b8fcc998be35df8
+          path: preceding-recovery-collection
+          persist-credentials: false
+      - name: Build the merged PB-007 Wasm for populated recovery migration
+        working-directory: preceding-recovery-core
+        run: |
+          export CARGO_TARGET_DIR="$RUNNER_TEMP/playerbots-recovery-preceding-target"
+          cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-recovery-core/Cargo.toml" -p lyracore-module
+          "$GITHUB_WORKSPACE/preceding-recovery-collection/.github/check-core-tip.sh" \
+            "$GITHUB_WORKSPACE/preceding-recovery-core" \
+            bash -eu -o pipefail -c '
+              cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-recovery-core/Cargo.toml" \
+                --locked --release --target wasm32-unknown-unknown \
+                -p lyracore-module --features=debug_reducers
+            '
+          wasm_path="$RUNNER_TEMP/playerbots-recovery-preceding.wasm"
+          manifest_path="$RUNNER_TEMP/playerbots-recovery-preceding-inputs.json"
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$wasm_path"
+          python3 - "$wasm_path" \
+            "$GITHUB_WORKSPACE/preceding-recovery-core" \
+            "$GITHUB_WORKSPACE/preceding-recovery-collection" "$manifest_path" <<'PY_MANIFEST'
+          import hashlib
+          import json
+          import pathlib
+          import subprocess
+          import sys
+
+          wasm_path, core_path, collection_path, manifest_path = map(pathlib.Path, sys.argv[1:])
+
+          def git(path, *args):
+              return subprocess.run(
+                  ["git", *args], cwd=path, check=True, text=True, capture_output=True
+              ).stdout.strip()
+
+          if git(core_path, "status", "--porcelain"):
+              raise SystemExit("the preceding PB-007 Module checkout is dirty")
+          if git(collection_path, "status", "--porcelain"):
+              raise SystemExit("the preceding PB-007 Package checkout is dirty")
+          wasm = wasm_path.read_bytes()
+          rust = subprocess.run(
+              ["rustc", "--version"], check=True, text=True, capture_output=True
+          ).stdout.strip()
+          spacetime = subprocess.run(
+              ["spacetime", "--version"], check=True, text=True, capture_output=True
+          ).stdout.strip()
+          installed = sorted(
+              path.name
+              for root in (core_path / "packages", collection_path)
+              for path in root.iterdir()
+              if path.is_dir() and not path.name.startswith(".")
+          )
+          manifest = {
+              "core": git(core_path, "rev-parse", "HEAD"),
+              "collection": git(collection_path, "rev-parse", "HEAD"),
+              "core_tree": git(core_path, "rev-parse", "HEAD^{tree}"),
+              "collection_tree": git(collection_path, "rev-parse", "HEAD^{tree}"),
+              "playerbots_tree": git(collection_path, "rev-parse", "HEAD:playerbots"),
+              "core_dirty": False,
+              "collection_dirty": False,
+              "rust": rust.split()[1],
+              "rust_detail": rust,
+              "spacetimedb": spacetime.split("spacetimedb tool version ", 1)[1].split(";", 1)[0],
+              "spacetimedb_detail": spacetime,
+              "target": "wasm32-unknown-unknown",
+              "profile": "release",
+              "features": ["debug_reducers"],
+              "installed_packages": installed,
+              "wasm_bytes": len(wasm),
+              "wasm_sha256": hashlib.sha256(wasm).hexdigest(),
+              "package_content_identity": "e0b9bb396632e7a77d30ba62f64964bdad7e80cebf32b7e811867cc24aed3326",
+              "verification": "Clean merged PB-007 inputs for the populated PB-008 upgrade test.",
+          }
+          manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
+          PY_MANIFEST
+          echo "PLAYERBOTS_RECOVERY_PRECEDING_WASM=$wasm_path" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_RECOVERY_PRECEDING_MANIFEST=$manifest_path" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_RECOVERY_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-recovery-core" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_RECOVERY_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-recovery-collection" >> "$GITHUB_ENV"
       - name: Build the current Wasm and run the durable fixtures
         working-directory: lyracore
         env:
@@ -462,6 +551,8 @@ jobs:
                 -p lyracore-module --test playerbots_rewrite --test playerbots_companion \
                 --test playerbots_provisioning --test playerbots_quest_catalog \
                 --test playerbots_roles --test playerbots_quest_loops \
+                --test playerbots_recovery --test playerbots_recovery_failures \
+                --test playerbots_recovery_casting --test playerbots_recovery_geometry \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
