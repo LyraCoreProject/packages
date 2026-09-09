@@ -75,6 +75,7 @@ pub fn playerbots_fixture_orders_party(
             mage_guid,
             vec![leader_guid, warrior_guid, priest_guid, mage_guid],
         ),
+        3 => (leader_guid, vec![leader_guid, warrior_guid, mage_guid]),
         _ => return Err("unknown order fixture party mode".to_string()),
     };
     crate::group::sync_group_mirror(

@@ -1034,6 +1034,14 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                         super::orders::CompanionOrder::Follow(follow) => follow.leader_guid,
                         _ => party.leader_guid,
                     }
+                || matches!(
+                    &order.order,
+                    super::orders::CompanionOrder::Assist(assist)
+                        if !party
+                            .members
+                            .iter()
+                            .any(|member| member.character_guid == assist.member_guid)
+                )
         })
     }) {
         super::orders::clear(ctx, me.guid);
