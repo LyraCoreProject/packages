@@ -8,6 +8,7 @@ use super::{
     pkg_playerbots_rotation, PlayerbotsBot, PlayerbotsGoal, PlayerbotsPersonality,
     PlayerbotsRotation, ROLE_HEALER, ROLE_TANK,
 };
+use crate::transfer::game_bot_transfer_intent;
 use crate::{
     game_areatrigger_teleport, game_character, game_character_quest, game_corpse_loot,
     game_creature_loot, game_creature_quest, game_creature_spline, game_creature_template,
@@ -44,13 +45,10 @@ const MELEE_RANGE_YD: f32 = 4.0;
 /// two with room to spare.
 const STRANDED_WAIT_MICROS: i64 = 10_000_000;
 
-/// How long a bot stays bodiless after its Transfer Intent is written before the tick gives up on
-/// the crossing and rebuilds it where it stands.
+/// Compatibility wait for a populated in-transit goal whose old event Intent is already absent.
 ///
-/// The Intent is a request, not a record. If nothing drives it — the Gateway is down, or a
-/// republish landed in the middle — no Refusal comes back and no retry happens, so the only way out
-/// is this deadline. On a realm of one Shard nothing ever drives it either, because the placement
-/// WAS the whole crossing, and this is what puts the bot back in the world there.
+/// Durable Transfer Intents now fence body rebuild until exact completion. This deadline applies
+/// only to rows written before that migration.
 const IN_TRANSIT_WAIT_MICROS: i64 = 3_000_000;
 
 /// How far a bot looks for a quest giver, an objective to kill, or something to grind. Two
@@ -113,8 +111,6 @@ type Partition = (u32, u64);
 crate::game_tick_pass!(fn playerbots_brain_pass(ctx) {
     super::runner::pass(ctx);
 });
-
-
 
 // A bot was hit. Hit back: a bot that stands still while something chews on it reads as broken long
 // before anyone notices it has no brain for that case.
@@ -521,19 +517,21 @@ fn quest_hub(ctx: &ReducerContext, bot: &PlayerbotsBot) -> Option<(f32, f32, f32
 
 /// May the tick put a body back on a bodiless bot whose durable Character row is on this Shard?
 ///
-/// Not while a Transfer Intent this Shard wrote is still young enough to be driven. The Gateway
-/// reads the Character row to decide where the crossing goes, so a body put back before then would
-/// move the bot out from under its own Intent.
+/// Never while this Shard retains a durable Transfer Intent. The Gateway reads the Character row
+/// to decide where the crossing goes, so a body put back before exact completion would move the bot
+/// out from under its own Intent.
 ///
-/// Yes once the wait is over, whatever became of the crossing. An Intent is a request, not a
-/// record: nothing refuses it and nothing retries it. So the wait is the only way back for a bot
-/// whose crossing was never driven — a republish in the middle of one, a Gateway that was down —
-/// and it is also the ordinary path on a realm of one Shard, where the placement WAS the whole
-/// crossing and there was never anything for the Gateway to do.
+/// The old bounded wait remains only for a populated goal whose former event Intent has already
+/// disappeared. New intents survive Gateway and Module restart until exact completion.
 ///
 /// Pure, because "no stuck bot" is the property this decides and a property is worth an assertion.
-pub(crate) fn may_rebuild(goal_kind: Option<u8>, in_transit_for_micros: i64) -> bool {
-    goal_kind != Some(goal::IN_TRANSIT) || in_transit_for_micros >= IN_TRANSIT_WAIT_MICROS
+pub(crate) fn may_rebuild(
+    transfer_pending: bool,
+    goal_kind: Option<u8>,
+    in_transit_for_micros: i64,
+) -> bool {
+    !transfer_pending
+        && (goal_kind != Some(goal::IN_TRANSIT) || in_transit_for_micros >= IN_TRANSIT_WAIT_MICROS)
 }
 
 /// This bot's live entity, rebuilt from its durable Character row when it has none.
@@ -547,9 +545,9 @@ pub(crate) fn may_rebuild(goal_kind: Option<u8>, in_transit_for_micros: i64) -> 
 /// - The bot is escrowed mid-Transfer. [`crate::helpers::character_by_guid`] is the in-transit
 ///   fence, so the durable row simply does not answer, and a bot half-way across a boundary is not
 ///   rebuilt on the Shard it is leaving.
-/// - This Shard wrote a Transfer Intent for it inside [`IN_TRANSIT_WAIT_MICROS`]. The Gateway reads
-///   the Character row to decide where the crossing goes, so putting a body back before the crossing
-///   is driven would move the bot out from under its own Intent.
+/// - This Shard retains a durable Transfer Intent. The Gateway reads the Character row to decide
+///   where the crossing goes, so putting a body back before exact completion would move the bot out
+///   from under its own Intent.
 ///
 /// A REBUILT GHOST STAYS A GHOST. `build_player_entity` always builds alive, and a released ghost
 /// loses its body whenever the graveyard it released to is on another map — a death in a dungeon
@@ -563,7 +561,15 @@ fn body(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) -> Option<crate::Wo
         return Some(me);
     }
     let current = goal_of(ctx, bot.character_guid);
+    let transfer_pending = ctx
+        .db
+        .game_bot_transfer_intent()
+        .by_bot()
+        .filter(bot.character_guid)
+        .next()
+        .is_some();
     if !may_rebuild(
+        transfer_pending,
         current.as_ref().map(|row| row.kind),
         held_for(ctx, bot.character_guid, goal::IN_TRANSIT, now),
     ) {
@@ -1010,16 +1016,21 @@ fn cross(
     reason: &str,
     now: i64,
 ) {
-    let _ = crate::actor::stop_attack(ctx, bot_guid);
-    // A leg still playing would fight the placement for as long as the client interpolates it.
-    ctx.db.game_creature_spline().guid().delete(bot_guid);
-    spacetimedb::log::info!(
-        "playerbots: bot {bot_guid} crosses to map {} instance {} ({reason})",
-        destination.map_id,
-        destination.instance_id
-    );
-    crate::transfer::emit_bot_transfer_intent(ctx, bot_guid, destination, reason);
-    record_goal(ctx, bot_guid, goal::IN_TRANSIT, now);
+    match crate::transfer::emit_bot_transfer_intent(ctx, bot_guid, destination, reason, 0) {
+        Ok(_) => {
+            spacetimedb::log::info!(
+                "playerbots: bot {bot_guid} crosses to map {} instance {} ({reason})",
+                destination.map_id,
+                destination.instance_id
+            );
+            record_goal(ctx, bot_guid, goal::IN_TRANSIT, now);
+        }
+        Err(refusal) => {
+            spacetimedb::log::warn!(
+                "playerbots: bot {bot_guid} Transfer Intent refused: {refusal}"
+            );
+        }
+    }
 }
 
 /// Where this bot's party went, as a place a Transfer can be aimed at.
@@ -2639,24 +2650,37 @@ mod tests {
         );
     }
 
-    /// A crossing that was never driven — a republish in the middle of one, or a Gateway that was
-    /// down — leaves a bot durable, bodiless and marked in transit, with no Intent row left (the
-    /// core reaps those in a second). The wait is what puts it back in the world.
+    /// A populated crossing from before durable intents can leave a bodiless bot marked in transit
+    /// with no Intent row. Its old bounded wait still puts it back in the world.
     #[test]
     fn a_bot_whose_crossing_was_never_driven_is_put_back_in_the_world() {
-        assert!(!may_rebuild(Some(goal::IN_TRANSIT), 0));
+        assert!(!may_rebuild(false, Some(goal::IN_TRANSIT), 0));
         assert!(!may_rebuild(
+            false,
             Some(goal::IN_TRANSIT),
             IN_TRANSIT_WAIT_MICROS - 1
         ));
-        assert!(may_rebuild(Some(goal::IN_TRANSIT), IN_TRANSIT_WAIT_MICROS));
+        assert!(may_rebuild(
+            false,
+            Some(goal::IN_TRANSIT),
+            IN_TRANSIT_WAIT_MICROS
+        ));
+    }
+
+    #[test]
+    fn a_durable_transfer_intent_prevents_timed_body_rebuild() {
+        assert!(!may_rebuild(
+            true,
+            Some(goal::IN_TRANSIT),
+            IN_TRANSIT_WAIT_MICROS * 100
+        ));
     }
 
     /// Arrival adoption: a Transfer does not carry the goal row, so an arriving bot holds no goal
     /// at all — and that is the state the tick has to rebuild a body for, immediately.
     #[test]
     fn a_bot_that_arrives_with_no_goal_is_rebuilt_at_once() {
-        assert!(may_rebuild(None, 0));
+        assert!(may_rebuild(false, None, 0));
     }
 
     /// A bodiless bot that is not crossing is a bot whose Shard despawned it — the same rebuild,
@@ -2670,7 +2694,7 @@ mod tests {
             goal::WANDER,
             goal::STRANDED,
         ] {
-            assert!(may_rebuild(Some(kind), 0), "goal kind {kind}");
+            assert!(may_rebuild(false, Some(kind), 0), "goal kind {kind}");
         }
     }
 
