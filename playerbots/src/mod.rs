@@ -25,6 +25,7 @@ mod goals;
 mod provisioning;
 mod quest_catalog;
 mod quest_loop;
+mod recovery;
 mod runner;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;

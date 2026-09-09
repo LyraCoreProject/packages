@@ -215,6 +215,8 @@ pub struct PlayerbotsRunner {
     /// The party member retained while a between-fight buff repairs its casting position.
     #[default(None::<u64>)]
     pub companion_buff_target_guid: Option<u64>,
+    #[default(None::<super::recovery::Recovery>)]
+    pub recovery: Option<super::recovery::Recovery>,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -396,6 +398,7 @@ impl PlayerbotsRunner {
             companion_heal_target_guid: None,
             companion_fight_target_guid: None,
             companion_buff_target_guid: None,
+            recovery: None,
         }
     }
 
@@ -815,6 +818,10 @@ fn objective(
 }
 
 fn defer(state: &mut PlayerbotsRunner, now: i64) {
+    defer_until(state, now.saturating_add(DEFER_INTERVAL));
+}
+
+fn defer_until(state: &mut PlayerbotsRunner, until_micros: i64) {
     if let Some(o) = &mut state.objective {
         o.stage = ObjectiveStage::Deferred;
         state
@@ -824,12 +831,12 @@ fn defer(state: &mut PlayerbotsRunner, now: i64) {
             &mut state.deferred_destinations,
             DeferredDestination {
                 destination: o.destination.clone(),
-                until_micros: now.saturating_add(DEFER_INTERVAL),
+                until_micros,
             },
             FAILURE_LIMIT,
         );
     }
-    state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+    state.next_eligible_micros = until_micros;
 }
 
 fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut PlayerbotsRunner, now: i64) {
@@ -1167,7 +1174,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if let Some(deferred) = state
         .deferred_destinations
         .iter()
-        .find(|d| d.destination == destination)
+        .find(|d| !quest_objective && d.destination == destination)
     {
         survival.readiness = Readiness::NotBefore(deferred.until_micros);
         survival
@@ -1326,6 +1333,44 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     }
+    if quest_objective {
+        if let Some(candidate) = chosen {
+            let mut recovery = state.recovery.take().unwrap_or_default();
+            let selection = recovery.select(ctx, &me, &state, candidate, now);
+            state.recovery = Some(recovery);
+            match selection {
+                super::recovery::Selection::Candidate(adjusted) => {
+                    if let Some(proposed) = state
+                        .candidate_order
+                        .iter_mut()
+                        .find(|proposed| proposed.id == candidate.id)
+                    {
+                        *proposed = adjusted;
+                    }
+                    chosen = Some(adjusted);
+                }
+                super::recovery::Selection::Deferred { until_micros } => {
+                    stop(ctx, me.guid, &mut state);
+                    if !state.deferred_destinations.iter().any(|deferred| {
+                        deferred.destination == destination && deferred.until_micros == until_micros
+                    }) {
+                        state.failure(Failure::NoMovement, now);
+                    }
+                    defer_until(&mut state, until_micros);
+                    state.chosen = Some(Candidate {
+                        id: decision::CandidateId {
+                            action: Action::Hold,
+                            ..candidate.id
+                        },
+                        ..candidate
+                    });
+                    state.candidate_order = state.chosen.into_iter().collect();
+                    state.save(ctx);
+                    return;
+                }
+            }
+        }
+    }
     let party_holds_control = party
         .as_ref()
         .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
@@ -1474,6 +1519,9 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             super::provisioning::ReconcileStep::Ready
             | super::provisioning::ReconcileStep::Recorded => {}
             super::provisioning::ReconcileStep::Worked => {
+                if let Some(recovery) = &mut state.recovery {
+                    recovery.active = None;
+                }
                 let candidate = Candidate {
                     id: decision::CandidateId {
                         action: Action::Hold,
@@ -1609,6 +1657,10 @@ fn execute(
                             geometry_revision: geometry_revision(ctx, go.map_id),
                         })
                 }
+                MoveTarget::RecoveryPosition(identity) => state
+                    .recovery
+                    .as_ref()
+                    .and_then(|recovery| recovery.position(identity)),
             };
             let Some(dest) =
                 destination.filter(|d| (d.map_id, d.instance_id) == (me.map_id, me.instance_id))
@@ -1626,7 +1678,12 @@ fn execute(
             if candidate.id.reason == Reason::Survival {
                 let _ = crate::actor::stop_attack(ctx, me.guid);
             }
-            if now.saturating_sub(state.last_stall_check_micros) >= STALL_INTERVAL {
+            if state
+                .objective
+                .as_ref()
+                .is_none_or(|objective| objective.kind != ObjectiveKind::Quest)
+                && now.saturating_sub(state.last_stall_check_micros) >= STALL_INTERVAL
+            {
                 state.failure(Failure::NoMovement, now);
                 state.last_stall_check_micros = now;
                 if state.retry_count >= 3 {
@@ -1645,7 +1702,9 @@ fn execute(
                 ctx,
                 me,
                 (dest.x, dest.y, dest.z),
-                if target == MoveTarget::Home {
+                if matches!(target, MoveTarget::RecoveryPosition(_)) {
+                    0.25
+                } else if target == MoveTarget::Home {
                     2.0
                 } else if candidate.id.reason == Reason::FightPosition {
                     25.0

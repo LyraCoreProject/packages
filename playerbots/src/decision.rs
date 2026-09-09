@@ -41,6 +41,7 @@ pub enum MoveTarget {
     Entity(u64),
     CastingPosition(u64),
     GameObject(u64),
+    RecoveryPosition(u64),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
