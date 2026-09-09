@@ -641,6 +641,7 @@ pub fn playerbots_fixture_companion_stage(
             ownership: None,
         },
         partitions,
+        1,
     )?;
     Ok(())
 }
@@ -732,6 +733,7 @@ pub fn playerbots_fixture_roles_stage(
             ownership: None,
         },
         partitions,
+        1,
     )?;
     for guid in [warrior_guid, priest_guid, mage_guid] {
         super::runner::playerbots_select_controller(ctx, guid, super::Controller::Cohort)?;
