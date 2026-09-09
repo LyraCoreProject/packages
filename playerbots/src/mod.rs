@@ -42,6 +42,8 @@ mod transfer_fixture;
 #[cfg(feature = "debug_reducers")]
 mod transfer_lifecycle_fixture;
 #[cfg(feature = "debug_reducers")]
+mod transfer_gateway_fixture;
+#[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
 pub(crate) use goals::*;
 pub(crate) use orders::*;
