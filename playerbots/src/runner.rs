@@ -1400,6 +1400,12 @@ fn run(
             .transfer_checkpoint
             .is_some_and(|checkpoint| matches!(checkpoint.purpose, Some(TransferPurpose::Quest(_))))
     {
+        if super::transfer::arrival_expired(&state, now) {
+            state.transfer_checkpoint = None;
+            state.failure(Failure::TransferArrivalUnavailable, now);
+            state.save(ctx);
+            return;
+        }
         state.chosen = Some(Candidate {
             id: decision::CandidateId {
                 action: Action::Hold,
