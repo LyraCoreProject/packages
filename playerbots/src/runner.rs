@@ -1053,19 +1053,52 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     if let (Some(party), Some(order)) = (party.as_mut(), order.as_ref()) {
         match &order.order {
             super::orders::CompanionOrder::Assist(assist) => {
-                party.fight_constraint = Some(
-                    party
+                let member = party
                         .members
                         .iter()
                         .find(|member| member.character_guid == assist.member_guid)
-                        .and_then(|member| member.unit.as_ref())
-                        .map_or(u64::MAX, |member| member.target_guid),
+                    .and_then(|member| member.unit.as_ref());
+                let target_guid = member.map_or(0, |member| member.target_guid);
+                let outcome = if member.is_none() {
+                    Err(crate::actor::CommandOutcome::WrongPartition)
+                } else if target_guid == 0 {
+                    Err(crate::actor::CommandOutcome::TargetUnavailable)
+                } else {
+                    crate::actor::companion_target_facts(ctx, me.guid, target_guid).and_then(|_| {
+                        party
+                            .enemies
+                            .iter()
+                            .any(|enemy| enemy.guid == target_guid)
+                            .then_some(())
+                            .ok_or(crate::actor::CommandOutcome::TargetUnavailable)
+                    })
+                };
+                match outcome {
+                    Ok(()) => {
+                        party.fight_constraint = Some(target_guid);
+                        super::orders::record_runtime_outcome(
+                            ctx,
+                            me.guid,
+                            crate::actor::CommandOutcome::Applied,
                 );
+            }
+                    Err(outcome) => {
+                        party.fight_constraint = Some(u64::MAX);
+                        super::orders::record_runtime_outcome(ctx, me.guid, outcome);
+                        stop(ctx, me.guid, &mut state);
+                    }
+                }
             }
             super::orders::CompanionOrder::Target(target) => {
                 party.fight_constraint = Some(target.target_guid);
                 match crate::actor::companion_target_facts(ctx, me.guid, target.target_guid) {
-                    Ok(target) => party.enemies.push(crate::group::PartyEnemyFacts {
+                    Ok(target) => {
+                        super::orders::record_runtime_outcome(
+                            ctx,
+                            me.guid,
+                            crate::actor::CommandOutcome::Applied,
+                        );
+                        party.enemies.push(crate::group::PartyEnemyFacts {
                         guid: target.guid,
                         map_id: target.map_id,
                         instance_id: target.instance_id,
@@ -1081,8 +1114,12 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
                         current_target_guid: None,
                         top_threat_guid: None,
                         control: None,
-                    }),
-                    Err(outcome) => super::orders::record_runtime_outcome(ctx, me.guid, outcome),
+                        });
+                    }
+                    Err(outcome) => {
+                        super::orders::record_runtime_outcome(ctx, me.guid, outcome);
+                        stop(ctx, me.guid, &mut state);
+                    }
                 }
             }
             super::orders::CompanionOrder::Follow(_) | super::orders::CompanionOrder::Stay(_) => {}

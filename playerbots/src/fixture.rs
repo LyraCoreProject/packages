@@ -113,9 +113,73 @@ pub fn playerbots_fixture_orders_target_state(
             target.dead = true;
         }
         1 => target.map_id = target.map_id.saturating_add(1),
+        2 => {
+            target.map_id = 0;
+            target.instance_id = 0;
+            target.health = target.max_health;
+            target.dead = false;
+        }
         _ => return Err("unknown order fixture target mode".to_string()),
     }
     entities.guid().update(target);
+    Ok(())
+}
+
+/// Recreate one reserved role-fixture enemy after the missing-target command case.
+#[reducer]
+pub fn playerbots_fixture_orders_restore_target(
+    ctx: &ReducerContext,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let entry = ((target_guid >> 24) & 0x00ff_ffff) as u32;
+    let (x, y) = match entry {
+        5_098_001 => (1208.0, 1200.0),
+        5_098_002 => (1210.0, 1203.0),
+        5_098_003 => (1212.0, 1197.0),
+        _ => return Err("order fixture target is outside the reserved role entries".to_string()),
+    };
+    let guid = companion_creature(ctx, entry, x, y, 50.0, None)?;
+    if guid != target_guid {
+        return Err("order fixture target guid does not match its reserved entry".to_string());
+    }
+    let entities = ctx.db.game_world_entity();
+    let mut target = entities
+        .guid()
+        .find(guid)
+        .ok_or("order fixture target restore failed")?;
+    target.max_health = 1_000;
+    target.health = 1_000;
+    entities.guid().update(target);
+    Ok(())
+}
+
+/// Move one private role-fixture Character between partitions for command routing evidence.
+#[reducer]
+pub fn playerbots_fixture_orders_partition(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    map_id: u32,
+    instance_id: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if ctx
+        .db
+        .game_character()
+        .guid()
+        .find(character_guid)
+        .is_none()
+    {
+        return Err("order fixture Character missing".to_string());
+    }
+    let entities = ctx.db.game_world_entity();
+    let mut entity = entities
+        .guid()
+        .find(character_guid)
+        .ok_or("order fixture Character body missing")?;
+    entity.map_id = map_id;
+    entity.instance_id = instance_id;
+    entities.guid().update(entity);
     Ok(())
 }
 
@@ -1063,7 +1127,8 @@ pub fn playerbots_fixture_companion_client_cast(
     caster_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::gw::gw_cast_at( // package-api: exempt fixture proves client and bot cast Gate parity
+    crate::gw::gw_cast_at(
+        // package-api: exempt fixture proves client and bot cast Gate parity
         ctx,
         crate::SessionActor {
             guid: caster_guid,
