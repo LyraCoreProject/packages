@@ -475,7 +475,7 @@ impl PlayerbotsRunner {
         self.last_outcome = RunnerOutcome::Refused(reason);
     }
 
-    fn save(mut self, ctx: &ReducerContext) {
+    pub(super) fn save(mut self, ctx: &ReducerContext) {
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
             .next_eligible_micros
@@ -1395,6 +1395,23 @@ fn run(
         &mut state,
         now,
     );
+    if quest_read_limited
+        && state
+            .transfer_checkpoint
+            .is_some_and(|checkpoint| matches!(checkpoint.purpose, Some(TransferPurpose::Quest(_))))
+    {
+        state.chosen = Some(Candidate {
+            id: decision::CandidateId {
+                action: Action::Hold,
+                reason: Reason::Quest,
+                objective: state.objective_sequence,
+            },
+            priority: 1000,
+        });
+        state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+        state.save(ctx);
+        return;
+    }
     match super::transfer::arrival(ctx, &state, &me, party.as_ref(), now) {
         super::transfer::Arrival::Ready => {}
         super::transfer::Arrival::Waiting => {
@@ -2402,32 +2419,10 @@ fn execute(
             }
         }
         Action::Transfer(transfer) => {
-            let Some(generation) = state.generation.checked_add(1) else {
-                state.failure(
-                    Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
-                    now,
-                );
-                return;
-            };
-            match super::actions::transfer(ctx, me.guid, transfer, generation) {
-                Ok(intent_id) => {
-                    super::transfer::normalize(
-                        ctx, state, me, transfer, intent_id, generation, now,
-                    );
-                    if ctx
-                        .db
-                        .pkg_playerbots_bot()
-                        .by_character()
-                        .filter(me.guid)
-                        .next()
-                        .is_some_and(|bot| bot.controller == Controller::Legacy)
-                    {
-                        super::goals::record_legacy_transfer(ctx, me.guid, now);
-                    }
-                    state.last_outcome = RunnerOutcome::Waiting;
-                }
-                Err(refusal) => {
-                    state.failure(Failure::ActionRefused(refusal.kind), now);
+            match super::transfer::execute(ctx, state, me, transfer, now) {
+                Ok(_) => {}
+                Err(failure) => {
+                    state.failure(failure, now);
                     state.retry_candidate = Some(candidate.id);
                 }
             }

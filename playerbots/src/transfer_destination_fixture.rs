@@ -2,13 +2,14 @@
 
 //! Private destination content for retained Quest Transfer cases.
 
+use super::decision::{Action, Reason};
 use super::quest_catalog::{
     pkg_playerbots_catalog_objective, pkg_playerbots_catalog_quest, pkg_playerbots_quest_catalog,
     CatalogDestination, CatalogEntityKind, CatalogObjectiveKind, CatalogWorkArea,
     ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, PlayerbotsQuestCatalog,
     CATALOG_BLUEPRINT_REVISION, CATALOG_NAME, CATALOG_REVISION,
 };
-use super::runner::pkg_playerbots_runner;
+use super::runner::{pkg_playerbots_runner, ObjectiveKind};
 use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content before staging
 use crate::nav::game_navigation_revision; // package-api: exempt private fixture requires Navigation Inputs staged by the real import reducer
 use crate::{
@@ -249,6 +250,84 @@ pub fn playerbots_transfer_quest_source_stage(
     super::fixture::playerbots_fixture_provision_steps(ctx, character_guid, 32)?;
     super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
     super::quest_catalog_fixture::playerbots_recovery_fixture_exhaust_attempt(ctx, character_guid)
+}
+
+/// Execute the real selected portal operation once after the caller rejoins the retained Quest
+/// Character to its authenticated party. Case 12 separately covers automatic order selection.
+#[reducer]
+pub fn playerbots_transfer_quest_execute(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    require_private_fixture(ctx)?;
+    let mut state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("source Quest runner is absent")?;
+    let objective_identity = state
+        .objective
+        .as_ref()
+        .filter(|objective| objective.kind == ObjectiveKind::Quest)
+        .map(|objective| objective.identity)
+        .ok_or("source Quest objective is absent")?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+        .filter(|retained| retained.runner_objective_identity == objective_identity)
+        .ok_or("source retained Quest identity changed")?;
+    if !ctx
+        .db
+        .game_character_quest()
+        .by_character()
+        .filter(character_guid)
+        .any(|quest| quest.quest_entry == retained.quest_entry && !quest.rewarded)
+    {
+        return Err("source retained Quest identity changed".to_string());
+    }
+    let me = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(character_guid)
+        .ok_or("source Quest body is absent")?;
+    let party = super::companion::human_led_party(ctx, character_guid)
+        .map_err(|error| format!("source party facts unavailable: {error:?}"))?
+        .ok_or("source Quest party is absent")?;
+    let order = super::orders::active(ctx, character_guid);
+    let member_guid = super::transfer::companion_member(order.as_ref(), Some(party.leader_guid))
+        .ok_or("source Quest order disables automatic Transfer")?;
+    let partition = party
+        .members
+        .iter()
+        .find(|member| member.character_guid == member_guid)
+        .and_then(|member| member.partition)
+        .ok_or("source Quest destination partition is absent")?;
+    let node = super::transfer::candidate(ctx, &me, partition, objective_identity);
+    let Action::Transfer(action) = node.candidate.id.action else {
+        return Err("source Quest did not resolve a Transfer action".to_string());
+    };
+    if node.candidate.id.reason != Reason::Transfer
+        || !node.prerequisites.is_empty()
+        || action.trigger != 78
+        || action.destination_map != DESTINATION_MAP
+        || action.destination_instance != DESTINATION_INSTANCE
+    {
+        return Err("source Quest resolved another portal operation".to_string());
+    }
+    super::transfer::execute(
+        ctx,
+        &mut state,
+        &me,
+        action,
+        ctx.timestamp.to_micros_since_unix_epoch(),
+    )
+    .map_err(|failure| format!("source Quest Transfer refused: {failure:?}"))?;
+    state.save(ctx);
+    Ok(())
 }
 
 /// Stage destination-only catalogue after the caller imports Navigation Inputs and before the

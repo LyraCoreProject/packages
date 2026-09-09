@@ -6,7 +6,8 @@ use super::runner::{
     CompanionTransferPurpose, Failure, PlayerbotsRunner, QuestTransferPurpose, TransferCheckpoint,
     TransferPurpose,
 };
-use spacetimedb::ReducerContext;
+use crate::game_character_quest;
+use spacetimedb::{ReducerContext, Table};
 
 const SUPPORTED_AREA_TRIGGERS: [u32; 3] = [78, 119, 121];
 const TRANSFER_PRIORITY: i32 = 700;
@@ -123,6 +124,37 @@ pub(super) fn normalize(
     });
 }
 
+/// Execute one selected Transfer and clear all source-local runner state before export.
+pub(super) fn execute(
+    ctx: &ReducerContext,
+    state: &mut PlayerbotsRunner,
+    me: &crate::WorldEntity,
+    action: TransferAction,
+    now: i64,
+) -> Result<u64, Failure> {
+    let generation = state
+        .generation
+        .checked_add(1)
+        .ok_or(Failure::ActionRefused(
+            crate::actor::ActionRefusalKind::Other,
+        ))?;
+    let intent_id = super::actions::transfer(ctx, me.guid, action, generation)
+        .map_err(|refusal| Failure::ActionRefused(refusal.kind))?;
+    normalize(ctx, state, me, action, intent_id, generation, now);
+    if ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(me.guid)
+        .next()
+        .is_some_and(|bot| bot.controller == super::runner::Controller::Legacy)
+    {
+        super::goals::record_legacy_transfer(ctx, me.guid, now);
+    }
+    state.last_outcome = super::runner::RunnerOutcome::Waiting;
+    Ok(intent_id)
+}
+
 fn checkpoint_purpose(
     ctx: &ReducerContext,
     state: &PlayerbotsRunner,
@@ -167,6 +199,15 @@ fn checkpoint_purpose(
         .character_guid()
         .find(state.character_guid)
         .filter(|retained| retained.runner_objective_identity == objective.identity)?;
+    if !ctx
+        .db
+        .game_character_quest()
+        .by_character()
+        .filter(state.character_guid)
+        .any(|quest| quest.quest_entry == retained.quest_entry && !quest.rewarded)
+    {
+        return None;
+    }
     let attempt = state.recovery.as_ref().and_then(|recovery| {
         recovery.attempts.iter().find(|attempt| {
             attempt.objective == retained.runner_objective_identity
@@ -308,6 +349,12 @@ pub(super) fn arrival(
             source_entry,
             ..
         })) => {
+            if state.objective.as_ref().is_none_or(|objective| {
+                objective.kind != super::runner::ObjectiveKind::Quest
+                    || objective.identity != checkpoint.objective_identity
+            }) {
+                return Arrival::Invalid(Failure::TransferPurposeChanged);
+            }
             if ctx
                 .db
                 .pkg_playerbots_quest_objective()
