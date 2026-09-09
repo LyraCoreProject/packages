@@ -131,11 +131,11 @@ jobs:
         with:
           path: collection
           persist-credentials: false
-      - name: Check out merged PB-007 Core
+      - name: Check out merged PB-008 Core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: c600a7cc3887508012a512c77d7fefc128cf791d
+          ref: a880bd29b9a56f6fe685f858eb90bb748623dfa7
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
