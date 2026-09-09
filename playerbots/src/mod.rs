@@ -36,6 +36,8 @@ pub(crate) use runner::*;
 #[cfg(feature = "debug_reducers")]
 mod fixture;
 #[cfg(feature = "debug_reducers")]
+mod transfer_orders_fixture;
+#[cfg(feature = "debug_reducers")]
 mod quest_catalog_fixture;
 #[cfg(feature = "debug_reducers")]
 mod transfer_destination_fixture;
