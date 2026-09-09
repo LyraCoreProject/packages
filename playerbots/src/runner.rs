@@ -538,6 +538,9 @@ fn legacy_pass(
     let Some(me) = super::goals::body(ctx, bot, now) else {
         return LegacyPass::Goals;
     };
+    if me.dead {
+        return LegacyPass::Goals;
+    }
     let party = match super::companion::party(ctx, bot.character_guid, false) {
         Ok(party) => party,
         Err(_) => return LegacyPass::Transfer { return_home: false },

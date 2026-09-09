@@ -930,9 +930,10 @@ pub(crate) fn plan_crossing(
     stranded_for_micros: i64,
 ) -> Crossing {
     if let Some(destination) = party_instance {
-        if destination != here {
-            return Crossing::Join(destination);
+        if destination == here {
+            return Crossing::Stay;
         }
+        return Crossing::Join(destination);
     }
     if here == home {
         return Crossing::Stay;
@@ -2484,13 +2485,12 @@ mod tests {
         );
     }
 
-    /// The warning the crossing seam carries: an Intent for a bot that is already on the
-    /// destination Shard is refused, and costs a log line every tick it is written.
+    /// A companion already beside its leader stays there even when both are away from its home.
     #[test]
     fn a_bot_already_in_its_partys_instance_asks_for_no_crossing() {
         assert_eq!(
             plan_crossing(DUNGEON, Some(DUNGEON), HOME, 0),
-            Crossing::Wait
+            Crossing::Stay
         );
     }
 
