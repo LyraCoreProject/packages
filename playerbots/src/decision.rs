@@ -67,6 +67,7 @@ pub enum Reason {
     BuffPosition,
     CrowdControl,
     RoleUnavailable,
+    Stay,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

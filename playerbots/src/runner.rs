@@ -218,8 +218,13 @@ pub struct PlayerbotsRunner {
     /// The party member retained while a between-fight buff repairs its casting position.
     #[default(None::<u64>)]
     pub companion_buff_target_guid: Option<u64>,
+
     #[default(None::<super::recovery::Recovery>)]
     pub recovery: Option<super::recovery::Recovery>,
+
+    #[default(0u64)]
+    pub companion_order_revision: u64,
+
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -401,7 +406,11 @@ impl PlayerbotsRunner {
             companion_heal_target_guid: None,
             companion_fight_target_guid: None,
             companion_buff_target_guid: None,
+
             recovery: None,
+
+            companion_order_revision: 0,
+
         }
     }
 
@@ -658,6 +667,7 @@ fn objective(
     bot: &PlayerbotsBot,
     me: &crate::WorldEntity,
     party: Option<&super::companion::Party>,
+    order: Option<&super::orders::CompanionOrderState>,
     state: &mut PlayerbotsRunner,
     now: i64,
 ) -> bool {
@@ -711,24 +721,44 @@ fn objective(
             state.last_stall_check_micros = now;
         }
     } else {
-        if state
-            .objective
-            .as_ref()
-            .is_some_and(|objective| objective.kind == ObjectiveKind::Quest)
+        if party.is_none()
+            && state
+                .objective
+                .as_ref()
+                .is_some_and(|objective| objective.kind == ObjectiveKind::Quest)
         {
             super::quest_catalog::clear_retained(ctx, bot.character_guid);
         }
         let (kind, leader_guid, mut destination) = if let Some(party) = party {
-            let destination = party.destination().or_else(|| {
-                state
-                    .objective
-                    .as_ref()
-                    .filter(|objective| {
-                        objective.kind == ObjectiveKind::Companion
-                            && state.companion_leader_guid == Some(party.leader_guid)
-                    })
-                    .map(|objective| objective.destination.clone())
-            });
+            let destination = order
+                .and_then(|state| match &state.order {
+                    super::orders::CompanionOrder::Stay {
+                        map_id,
+                        instance_id,
+                        x,
+                        y,
+                        z,
+                    } => Some(Destination {
+                        map_id: *map_id,
+                        instance_id: *instance_id,
+                        x: *x,
+                        y: *y,
+                        z: *z,
+                        geometry_revision: None,
+                    }),
+                    _ => None,
+                })
+                .or_else(|| party.destination())
+                .or_else(|| {
+                    state
+                        .objective
+                        .as_ref()
+                        .filter(|objective| {
+                            objective.kind == ObjectiveKind::Companion
+                                && state.companion_leader_guid == Some(party.leader_guid)
+                        })
+                        .map(|objective| objective.destination.clone())
+                });
             (
                 ObjectiveKind::Companion,
                 Some(party.leader_guid),
@@ -759,6 +789,7 @@ fn objective(
         let same_identity = state.objective.as_ref().is_some_and(|objective| {
             objective.kind == kind
                 && (kind != ObjectiveKind::Companion || state.companion_leader_guid == leader_guid)
+                && state.companion_order_revision == order.map_or(0, |order| order.revision)
         });
         let replace = !same_identity
             || (kind == ObjectiveKind::ReturnHome
@@ -786,6 +817,7 @@ fn objective(
             state.companion_heal_target_guid = None;
             state.companion_fight_target_guid = None;
             state.companion_buff_target_guid = None;
+            state.companion_order_revision = order.map_or(0, |order| order.revision);
             state.retry_count = 0;
             state.last_stall_check_micros = now;
         } else if kind == ObjectiveKind::Companion {
@@ -959,7 +991,7 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         state.save(ctx);
         return;
     };
-    let party = match super::companion::human_led_party(ctx, me.guid) {
+    let mut party = match super::companion::human_led_party(ctx, me.guid) {
         Ok(party) => party,
         Err(unavailable) => {
             spacetimedb::log::error!(
@@ -984,6 +1016,72 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             return;
         }
     };
+
+    let mut order = super::orders::active(ctx, me.guid);
+    if order.as_ref().is_some_and(|order| {
+        matches!(
+            &order.order,
+            super::orders::CompanionOrder::Stay {
+                map_id,
+                instance_id,
+                ..
+            } if (*map_id, *instance_id) != (me.map_id, me.instance_id)
+        ) || party.as_ref().is_none_or(|party| {
+            party.group_id != order.group_id
+                || party.leader_guid != order.issuer_guid
+                || party.leader_guid
+                    != match &order.order {
+                        super::orders::CompanionOrder::Follow { leader_guid } => *leader_guid,
+                        _ => party.leader_guid,
+                    }
+        })
+    }) {
+        super::orders::clear(ctx, me.guid);
+        order = None;
+        if bot.controller == Controller::Cohort {
+            stop(ctx, me.guid, &mut state);
+        }
+    }
+    if let (Some(party), Some(order)) = (party.as_mut(), order.as_ref()) {
+        match &order.order {
+            super::orders::CompanionOrder::Assist { member_guid } => {
+                party.fight_constraint = Some(
+                    party
+                        .members
+                        .iter()
+                        .find(|member| member.character_guid == *member_guid)
+                        .and_then(|member| member.unit.as_ref())
+                        .map_or(u64::MAX, |member| member.target_guid),
+                );
+            }
+            super::orders::CompanionOrder::Target { target_guid } => {
+                party.fight_constraint = Some(*target_guid);
+                match crate::actor::companion_target_facts(ctx, me.guid, *target_guid) {
+                    Ok(target) => party.enemies.push(crate::group::PartyEnemyFacts {
+                        guid: target.guid,
+                        map_id: target.map_id,
+                        instance_id: target.instance_id,
+                        x: target.x,
+                        y: target.y,
+                        z: target.z,
+                        health: target.health,
+                        max_health: target.max_health,
+                        attacking_party: false,
+                        party_attacking: false,
+                        party_casting: false,
+                        party_has_threat: false,
+                        current_target_guid: None,
+                        top_threat_guid: None,
+                        control: None,
+                    }),
+                    Err(outcome) => super::orders::record_runtime_outcome(ctx, me.guid, outcome),
+                }
+            }
+            super::orders::CompanionOrder::Follow { .. }
+            | super::orders::CompanionOrder::Stay { .. } => {}
+        }
+    }
+
     if bot.controller == Controller::Cohort {
         let mut recovery = state.recovery.take().unwrap_or_default();
         let deferred = recovery.observe(ctx, &me, &mut state, now);
@@ -1008,7 +1106,16 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
         }
     }
     let prior_objective = state.objective_sequence;
-    let quest_read_limited = objective(ctx, bot, &me, party.as_ref(), &mut state, now);
+    let quest_read_limited = objective(
+        ctx,
+        bot,
+        &me,
+        party.as_ref(),
+        order.as_ref(),
+        &mut state,
+        now,
+    );
+
     if bot.controller == Controller::Cohort {
         if prior_objective != state.objective_sequence && state.foreground.is_some() {
             stop(ctx, me.guid, &mut state);
@@ -1374,16 +1481,13 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     state.route_expansions = 0;
     state.route_budget = decision.route_expansions;
     let mut chosen = decision.chosen;
+
     if quest_read_limited && chosen.is_none_or(|candidate| candidate.priority <= 110) {
         chosen = Some(quest_unavailable);
+
     }
-    if bot.controller == Controller::RecordOnly {
-        state.chosen = chosen;
-        state.last_outcome = RunnerOutcome::Recorded;
-        state.save(ctx);
-        return;
-    }
-    if matches!(
+    if bot.controller == Controller::Cohort
+        && matches!(
         quest_plan,
         Some(super::quest_loop::QuestPlan::Wait(
             super::quest_loop::WaitReason::Controlled
@@ -1402,7 +1506,8 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             FAILURE_LIMIT,
         );
     }
-    if chosen.is_none_or(|candidate| candidate.id.action == Action::Hold)
+    if bot.controller == Controller::Cohort
+        && chosen.is_none_or(|candidate| candidate.id.action == Action::Hold)
         && state.recovery.as_ref().is_some_and(|recovery| {
             state
                 .candidate_order
@@ -1412,21 +1517,49 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
     {
         state.failure(Failure::RecoveryCapacity, now);
     }
-    if let (Some(candidate), Some(purpose)) = (
-        chosen.filter(|candidate| !quest_read_limited || *candidate != quest_unavailable),
-        decision.purpose,
-    ) {
-        let mut recovery = state.recovery.take().unwrap_or_default();
-        let adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
-        state.recovery = Some(recovery);
-        if let Some(proposed) = state
-            .candidate_order
-            .iter_mut()
-            .find(|proposed| proposed.id == purpose.id)
-        {
-            *proposed = adjusted;
+    if bot.controller == Controller::Cohort {
+        if let (Some(candidate), Some(purpose)) = (
+            chosen.filter(|candidate| !quest_read_limited || *candidate != quest_unavailable),
+            decision.purpose,
+        ) {
+            let mut recovery = state.recovery.take().unwrap_or_default();
+            let adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
+            state.recovery = Some(recovery);
+            if let Some(proposed) = state
+                .candidate_order
+                .iter_mut()
+                .find(|proposed| proposed.id == purpose.id)
+            {
+                *proposed = adjusted;
+            }
+            chosen = Some(adjusted);
         }
-        chosen = Some(adjusted);
+    }
+    let stay = order
+        .as_ref()
+        .is_some_and(|order| matches!(&order.order, super::orders::CompanionOrder::Stay { .. }));
+    if stay
+        && chosen.is_some_and(|candidate| {
+            matches!(candidate.id.action, Action::Move(_))
+                && !matches!(candidate.id.reason, Reason::Survival | Reason::Resurrection)
+        })
+    {
+        let priority = chosen.map_or(100, |candidate| candidate.priority);
+        chosen = Some(Candidate {
+            id: decision::CandidateId {
+                action: Action::Hold,
+                reason: Reason::Stay,
+                objective: state.objective_sequence,
+            },
+            priority,
+        });
+        state.candidate_order.insert(0, chosen.unwrap());
+    }
+    if bot.controller == Controller::RecordOnly {
+        state.chosen = chosen;
+        state.last_outcome = RunnerOutcome::Recorded;
+        state.save(ctx);
+        return;
     }
     let party_holds_control = party
         .as_ref()
@@ -1563,8 +1696,15 @@ fn run(ctx: &ReducerContext, bot: &PlayerbotsBot, mut state: PlayerbotsRunner, n
             } => state.companion_buff_target_guid != Some(target),
             _ => false,
         };
-        let preempts =
-            casting_target_invalid || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
+        let stay_interrupts = stay
+            && matches!(fg.running, Running::Movement(_))
+            && !matches!(
+                fg.candidate.id.reason,
+                Reason::Survival | Reason::Resurrection
+            );
+        let preempts = stay_interrupts
+            || casting_target_invalid
+            || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
         if incompatible && preempts {
             stop(ctx, me.guid, &mut state);
             state.last_outcome = RunnerOutcome::Cancelled;
