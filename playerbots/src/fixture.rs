@@ -9,7 +9,7 @@ use crate::nav::game_nav_chunk;
 use crate::spell::stacking::{game_spell_group, SpellGroup};
 use crate::{
     game_account, game_character, game_creature_spawn, game_creature_template, game_group,
-    game_quest_objective, game_quest_template,
+    game_group_member, game_quest_objective, game_quest_template,
 };
 use crate::{
     game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect, game_threat,
@@ -65,6 +65,53 @@ pub fn playerbots_fixture_orders_party(
     mode: u8,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    orders_party(
+        ctx,
+        warrior_guid,
+        priest_guid,
+        mage_guid,
+        leader_guid,
+        mode,
+        crate::SessionActor {
+            guid: leader_guid,
+            ownership: None,
+        },
+    )
+}
+
+/// Replace the private role fixture's Group mirror through the current authenticated leader.
+#[reducer]
+#[allow(clippy::too_many_arguments)]
+pub fn playerbots_fixture_orders_party_as(
+    ctx: &ReducerContext,
+    warrior_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    leader_guid: u64,
+    mode: u8,
+    request_actor: crate::SessionActor,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    orders_party(
+        ctx,
+        warrior_guid,
+        priest_guid,
+        mage_guid,
+        leader_guid,
+        mode,
+        request_actor,
+    )
+}
+
+fn orders_party(
+    ctx: &ReducerContext,
+    warrior_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    leader_guid: u64,
+    mode: u8,
+    request_actor: crate::SessionActor,
+) -> Result<(), String> {
     let (leader, members) = match mode {
         0 => (
             leader_guid,
@@ -78,19 +125,97 @@ pub fn playerbots_fixture_orders_party(
         3 => (leader_guid, vec![leader_guid, warrior_guid, mage_guid]),
         _ => return Err("unknown order fixture party mode".to_string()),
     };
-    crate::group::sync_group_mirror(
-        ctx,
-        ROLES_GROUP,
-        leader,
-        0,
-        2,
-        0,
-        members,
-        crate::SessionActor {
-            guid: leader_guid,
-            ownership: None,
-        },
-    )
+    crate::group::sync_group_mirror(ctx, ROLES_GROUP, leader, 0, 2, 0, members, request_actor)
+}
+
+/// Give each private multi-shard role fixture a distinct set of Character names.
+#[reducer]
+pub fn playerbots_fixture_orders_names(
+    ctx: &ReducerContext,
+    warrior_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    leader_guid: u64,
+    namespace: u8,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let names = match namespace {
+        0 => ["CmdSrcWar", "CmdSrcPri", "CmdSrcMag", "CmdSrcLead"],
+        1 => ["CmdTgtWar", "CmdTgtPri", "CmdTgtMag", "CmdTgtLead"],
+        2 => ["CmdDstWar", "CmdDstPri", "CmdDstMag", "CmdDstLead"],
+        _ => return Err("unknown order fixture name namespace".to_string()),
+    };
+    let character_guids = [warrior_guid, priest_guid, mage_guid, leader_guid];
+    if character_guids
+        .iter()
+        .enumerate()
+        .any(|(index, guid)| character_guids[index + 1..].contains(guid))
+    {
+        return Err("order fixture naming requires distinct Characters".to_string());
+    }
+    let characters = ctx.db.game_character();
+    let staged: Vec<_> = character_guids
+        .iter()
+        .zip(names)
+        .enumerate()
+        .map(|(index, (guid, name))| {
+            let is_bot = ctx
+                .db
+                .pkg_playerbots_bot()
+                .character_guid()
+                .find(*guid)
+                .is_some();
+            let is_fixture_leader = index == 3
+                && !is_bot
+                && ctx
+                    .db
+                    .game_group_member()
+                    .by_group()
+                    .filter(&ROLES_GROUP)
+                    .any(|member| member.character_guid == *guid);
+            if !(is_bot || is_fixture_leader) {
+                return Err("order fixture Character is outside the private role party".to_string());
+            }
+            let character = characters
+                .guid()
+                .find(*guid)
+                .ok_or_else(|| "order fixture Character missing".to_string())?;
+            if characters
+                .name()
+                .find(name)
+                .is_some_and(|held| held.guid != *guid)
+            {
+                return Err(format!("order fixture name '{name}' is already in use"));
+            }
+            Ok((character, name.to_string()))
+        })
+        .collect::<Result<_, String>>()?;
+    for (mut character, name) in staged {
+        character.name = name;
+        characters.guid().update(character);
+    }
+    Ok(())
+}
+
+/// Remove one private party member's live body while retaining its Character and Group membership.
+#[reducer]
+pub fn playerbots_fixture_orders_remove_member_body(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if !ctx
+        .db
+        .game_group_member()
+        .by_group()
+        .filter(&ROLES_GROUP)
+        .any(|member| member.character_guid == character_guid)
+    {
+        return Err("order fixture Character is outside the private role party".to_string());
+    }
+    let entity = crate::helpers::live_entity(ctx, character_guid)?;
+    crate::world::remove_live_character(ctx, entity); // package-api: exempt private fixture models logout
+    Ok(())
 }
 
 /// Change only one private role-fixture enemy to exercise exact-target death and partition Gates.
