@@ -12,6 +12,20 @@ const SUPPORTED_AREA_TRIGGERS: [u32; 3] = [78, 119, 121];
 const TRANSFER_PRIORITY: i32 = 700;
 const ARRIVAL_WAIT_MICROS: i64 = 30_000_000;
 
+pub(super) fn companion_member(
+    order: Option<&super::orders::CompanionOrderState>,
+    default: Option<u64>,
+) -> Option<u64> {
+    match order.map(|order| &order.order) {
+        Some(super::orders::CompanionOrder::Follow(order)) => Some(order.leader_guid),
+        Some(super::orders::CompanionOrder::Assist(order)) => Some(order.member_guid),
+        Some(super::orders::CompanionOrder::Stay(_) | super::orders::CompanionOrder::Target(_)) => {
+            None
+        }
+        None => default,
+    }
+}
+
 pub(super) fn candidate(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -114,7 +128,13 @@ fn checkpoint_purpose(
     state: &PlayerbotsRunner,
     now: i64,
 ) -> Option<TransferPurpose> {
-    if let Some(member_guid) = state.companion_leader_guid {
+    let order = super::orders::active(ctx, state.character_guid);
+    let companion_member = state
+        .objective
+        .as_ref()
+        .filter(|objective| objective.kind == super::runner::ObjectiveKind::Companion)
+        .and_then(|_| companion_member(order.as_ref(), state.companion_leader_guid));
+    if let Some(member_guid) = companion_member {
         let attempt = state.recovery.as_ref().and_then(|recovery| {
             recovery.attempts.iter().find(|attempt| {
                 attempt.objective
@@ -261,7 +281,9 @@ pub(super) fn arrival(
             let Some(party) = party else {
                 return Arrival::Invalid(Failure::TransferPurposeChanged);
             };
-            if party.leader_guid != member_guid {
+            let order = super::orders::active(ctx, state.character_guid);
+            let selected_member = companion_member(order.as_ref(), Some(party.leader_guid));
+            if selected_member != Some(member_guid) {
                 return Arrival::Invalid(Failure::TransferPurposeChanged);
             }
             if party.members.iter().any(|member| {
