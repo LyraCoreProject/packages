@@ -1,5 +1,3 @@
-#![cfg(feature = "debug_reducers")]
-
 //! Private destination content for retained Quest Transfer cases.
 
 use super::decision::{Action, Reason};
