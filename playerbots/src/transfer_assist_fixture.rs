@@ -5,10 +5,10 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_runner, Controller,
 };
 use crate::{
-    game_character, game_group, game_group_member, game_group_member_partition,
-    game_group_roster_revision, game_world_entity,
+    game_character, game_creature_move_schedule, game_group, game_group_member,
+    game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
-use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
+use spacetimedb::{reducer, table, Identity, ReducerContext, ScheduleAt, Table, TimeDuration};
 
 const DESTINATION_MAP: u32 = 36;
 const DESTINATION_INSTANCE: u64 = 5_098_078;
@@ -521,8 +521,6 @@ pub fn playerbots_transfer_assist_destination_stage(
     {
         return Err("Assist destination fixture requires fresh arrival and party rows".to_string());
     }
-    super::runner::playerbots_select_controller(ctx, leader_guid, Controller::Cohort)?;
-    super::runner::playerbots_select_controller(ctx, priest_guid, Controller::Cohort)?;
     let leader = ctx
         .db
         .pkg_playerbots_bot()
@@ -531,6 +529,12 @@ pub fn playerbots_transfer_assist_destination_stage(
         .next()
         .filter(|bot| bot.class == super::class::WARRIOR && bot.role == super::ROLE_TANK)
         .ok_or("Assist destination fixture requires the staged leader")?;
+    if leader.controller != Controller::Legacy {
+        return Err("Assist destination fixture requires the unclaimed human leader".to_string());
+    }
+    ctx.db.pkg_playerbots_bot().id().delete(leader.id);
+    crate::actor::set_sessionless_action_consent(ctx, leader_guid, true);
+    super::runner::playerbots_select_controller(ctx, priest_guid, Controller::Cohort)?;
     let priest = ctx
         .db
         .pkg_playerbots_bot()
@@ -539,12 +543,23 @@ pub fn playerbots_transfer_assist_destination_stage(
         .next()
         .filter(|bot| bot.class == super::class::PRIEST && bot.role == super::ROLE_HEALER)
         .ok_or("Assist destination fixture requires the selected Priest")?;
-    if leader.controller != Controller::Cohort || priest.controller != Controller::Cohort {
-        return Err("Assist destination fixture requires Cohort party members".to_string());
+    if priest.controller != Controller::Cohort {
+        return Err("Assist destination fixture requires the Cohort Priest".to_string());
     }
-    super::fixture::playerbots_fixture_freeze(ctx, leader_guid)?;
     super::fixture::playerbots_fixture_freeze(ctx, priest_guid)?;
     relocate_live_character(ctx, leader_guid, LEADER_DESTINATION)?;
     relocate_live_character(ctx, priest_guid, PRIEST_DESTINATION)?;
+    let schedules = ctx.db.game_creature_move_schedule(); // package-api: exempt private fixture declares the next Core movement tick before Transfer
+    let mut ticks: Vec<_> = schedules.iter().take(2).collect();
+    if ticks.len() != 1 || ticks[0].instance_id != u64::MAX {
+        return Err("Assist destination fixture requires one fresh movement tick".to_string());
+    }
+    let at = ctx
+        .timestamp
+        .checked_add(TimeDuration::from_micros(60_000_000))
+        .ok_or("Assist destination movement tick timestamp exhausted")?;
+    let mut tick = ticks.remove(0);
+    tick.scheduled_at = ScheduleAt::Time(at);
+    schedules.scheduled_id().update(tick);
     Ok(())
 }
