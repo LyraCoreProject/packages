@@ -309,16 +309,16 @@ approaches its source volume through ordinary movement. The Core AreaTrigger ope
 party authority, instance admission and the exact destination before creating a durable Transfer
 Intent. A missing route records a bounded Refusal.
 
-Before export, the runner advances its generation and clears local movement, casts, targets and
-decision observations. It retains the Bot Objective and a checkpoint describing its purpose and
-bounded Recovery state. The Gateway claims the exact Intent, completes Escrow, repairs party
-mirrors and releases the matching arrival fence. Pending authoritative Transfer state keeps the
+Before export, the runner advances its generation and clears local foreground work, progress
+snapshots, target identities and route state. It retains the Bot Objective and a checkpoint of
+its purpose and bounded Recovery state. The Gateway claims the exact Intent, completes Escrow,
+repairs party mirrors and releases the matching arrival fence. Pending authoritative Transfer state keeps the
 bot from rebuilding a body or starting another action, including through a Gateway restart.
 
 After release, ordinary runner work rebuilds the body and checks destination facts. A compatible
 Quest keeps its objective identity and deadline while rebuilding destinations and Recovery against
 current content and Navigation Inputs. An incompatible purpose records a typed Refusal before
-selecting replacement work. Companion Orders retain the selected member and are checked against
+executing replacement work. Companion Orders retain the selected member and are checked against
 current party authority. A crossing within one Shard still waits for the Gateway to complete its
 exact durable Intent before body reconstruction.
 
