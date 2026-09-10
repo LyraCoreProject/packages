@@ -253,7 +253,7 @@ fn preflight_destination(
     Ok(())
 }
 
-/// Stage a real active quest and one source-local decision before the Gateway begins Transfer.
+/// Stage a real active quest before the Gateway begins Transfer.
 #[reducer]
 pub fn playerbots_transfer_quest_source_stage(
     ctx: &ReducerContext,
@@ -265,10 +265,11 @@ pub fn playerbots_transfer_quest_source_stage(
     }
     super::quest_catalog_fixture::playerbots_quest_loop_fixture_stage_named(ctx, character_guid)?;
     super::quest_catalog_fixture::playerbots_quest_fixture_admit_accept(ctx, character_guid, 7)?;
-    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)?;
-    super::fixture::playerbots_fixture_provision_steps(ctx, character_guid, 32)?;
-    super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
-    super::quest_catalog_fixture::playerbots_recovery_fixture_exhaust_attempt(ctx, character_guid)
+    super::quest_catalog_fixture::playerbots_recovery_fixture_block_quest_target(
+        ctx,
+        character_guid,
+    )?;
+    super::fixture::playerbots_fixture_provision_steps(ctx, character_guid, 32)
 }
 
 /// Execute the real selected portal operation once after the caller rejoins the retained Quest
