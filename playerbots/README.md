@@ -513,6 +513,12 @@ controlled. Stun, polymorph, fear, and root all exclude an enemy from damage sel
 party control cast excludes it before the aura lands. The runner stops its own cast, movement, and
 melee when a control hold preempts the fight.
 
+Assist normally uses the named member's current selected, engaged target. A live, sessionless
+Cohort member's active Target order is explicit fight authority when the same current party leader
+issued both commands, even before that member attacks. The exact target must still be alive,
+hostile, uncontrolled, and in the companion's partition. A Refusal for that target does not select
+another fight.
+
 Between fights, rotation rows can name a self or party buff. The same core cast Gate checks the
 spellbook, level, resource, range, and line of sight before the action runs. Missing range or line of
 sight retains the buff target while the bot repairs its position. Active exact auras and equally
