@@ -1,3 +1,5 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Source inputs for the post-arrival Assist witness.
 
 use super::orders::{CommandRecord, CompanionOrder, CompanionOrderState};
