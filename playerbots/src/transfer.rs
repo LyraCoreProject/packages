@@ -1,6 +1,6 @@
 //! Imported portal selection and source-local runner preparation for party Transfer.
 
-use super::decision::{Action, ActionNode, MoveTarget, Reason, TransferAction};
+use super::decision::{Action, ActionNode, Candidate, MoveTarget, Reason, TransferAction};
 use super::pkg_playerbots_bot;
 use super::quest_catalog::pkg_playerbots_quest_objective;
 use super::runner::{
@@ -248,6 +248,65 @@ pub(super) fn requires_recovery(checkpoint: TransferCheckpoint) -> bool {
     }
 }
 
+/// Find the current root that owns the compact recovery memory carried by a Transfer.
+///
+/// The selected root may be tactical, so this searches every bounded root. Absence means the
+/// source purpose is not currently observable; it does not mean that purpose completed.
+pub(super) fn recovery_root(
+    checkpoint: TransferCheckpoint,
+    roots: &[Candidate],
+) -> Option<Candidate> {
+    roots.iter().copied().find(|candidate| {
+        if candidate.id.objective != checkpoint.objective_identity {
+            return false;
+        }
+        match checkpoint.purpose {
+            Some(TransferPurpose::Companion(CompanionTransferPurpose { member_guid, .. })) => {
+                candidate.id.reason == Reason::Follow
+                    && candidate.id.action == Action::Move(MoveTarget::Entity(member_guid))
+            }
+            Some(TransferPurpose::Quest(_)) => {
+                candidate.id.reason == Reason::Quest && super::recovery::work(*candidate).is_some()
+            }
+            None => false,
+        }
+    })
+}
+
+/// A Follow recovery is complete only when its exact member is visibly within the normal stop
+/// distance. Missing bodies, hidden roots and exhausted decision budgets remain pending.
+pub(super) fn companion_recovery_complete(
+    checkpoint: TransferCheckpoint,
+    objective: Option<&super::runner::Objective>,
+    party: Option<&super::companion::Party>,
+    me: &crate::WorldEntity,
+) -> bool {
+    let Some(TransferPurpose::Companion(CompanionTransferPurpose { member_guid, .. })) =
+        checkpoint.purpose
+    else {
+        return false;
+    };
+    if objective.is_none_or(|objective| {
+        objective.kind != super::runner::ObjectiveKind::Companion
+            || objective.identity != checkpoint.objective_identity
+    }) {
+        return false;
+    }
+    party
+        .and_then(|party| {
+            party
+                .members
+                .iter()
+                .find(|member| member.character_guid == member_guid)
+        })
+        .and_then(|member| member.unit.as_ref())
+        .is_some_and(|member| {
+            (member.map_id, member.instance_id) == (me.map_id, me.instance_id)
+                && (member.x - me.x).powi(2) + (member.y - me.y).powi(2) + (member.z - me.z).powi(2)
+                    <= 3.05 * 3.05
+        })
+}
+
 pub(super) fn retains_quest(
     checkpoint: TransferCheckpoint,
     admission: &super::quest_catalog::QuestAdmission,
@@ -407,7 +466,7 @@ pub(super) fn restore_recovery(
         ),
         None => return None,
     };
-    if purpose.id.reason != reason {
+    if purpose.id.objective != checkpoint.objective_identity || purpose.id.reason != reason {
         return None;
     }
     recovery.restore_transfer_attempt(

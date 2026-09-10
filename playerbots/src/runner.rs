@@ -1886,7 +1886,38 @@ fn run(
     {
         state.failure(Failure::RecoveryCapacity, now);
     }
-    let mut transfer_recovery_restored = false;
+    let mut transfer_recovery_settled = arrival.is_some_and(|checkpoint| {
+        !super::transfer::requires_recovery(checkpoint)
+            || super::transfer::companion_recovery_complete(
+                checkpoint,
+                state.objective.as_ref(),
+                party.as_ref(),
+                &me,
+            )
+    });
+    let recovery_root = arrival
+        .filter(|checkpoint| super::transfer::requires_recovery(*checkpoint))
+        .and_then(|checkpoint| {
+            super::transfer::recovery_root(checkpoint, &state.candidate_order)
+                .map(|purpose| (checkpoint, purpose))
+        });
+    let mut restored_root = None;
+    let mut restored_deferral = None;
+    if let Some((checkpoint, purpose)) = recovery_root {
+        let mut recovery = state.recovery.take().unwrap_or_default();
+        let _ = recovery.select(ctx, &me, &state, purpose, purpose, now);
+        if let Some(restored) =
+            super::transfer::restore_recovery(&mut recovery, checkpoint, purpose, now)
+        {
+            transfer_recovery_settled = true;
+            restored_root = Some(purpose);
+            restored_deferral = restored.deferred_until_micros;
+        }
+        state.recovery = Some(recovery);
+    }
+    if let Some(until_micros) = restored_deferral {
+        restore_transfer_deferral(&mut state, until_micros);
+    }
     if bot.controller == Controller::Cohort {
         if let (Some(candidate), Some(purpose)) = (
             chosen.filter(|candidate| !quest_read_limited || *candidate != quest_unavailable),
@@ -1894,17 +1925,8 @@ fn run(
         ) {
             let mut recovery = state.recovery.take().unwrap_or_default();
             let mut adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
-            let mut restored = None;
-            if let Some(checkpoint) = arrival {
-                restored =
-                    super::transfer::restore_recovery(&mut recovery, checkpoint, purpose, now);
-                transfer_recovery_restored = restored.is_some();
-                adjusted = recovery.select(ctx, &me, &state, candidate, purpose, now);
-            }
             state.recovery = Some(recovery);
-            if let Some(until_micros) = restored.and_then(|restored| restored.deferred_until_micros)
-            {
-                restore_transfer_deferral(&mut state, until_micros);
+            if restored_root == Some(purpose) && restored_deferral.is_some() {
                 adjusted.id.action = Action::Hold;
                 adjusted.id.reason = purpose.id.reason;
             }
@@ -2150,11 +2172,7 @@ fn run(
     if let Some(recovery) = &mut state.recovery {
         recovery.activate(decision.purpose, now);
     }
-    if arriving
-        && arrival.is_none_or(|checkpoint| {
-            !super::transfer::requires_recovery(checkpoint) || transfer_recovery_restored
-        })
-    {
+    if arriving && transfer_recovery_settled {
         state.transfer_checkpoint = None;
         bounded_push(
             &mut state.history,

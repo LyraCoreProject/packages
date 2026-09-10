@@ -100,7 +100,7 @@ pub(super) struct RestoredTransferAttempt {
 }
 
 /// The root action names the purpose. Positioning prerequisites retain that root through selection.
-fn work(purpose: Candidate) -> Option<Work> {
+pub(super) fn work(purpose: Candidate) -> Option<Work> {
     if matches!(
         purpose.id.reason,
         Reason::Survival | Reason::Resurrection | Reason::Restricted | Reason::CrowdControl

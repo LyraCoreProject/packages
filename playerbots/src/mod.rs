@@ -45,6 +45,8 @@ pub(crate) use transfer_assist_fixture::{
 #[cfg(feature = "debug_reducers")]
 mod transfer_orders_fixture;
 #[cfg(feature = "debug_reducers")]
+mod transfer_recovery_fixture;
+#[cfg(feature = "debug_reducers")]
 mod quest_catalog_fixture;
 #[cfg(feature = "debug_reducers")]
 mod transfer_destination_fixture;
