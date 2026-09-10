@@ -336,6 +336,13 @@ pub fn playerbots_transfer_fixture_stage(
         .find(GROUP)
         .ok_or("Transfer fixture roster revision missing")?
         .revision;
+    let accepted_members: Vec<_> = partitions
+        .iter()
+        .map(|partition| (partition.membership_revision, partition.character_guid))
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .map(|(_, character_guid)| character_guid)
+        .collect();
     crate::group::sync_group_mirror(
         ctx,
         GROUP,
@@ -343,7 +350,7 @@ pub fn playerbots_transfer_fixture_stage(
         group.loot_method,
         group.loot_threshold,
         group.master_looter_guid,
-        members.iter().map(|member| member.character_guid).collect(),
+        accepted_members,
         crate::SessionActor {
             guid: leader_guid,
             ownership: None,
