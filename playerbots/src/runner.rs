@@ -1561,10 +1561,14 @@ fn run(
         }
     }
     let quest_wait = super::quest_catalog::active_wait_until(ctx, me.guid);
+    let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
+    let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
+    let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
     let grind_target = if party.is_none()
         && !quest_objective
         && !quest_read_limited
         && quest_wait.is_none_or(|until| until <= now)
+        && (at_destination || previous_grind_target.is_some())
     {
         Some(super::quest_loop::grind_target(
             ctx,
@@ -1580,9 +1584,6 @@ fn run(
     } else {
         None
     };
-    let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
-    let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
-    let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
     if owns_runner && state.transfer_checkpoint.is_none() {
         if let Some(o) = &mut state.objective {
             if at_destination {
