@@ -485,13 +485,13 @@ fn restage_completed_member_crossing(
                 && row.revision == 2
                 && !row.transfer_pending
         })
-        .ok_or("Assist Realm fixture did not settle its member locator")?;
+        .ok_or("Gateway Realm fixture did not settle its member locator")?;
     let partitions = ctx.db.game_group_member_partition();
     let mut partition = partitions
         .character_guid()
         .find(character_guid)
         .filter(|row| row.group_id == GROUP && row.member_active)
-        .ok_or("Assist Realm fixture member partition is absent")?;
+        .ok_or("Gateway Realm fixture member partition is absent")?;
     partition.map_id = settled.map_id;
     partition.instance_id = settled.instance_id;
     partition.locator_revision = settled.revision;
