@@ -1380,9 +1380,6 @@ fn run(
                     Err(outcome) => {
                         party.fight_constraint = Some(u64::MAX);
                         super::orders::record_runtime_outcome(ctx, me.guid, outcome);
-                        if bot.controller == Controller::Cohort {
-                            stop(ctx, me.guid, &mut state);
-                        }
                     }
                 }
             }
@@ -1398,9 +1395,6 @@ fn run(
                     }
                     Err(outcome) => {
                         super::orders::record_runtime_outcome(ctx, me.guid, outcome);
-                        if bot.controller == Controller::Cohort {
-                            stop(ctx, me.guid, &mut state);
-                        }
                     }
                 }
             }
