@@ -230,6 +230,42 @@ pub fn playerbots_transfer_fixture_stage(
     mode: u8,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    stage_transfer_fixture(
+        ctx,
+        companion_guid,
+        leader_guid,
+        mode,
+        crate::SessionActor {
+            guid: leader_guid,
+            ownership: None,
+        },
+    )
+}
+
+/// Use the same private route fixture after the caller has claimed the party leader.
+#[reducer]
+pub fn playerbots_transfer_fixture_stage_authenticated(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    mode: u8,
+    request_actor: crate::SessionActor,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if request_actor.guid != leader_guid {
+        return Err("Transfer fixture authority does not own the party leader".to_string());
+    }
+    crate::account_ownership::require_actor(ctx, request_actor)?; // package-api: exempt private fixture checks exact entry authority before mutation
+    stage_transfer_fixture(ctx, companion_guid, leader_guid, mode, request_actor)
+}
+
+fn stage_transfer_fixture(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    mode: u8,
+    request_actor: crate::SessionActor,
+) -> Result<(), String> {
     let (route, declared) = fixture_route(mode)?;
     let group = ctx
         .db
@@ -266,16 +302,7 @@ pub fn playerbots_transfer_fixture_stage(
     }
 
     let ensure_instance = crate::instance::ensure_instance; // package-api: exempt private fixture stages the admitted party instance
-    ensure_instance(
-        ctx,
-        DESTINATION_INSTANCE,
-        36,
-        GROUP,
-        crate::SessionActor {
-            guid: leader_guid,
-            ownership: None,
-        },
-    )?;
+    ensure_instance(ctx, DESTINATION_INSTANCE, 36, GROUP, request_actor)?;
     let bound_guid = if mode == 3 {
         companion_guid
     } else {
@@ -353,10 +380,7 @@ pub fn playerbots_transfer_fixture_stage(
         group.loot_threshold,
         group.master_looter_guid,
         accepted_members,
-        crate::SessionActor {
-            guid: leader_guid,
-            ownership: None,
-        },
+        request_actor,
         partitions,
         roster_revision,
     )?;
