@@ -35,13 +35,12 @@ const COMBAT_RECEIPT_LIMIT: usize = 12;
 // rows cover the declared one-time armor, Fortitude, heal, and terminal in-flight casts.
 const CAST_RECEIPT_LIMIT: usize = 256;
 const CAST_EVENT_READ_LIMIT: usize = 256;
-const CAST_IMPACT_EVENT_READ_LIMIT: usize = 256;
+const IMPACT_RECEIPT_LIMIT: usize = 256;
+const IMPACT_EVENT_READ_LIMIT: usize = 256;
 const CAST_GO_KIND: u8 = 2;
-const IMPACT_FAILURE_RECEIPT_OVERFLOW: u8 = 1;
-const IMPACT_FAILURE_EVENT_OVERFLOW: u8 = 2;
-const IMPACT_FAILURE_MISSING_RECEIPT: u8 = 3;
-const IMPACT_FAILURE_AMBIGUOUS_RECEIPT: u8 = 4;
-const IMPACT_FAILURE_DUPLICATE_EVENT: u8 = 5;
+const IMPACT_FAILURE_EVENT_OVERFLOW: u8 = 1;
+const IMPACT_FAILURE_RECEIPT_OVERFLOW: u8 = 2;
+const IMPACT_FAILURE_EVENT_CHANGED: u8 = 3;
 const EXPECTED_FAULTS: [(u8, i64); 4] = [
     (FAULT_WOUND, 20_000_000),
     (FAULT_CONTROL, 40_000_000),
@@ -103,7 +102,6 @@ pub struct CompanionCombatReceipt {
     pub observed_micros: i64,
 }
 
-#[derive(Clone)]
 #[table(accessor = pkg_playerbots_companion_cast_receipt, public)]
 pub struct CompanionCastReceipt {
     #[primary_key]
@@ -119,16 +117,37 @@ pub struct CompanionCastReceipt {
     pub target_health_after: u32,
     pub resolved_micros: i64,
     pub finished_micros: i64,
-    // Deferred projectile evidence. A zero event id means this cast had no observed impact.
-    #[default(0u64)]
-    pub impact_event_id: u64,
-    #[default(0i64)]
+}
+
+/// One authoritative projectile-impact event observed during the private route.
+#[table(accessor = pkg_playerbots_companion_impact_receipt, public)]
+pub struct CompanionImpactReceipt {
+    #[primary_key]
+    pub source_event_id: u64,
+    pub caster_guid: u64,
+    pub target_guid: u64,
+    pub spell_id: u32,
+    pub damage: u32,
     pub impact_micros: i64,
-    // 1 receipt overflow, 2 event overflow, 3 missing receipt, 4 ambiguity, 5 duplicate event.
-    #[default(0u8)]
-    pub impact_failure: u8,
-    #[default(0u64)]
-    pub impact_failure_event_id: u64,
+    pub observed_micros: i64,
+}
+
+/// Bounded capture status for the private projectile-impact evidence stream.
+#[table(accessor = pkg_playerbots_companion_impact_status, public)]
+pub struct CompanionImpactStatus {
+    #[primary_key]
+    pub id: u8,
+    // 1 source-event read overflow, 2 receipt capacity overflow, 3 retained event changed.
+    pub failure: u8,
+    pub failure_event_id: u64,
+}
+
+fn empty_impact_status() -> CompanionImpactStatus {
+    CompanionImpactStatus {
+        id: 0,
+        failure: 0,
+        failure_event_id: 0,
+    }
 }
 
 // These rows belong to the one private acceptance run, not to any Character they name. Several
@@ -143,6 +162,10 @@ crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_companion_combat_
 crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_companion_combat_receipt());
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_companion_cast_receipt(_ctx, _character_guid) {});
 crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_companion_cast_receipt());
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_companion_impact_receipt(_ctx, _character_guid) {});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_companion_impact_receipt());
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_companion_impact_status(_ctx, _character_guid) {});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_companion_impact_status());
 
 crate::game_hook!(on_damage_taken, fn playerbots_companion_acceptance_observe_damage(ctx, payload) {
     let Some(plan) = ctx.db.pkg_playerbots_companion_acceptance().id().find(0) else {
@@ -256,10 +279,6 @@ crate::game_hook!(on_cast_resolved, fn playerbots_companion_acceptance_observe_r
                 .map_or(0, |target| target.health),
             resolved_micros: ctx.timestamp.to_micros_since_unix_epoch(),
             finished_micros: 0,
-            impact_event_id: 0,
-            impact_micros: 0,
-            impact_failure: 0,
-            impact_failure_event_id: 0,
         });
     }
 });
@@ -311,96 +330,30 @@ fn observed_cast_target(plan: &CompanionAcceptance, target_guid: u64) -> bool {
         .any(|candidate| candidate == target_guid)
 }
 
-fn record_impact_failure(
-    ctx: &ReducerContext,
-    retained: &mut [CompanionCastReceipt],
-    receipt_id: Option<u64>,
-    failure: u8,
-    event: Option<&crate::SpellImpactEvent>,
-) {
-    let receipts = ctx.db.pkg_playerbots_companion_cast_receipt();
-    let existing = receipt_id
-        .and_then(|id| retained.iter().position(|receipt| receipt.id == id))
-        .or_else(|| (!retained.is_empty()).then_some(0));
-    if let Some(index) = existing {
-        retained[index].impact_failure = failure;
-        retained[index].impact_failure_event_id = event.map_or(0, |event| event.id);
-        receipts.id().update(retained[index].clone());
+fn capture_spell_impacts(ctx: &ReducerContext, plan: &CompanionAcceptance) {
+    let statuses = ctx.db.pkg_playerbots_companion_impact_status();
+    let Some(mut status) = statuses.id().find(0) else {
+        return;
+    };
+    if status.failure != 0 {
         return;
     }
-    let (caster_guid, target_guid, spell_id, impact_event_id, impact_micros) =
-        event.map_or((0, 0, 0, 0, 0), |event| {
-            (
-                event.caster_guid,
-                event.target_guid,
-                event.spell_id,
-                event.id,
-                event.created_at.to_micros_since_unix_epoch(),
-            )
-        });
-    receipts.insert(CompanionCastReceipt {
-        id: 0,
-        caster_guid,
-        target_guid,
-        spell_id,
-        source_event_id: 0,
-        scheduled_id: 0,
-        damage: 0,
-        healed: 0,
-        target_health_after: 0,
-        resolved_micros: 0,
-        finished_micros: 0,
-        impact_event_id,
-        impact_micros,
-        impact_failure: failure,
-        impact_failure_event_id: impact_event_id,
-    });
-}
-
-fn reconcile_cast_impacts(ctx: &ReducerContext, plan: &CompanionAcceptance) {
-    let receipts = ctx.db.pkg_playerbots_companion_cast_receipt();
-    let mut retained: Vec<_> = receipts.iter().take(CAST_RECEIPT_LIMIT + 1).collect();
-    if retained.len() > CAST_RECEIPT_LIMIT {
-        record_impact_failure(
-            ctx,
-            &mut retained,
-            None,
-            IMPACT_FAILURE_RECEIPT_OVERFLOW,
-            None,
-        );
-        return;
-    }
-    if retained.iter().any(|receipt| receipt.impact_failure != 0) {
-        return;
-    }
-    let mut retained_event_ids = BTreeSet::new();
-    if let Some(duplicate) = retained.iter().find_map(|receipt| {
-        (receipt.impact_event_id != 0 && !retained_event_ids.insert(receipt.impact_event_id))
-            .then_some(receipt.id)
-    }) {
-        record_impact_failure(
-            ctx,
-            &mut retained,
-            Some(duplicate),
-            IMPACT_FAILURE_DUPLICATE_EVENT,
-            None,
-        );
+    let receipts = ctx.db.pkg_playerbots_companion_impact_receipt();
+    let mut receipt_count = receipts.iter().take(IMPACT_RECEIPT_LIMIT + 1).count();
+    if receipt_count > IMPACT_RECEIPT_LIMIT {
+        status.failure = IMPACT_FAILURE_RECEIPT_OVERFLOW;
+        statuses.id().update(status);
         return;
     }
     let mut impacts: Vec<_> = ctx
         .db
         .game_spell_impact_event()
         .iter()
-        .take(CAST_IMPACT_EVENT_READ_LIMIT + 1)
+        .take(IMPACT_EVENT_READ_LIMIT + 1)
         .collect();
-    if impacts.len() > CAST_IMPACT_EVENT_READ_LIMIT {
-        record_impact_failure(
-            ctx,
-            &mut retained,
-            None,
-            IMPACT_FAILURE_EVENT_OVERFLOW,
-            None,
-        );
+    if impacts.len() > IMPACT_EVENT_READ_LIMIT {
+        status.failure = IMPACT_FAILURE_EVENT_OVERFLOW;
+        statuses.id().update(status);
         return;
     }
     impacts.sort_by_key(|event| (event.created_at.to_micros_since_unix_epoch(), event.id));
@@ -409,47 +362,37 @@ fn reconcile_cast_impacts(ctx: &ReducerContext, plan: &CompanionAcceptance) {
             && observed_cast_participant(plan, event.caster_guid)
             && observed_cast_target(plan, event.target_guid)
     }) {
-        if retained_event_ids.contains(&impact.id) {
+        let impact_micros = impact.created_at.to_micros_since_unix_epoch();
+        if let Some(receipt) = receipts.source_event_id().find(impact.id) {
+            if receipt.caster_guid != impact.caster_guid
+                || receipt.target_guid != impact.target_guid
+                || receipt.spell_id != impact.spell_id
+                || receipt.damage != impact.damage
+                || receipt.impact_micros != impact_micros
+            {
+                status.failure = IMPACT_FAILURE_EVENT_CHANGED;
+                status.failure_event_id = impact.id;
+                statuses.id().update(status);
+                return;
+            }
             continue;
         }
-        let impact_micros = impact.created_at.to_micros_since_unix_epoch();
-        // The public impact row has no scheduled cast id. Associate it only while exactly one
-        // unresolved receipt with the same semantic identity precedes it.
-        let matching: Vec<_> = retained
-            .iter()
-            .enumerate()
-            .filter(|(_, receipt)| {
-                receipt.impact_event_id == 0
-                    && receipt.source_event_id != 0
-                    && receipt.caster_guid == impact.caster_guid
-                    && receipt.target_guid == impact.target_guid
-                    && receipt.spell_id == impact.spell_id
-                    && receipt.resolved_micros <= impact_micros
-            })
-            .map(|(index, _)| index)
-            .take(2)
-            .collect();
-        if matching.len() != 1 {
-            let receipt_id = matching.first().map(|index| retained[*index].id);
-            record_impact_failure(
-                ctx,
-                &mut retained,
-                receipt_id,
-                if matching.is_empty() {
-                    IMPACT_FAILURE_MISSING_RECEIPT
-                } else {
-                    IMPACT_FAILURE_AMBIGUOUS_RECEIPT
-                },
-                Some(&impact),
-            );
+        if receipt_count >= IMPACT_RECEIPT_LIMIT {
+            status.failure = IMPACT_FAILURE_RECEIPT_OVERFLOW;
+            status.failure_event_id = impact.id;
+            statuses.id().update(status);
             return;
         }
-        let index = matching[0];
-        retained[index].damage = impact.damage;
-        retained[index].impact_event_id = impact.id;
-        retained[index].impact_micros = impact_micros;
-        receipts.id().update(retained[index].clone());
-        retained_event_ids.insert(impact.id);
+        receipts.insert(CompanionImpactReceipt {
+            source_event_id: impact.id,
+            caster_guid: impact.caster_guid,
+            target_guid: impact.target_guid,
+            spell_id: impact.spell_id,
+            damage: impact.damage,
+            impact_micros,
+            observed_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+        });
+        receipt_count += 1;
     }
 }
 
@@ -460,7 +403,7 @@ crate::game_tick_pass!(fn playerbots_companion_acceptance_observe_tick(ctx) {
     if plan.begun_micros == 0 {
         return;
     }
-    reconcile_cast_impacts(ctx, &plan);
+    capture_spell_impacts(ctx, &plan);
     let combat_receipts = ctx.db.pkg_playerbots_companion_combat_receipt();
     let retained: Vec<_> = combat_receipts
         .iter()
@@ -733,10 +676,16 @@ pub fn playerbots_companion_acceptance_destination_stage(
             .filter(&GROUP)
             .next()
             .is_some()
+        || ctx.db.pkg_playerbots_companion_impact_receipt().count() != 0
+        || ctx.db.pkg_playerbots_companion_impact_status().count() != 0
     {
         return Err("companion acceptance destination party state is occupied".to_string());
     }
-    declare_exit_route(ctx)
+    declare_exit_route(ctx)?;
+    ctx.db
+        .pkg_playerbots_companion_impact_status()
+        .insert(empty_impact_status());
+    Ok(())
 }
 
 /// Add and accept one unfinished Quest through the normal action owner after the reward fixture.
@@ -939,6 +888,8 @@ pub fn playerbots_companion_acceptance_stage(
         || ctx.db.pkg_playerbots_companion_fault().count() != 0
         || ctx.db.pkg_playerbots_companion_combat_receipt().count() != 0
         || ctx.db.pkg_playerbots_companion_cast_receipt().count() != 0
+        || ctx.db.pkg_playerbots_companion_impact_receipt().count() != 0
+        || ctx.db.pkg_playerbots_companion_impact_status().count() != 0
     {
         return Err("companion acceptance fixture is occupied".to_string());
     }
@@ -1045,6 +996,9 @@ pub fn playerbots_companion_acceptance_stage(
             staged_micros: ctx.timestamp.to_micros_since_unix_epoch(),
             begun_micros: 0,
         });
+    ctx.db
+        .pkg_playerbots_companion_impact_status()
+        .insert(empty_impact_status());
     let faults = ctx.db.pkg_playerbots_companion_fault();
     for (id, (kind, due_offset_micros)) in EXPECTED_FAULTS.into_iter().enumerate() {
         let (subject_guid, target_guid) = match kind {
