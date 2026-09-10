@@ -13,11 +13,15 @@ const LEADER_MEMBER: u64 = 5_098_001;
 const COMPANION_MEMBER: u64 = 5_098_002;
 const PRIEST_MEMBER: u64 = 5_098_003;
 const MAGE_MEMBER: u64 = 5_098_004;
+const COMPANION_ARRIVED_MEMBER: u64 = 5_098_005;
 const PARTY_LOOT_METHOD: u8 = 0;
 const FAULT_LOOT_METHOD: u8 = 3;
 const DESTINATION_POSITION: (f32, f32, f32) = (-14.5732, -385.475, 62.4561);
 #[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
 const DESTINATION_ORIENTATION: f32 = 1.5708;
+const EXIT_LEADER_POSITION: (f32, f32, f32) = (-11_198.7, 1_675.9, 24.5733);
+#[allow(clippy::approx_constant)] // Exact imported AreaTrigger landing orientation.
+const EXIT_ORIENTATION: f32 = 4.71239;
 
 #[table(accessor = pkg_playerbots_transfer_gateway_identity, public)]
 pub struct PlayerbotsTransferGatewayIdentity {
@@ -73,6 +77,118 @@ fn locator(character_guid: u64, map_id: u32, instance_id: u64, now: i64) -> crat
         pending_destination_map: 0,
         pending_destination_instance: 0,
     }
+}
+
+struct GatewayParty {
+    leader_guid: u64,
+    loot_method: u8,
+    loot_threshold: u8,
+    master_looter_guid: u64,
+    member_guids: Vec<u64>,
+    partitions: Vec<crate::GroupMemberPartition>,
+    roster_revision: u64,
+}
+
+fn exact_gateway_party(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+) -> Result<GatewayParty, String> {
+    let mut expected = vec![companion_guid, leader_guid, priest_guid, mage_guid];
+    expected.sort_unstable();
+    if expected[0] == 0 || expected.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err("Gateway exit fixture requires four distinct Characters".to_string());
+    }
+    let group = ctx
+        .db
+        .game_group()
+        .group_id()
+        .find(GROUP)
+        .filter(|group| {
+            group.leader_guid == leader_guid
+                && group.loot_method == PARTY_LOOT_METHOD
+                && group.loot_threshold == 2
+                && group.master_looter_guid == 0
+        })
+        .ok_or("Gateway exit fixture party rules changed")?;
+    let roster_revision = ctx
+        .db
+        .game_group_roster_revision()
+        .group_id()
+        .find(GROUP)
+        .filter(|roster| roster.active && roster.revision == 1)
+        .ok_or("Gateway exit fixture roster changed")?
+        .revision;
+    let mut members: Vec<_> = ctx
+        .db
+        .game_group_member()
+        .by_group()
+        .filter(&GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
+        .collect();
+    members.sort_by_key(|member| member.character_guid);
+    if members.len() != expected.len()
+        || members
+            .iter()
+            .map(|member| member.character_guid)
+            .ne(expected.iter().copied())
+    {
+        return Err("Gateway exit fixture party members changed".to_string());
+    }
+    let mut partitions: Vec<_> = ctx
+        .db
+        .game_group_member_partition()
+        .by_group()
+        .filter(&GROUP)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS * 2 + 1)
+        .collect();
+    if partitions.len() != expected.len()
+        || partitions.iter().any(|partition| {
+            let membership_revision = match partition.character_guid {
+                guid if guid == leader_guid => LEADER_MEMBER,
+                guid if guid == companion_guid => COMPANION_ARRIVED_MEMBER,
+                guid if guid == priest_guid => PRIEST_MEMBER,
+                guid if guid == mage_guid => MAGE_MEMBER,
+                _ => 0,
+            };
+            partition.group_id != GROUP
+                || !partition.member_active
+                || partition.state != crate::PartyPartitionState::Known
+                || partition.membership_revision != membership_revision
+        })
+    {
+        return Err("Gateway exit fixture member partitions changed".to_string());
+    }
+    partitions.sort_by_key(|partition| (partition.membership_revision, partition.character_guid));
+    let member_guids = partitions
+        .iter()
+        .map(|partition| partition.character_guid)
+        .collect();
+    Ok(GatewayParty {
+        leader_guid: group.leader_guid,
+        loot_method: group.loot_method,
+        loot_threshold: group.loot_threshold,
+        master_looter_guid: group.master_looter_guid,
+        member_guids,
+        partitions,
+        roster_revision,
+    })
+}
+
+fn exact_known_partition(
+    party: &GatewayParty,
+    character_guid: u64,
+    map_id: u32,
+    instance_id: u64,
+    locator_revision: u64,
+) -> bool {
+    party.partitions.iter().any(|partition| {
+        partition.character_guid == character_guid
+            && (partition.map_id, partition.instance_id) == (map_id, instance_id)
+            && partition.locator_revision == locator_revision
+    })
 }
 
 /// Stage the Realm-owned party roster and settled member partitions used by the private Gateway
@@ -385,6 +501,152 @@ fn restage_completed_member_crossing(
     partition.locator_revision = settled.revision;
     partition.state = crate::PartyPartitionState::Known;
     partitions.character_guid().update(partition);
+    Ok(())
+}
+
+/// Move the already-settled party leader back to the open world before the companion uses the
+/// audited Deadmines exit. The companion's locator remains at the revision produced by its real
+/// entry Transfer; the Gateway advances it when the exit completes.
+#[reducer]
+pub fn playerbots_transfer_gateway_exit_realm_stage(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let party = exact_gateway_party(ctx, companion_guid, leader_guid, priest_guid, mage_guid)?;
+    for (guid, map_id, instance_id, revision) in [
+        (companion_guid, 36, 5_098_078, 2),
+        (leader_guid, 36, 5_098_078, 2),
+        (priest_guid, 0, 0, 1),
+        (mage_guid, 0, 0, 1),
+    ] {
+        let locator = ctx
+            .db
+            .game_character_shard()
+            .character_guid()
+            .find(guid)
+            .filter(|row| {
+                (row.map_id, row.instance_id, row.revision) == (map_id, instance_id, revision)
+                    && !row.transfer_pending
+            });
+        // Realm-core retains the companion's membership history here. The settled Character
+        // locator and the certified World mirrors own its current partition after Transfer.
+        let realm_partition_is_current = guid == companion_guid
+            || exact_known_partition(&party, guid, map_id, instance_id, revision);
+        if locator.is_none() || !realm_partition_is_current {
+            return Err("Gateway exit fixture Realm location changed".to_string());
+        }
+    }
+    crate::realm_core::record_shard(ctx, leader_guid, 0, 0); // package-api: exempt private fixture models the leader's completed return
+    let settled = ctx
+        .db
+        .game_character_shard()
+        .character_guid()
+        .find(leader_guid)
+        .filter(|row| {
+            (row.map_id, row.instance_id, row.revision) == (0, 0, 3) && !row.transfer_pending
+        })
+        .ok_or("Gateway exit fixture did not advance the leader locator")?;
+    let partitions = ctx.db.game_group_member_partition();
+    let mut partition = partitions
+        .character_guid()
+        .find(leader_guid)
+        .filter(|row| row.group_id == GROUP && row.member_active)
+        .ok_or("Gateway exit fixture leader partition is absent")?;
+    partition.map_id = settled.map_id;
+    partition.instance_id = settled.instance_id;
+    partition.locator_revision = settled.revision;
+    partition.state = crate::PartyPartitionState::Known;
+    partitions.character_guid().update(partition);
+    Ok(())
+}
+
+/// Prepare the original World Shard as the destination for the companion's Deadmines exit. This
+/// restores only the human leader's durable Character and party partition. The caller materializes
+/// the leader through the shared body builder; the companion remains absent until Transfer.
+#[reducer]
+pub fn playerbots_transfer_gateway_exit_destination_stage(
+    ctx: &ReducerContext,
+    companion_guid: u64,
+    leader_guid: u64,
+    priest_guid: u64,
+    mage_guid: u64,
+    request_actor: crate::SessionActor,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let mut party = exact_gateway_party(ctx, companion_guid, leader_guid, priest_guid, mage_guid)?;
+    if request_actor.guid != leader_guid
+        || !exact_known_partition(&party, companion_guid, 36, 5_098_078, 2)
+        || !exact_known_partition(&party, leader_guid, 36, 5_098_078, 2)
+        || !exact_known_partition(&party, priest_guid, 0, 0, 1)
+        || !exact_known_partition(&party, mage_guid, 0, 0, 1)
+        || ctx
+            .db
+            .game_character()
+            .guid()
+            .find(companion_guid)
+            .is_some()
+        || ctx
+            .db
+            .game_world_entity()
+            .guid()
+            .find(companion_guid)
+            .is_some()
+        || ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(companion_guid)
+            .next()
+            .is_some()
+    {
+        return Err("Gateway exit destination is not the exact settled entry source".to_string());
+    }
+    let characters = ctx.db.game_character();
+    let mut leader = characters
+        .guid()
+        .find(leader_guid)
+        .filter(|row| (row.map_id, row.pending_instance_id) == (36, 5_098_078))
+        .ok_or("Gateway exit destination leader Character changed")?;
+    if ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(leader_guid)
+        .is_some()
+    {
+        return Err("Gateway exit destination leader body already exists".to_string());
+    }
+    crate::account_ownership::require_actor(ctx, request_actor)?; // package-api: exempt private fixture checks exact destination authority before mutation
+    leader.map_id = 0;
+    leader.pending_instance_id = 0;
+    (leader.x, leader.y, leader.z) = EXIT_LEADER_POSITION;
+    leader.orientation = EXIT_ORIENTATION;
+    characters.guid().update(leader);
+
+    let leader_partition = party
+        .partitions
+        .iter_mut()
+        .find(|partition| partition.character_guid == leader_guid)
+        .ok_or("Gateway exit destination leader partition is absent")?;
+    leader_partition.map_id = 0;
+    leader_partition.instance_id = 0;
+    leader_partition.locator_revision = 3;
+    crate::group::sync_group_mirror(
+        ctx,
+        GROUP,
+        party.leader_guid,
+        party.loot_method,
+        party.loot_threshold,
+        party.master_looter_guid,
+        party.member_guids,
+        request_actor,
+        party.partitions,
+        party.roster_revision,
+    )?;
     Ok(())
 }
 

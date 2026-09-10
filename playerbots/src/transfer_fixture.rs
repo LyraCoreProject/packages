@@ -156,12 +156,14 @@ fn move_partition(
         .iter_mut()
         .find(|partition| partition.character_guid == guid)
         .ok_or("Transfer fixture member partition missing")?;
-    partition.map_id = map_id;
-    partition.instance_id = instance_id;
-    partition.locator_revision = partition
-        .locator_revision
-        .checked_add(1)
-        .ok_or("Transfer fixture locator revision exhausted")?;
+    if (partition.map_id, partition.instance_id) != (map_id, instance_id) {
+        partition.map_id = map_id;
+        partition.instance_id = instance_id;
+        partition.locator_revision = partition
+            .locator_revision
+            .checked_add(1)
+            .ok_or("Transfer fixture locator revision exhausted")?;
+    }
     Ok(())
 }
 
