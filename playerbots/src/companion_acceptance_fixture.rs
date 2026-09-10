@@ -470,7 +470,9 @@ fn wound_without_moving(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
         entity.grid_y,
         entity.cell,
     );
-    let health = (entity.max_health.saturating_mul(35) / 100).max(1);
+    // Both allies must still need healing after the Priest repairs line of sight.
+    // Ordinary regeneration remains active during that approach.
+    let health = (entity.max_health.saturating_mul(10) / 100).max(1);
     entity.health = health;
     ctx.db.game_world_entity().guid().update(entity);
     let wounded = crate::helpers::live_entity(ctx, guid)?;
