@@ -3,7 +3,7 @@
 use super::pkg_playerbots_bot;
 use crate::{
     game_character, game_character_shard, game_group, game_group_member,
-    game_group_member_partition, game_group_roster_revision, game_world_entity,
+    game_group_member_partition, game_group_roster_revision, game_transfer_in, game_world_entity,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
@@ -533,6 +533,13 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         .filter(&GROUP)
         .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
+    let arrivals: Vec<_> = ctx
+        .db
+        .game_transfer_in()
+        .by_character()
+        .filter(&companion_guid)
+        .take(2)
+        .collect();
     let expected_method = if enabled {
         PARTY_LOOT_METHOD
     } else {
@@ -540,8 +547,15 @@ pub fn playerbots_transfer_gateway_mirror_fault(
     };
     let mut member_guids: Vec<_> = members.iter().map(|member| member.character_guid).collect();
     member_guids.sort_unstable();
-    let mut expected_guids = vec![companion_guid, leader_guid, priest_guid, mage_guid];
-    expected_guids.sort_unstable();
+    let mut partition_guids: Vec<_> = partitions
+        .iter()
+        .map(|partition| partition.character_guid)
+        .collect();
+    partition_guids.sort_unstable();
+    // Import has detached the transferring Character from this cached party. The real arrival
+    // mirror must restore it after the injected equal-revision rules conflict is removed.
+    let mut expected_retained_guids = vec![leader_guid, priest_guid, mage_guid];
+    expected_retained_guids.sort_unstable();
     if (
         current.leader_guid,
         current.loot_method,
@@ -552,12 +566,18 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         || revision
             .as_ref()
             .is_none_or(|revision| revision.revision != 1 || !revision.active)
-        || member_guids != expected_guids
-        || partitions.len() != 4
+        || arrivals.len() != 1
+        || arrivals[0].transfer_id != companion_guid
+        || arrivals[0].bot_intent_id == 0
+        || arrivals[0].bot_controller_generation == 0
+        || arrivals[0].bot_intent_source == Identity::ZERO
+        || arrivals[0].source_locator_revision == 0
+        || member_guids != expected_retained_guids
+        || partition_guids != expected_retained_guids
         || partitions.iter().any(|partition| {
             partition.group_id != GROUP
                 || !partition.member_active
-                || !expected_guids.contains(&partition.character_guid)
+                || partition.character_guid == companion_guid
         })
     {
         return Err("Gateway Transfer fixture refuses to alter another party".to_string());
