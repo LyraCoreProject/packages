@@ -112,10 +112,12 @@ fn authenticated_assist(
     {
         return Err("Assist source fixture requires the selected Priest order".to_string());
     }
+    // A normal pass can append a runtime outcome after this command was accepted.
     let receipt = state
         .history
-        .last()
-        .filter(|receipt| {
+        .iter()
+        .rev()
+        .find(|receipt| {
             receipt.source_identity != Identity::ZERO
                 && receipt.intent_id != 0
                 && receipt.issuer_guid == leader_guid
