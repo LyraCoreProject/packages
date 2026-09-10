@@ -265,6 +265,34 @@ pub(crate) fn active(ctx: &ReducerContext, character_guid: u64) -> Option<Compan
         .filter(|state| state.active)
 }
 
+pub(crate) fn authorized_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    group_id: u64,
+    issuer_guid: u64,
+) -> Option<u64> {
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(character_guid)
+        .next()?;
+    if bot.controller != Controller::Cohort {
+        return None;
+    }
+    if crate::actor::sessionless_action_gate(ctx, character_guid).is_err() {
+        return None;
+    }
+    let state = active(ctx, character_guid)?;
+    if state.group_id != group_id || state.issuer_guid != issuer_guid {
+        return None;
+    }
+    match state.order {
+        CompanionOrder::Target(target) => Some(target.target_guid),
+        _ => None,
+    }
+}
+
 pub(crate) fn clear(ctx: &ReducerContext, character_guid: u64) {
     let states = ctx.db.pkg_playerbots_companion_order();
     if let Some(mut state) = states.character_guid().find(character_guid) {

@@ -1185,6 +1185,35 @@ fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut Playerbots
     }
 }
 
+fn admit_exact_target(
+    ctx: &ReducerContext,
+    bot_guid: u64,
+    party: &mut super::companion::Party,
+    target_guid: u64,
+) -> Result<(), crate::actor::CommandOutcome> {
+    let target = crate::actor::companion_target_facts(ctx, bot_guid, target_guid)?;
+    if !party.enemies.iter().any(|enemy| enemy.guid == target.guid) {
+        party.enemies.push(crate::group::PartyEnemyFacts {
+            guid: target.guid,
+            map_id: target.map_id,
+            instance_id: target.instance_id,
+            x: target.x,
+            y: target.y,
+            z: target.z,
+            health: target.health,
+            max_health: target.max_health,
+            attacking_party: false,
+            party_attacking: false,
+            party_casting: false,
+            party_has_threat: false,
+            current_target_guid: None,
+            top_threat_guid: None,
+            control: None,
+        });
+    }
+    Ok(())
+}
+
 fn run(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
@@ -1304,30 +1333,43 @@ fn run(
                     .members
                     .iter()
                     .find(|member| member.character_guid == assist.member_guid)
-                    .and_then(|member| member.unit.as_ref());
-                let target_guid = member.map_or(0, |member| member.target_guid);
-                let outcome = match member {
+                    .and_then(|member| member.unit.clone());
+                let ordered_target = super::orders::authorized_target(
+                    ctx,
+                    assist.member_guid,
+                    party.group_id,
+                    party.leader_guid,
+                );
+                let target = match member {
                     None => Err(crate::actor::CommandOutcome::TargetUnavailable),
-                    Some(member)
+                    Some(ref member)
                         if (member.map_id, member.instance_id) != (me.map_id, me.instance_id) =>
                     {
                         Err(crate::actor::CommandOutcome::WrongPartition)
                     }
-                    Some(_) if target_guid == 0 => {
+                    Some(ref member) if member.dead || member.health == 0 => {
                         Err(crate::actor::CommandOutcome::TargetUnavailable)
                     }
-                    Some(_) => crate::actor::companion_target_facts(ctx, me.guid, target_guid)
-                        .and_then(|_| {
-                            party
-                                .enemies
-                                .iter()
-                                .any(|enemy| enemy.guid == target_guid)
-                                .then_some(())
-                                .ok_or(crate::actor::CommandOutcome::TargetUnavailable)
-                        }),
+                    Some(ref member) => {
+                        let target_guid = ordered_target.unwrap_or(member.target_guid);
+                        (target_guid != 0)
+                            .then_some((target_guid, ordered_target.is_some()))
+                            .ok_or(crate::actor::CommandOutcome::TargetUnavailable)
+                    }
                 };
+                let outcome = target.and_then(|(target_guid, ordered)| {
+                    if ordered {
+                        admit_exact_target(ctx, me.guid, party, target_guid)?;
+                    } else {
+                        crate::actor::companion_target_facts(ctx, me.guid, target_guid)?;
+                        if !party.enemies.iter().any(|enemy| enemy.guid == target_guid) {
+                            return Err(crate::actor::CommandOutcome::TargetUnavailable);
+                        }
+                    }
+                    Ok(target_guid)
+                });
                 match outcome {
-                    Ok(()) => {
+                    Ok(target_guid) => {
                         party.fight_constraint = Some(target_guid);
                         super::orders::record_runtime_outcome(
                             ctx,
@@ -1346,32 +1388,13 @@ fn run(
             }
             super::orders::CompanionOrder::Target(target) => {
                 party.fight_constraint = Some(target.target_guid);
-                match crate::actor::companion_target_facts(ctx, me.guid, target.target_guid) {
-                    Ok(target) => {
+                match admit_exact_target(ctx, me.guid, party, target.target_guid) {
+                    Ok(()) => {
                         super::orders::record_runtime_outcome(
                             ctx,
                             me.guid,
                             crate::actor::CommandOutcome::Applied,
                         );
-                        if !party.enemies.iter().any(|enemy| enemy.guid == target.guid) {
-                            party.enemies.push(crate::group::PartyEnemyFacts {
-                                guid: target.guid,
-                                map_id: target.map_id,
-                                instance_id: target.instance_id,
-                                x: target.x,
-                                y: target.y,
-                                z: target.z,
-                                health: target.health,
-                                max_health: target.max_health,
-                                attacking_party: false,
-                                party_attacking: false,
-                                party_casting: false,
-                                party_has_threat: false,
-                                current_target_guid: None,
-                                top_threat_guid: None,
-                                control: None,
-                            });
-                        }
                     }
                     Err(outcome) => {
                         super::orders::record_runtime_outcome(ctx, me.guid, outcome);
