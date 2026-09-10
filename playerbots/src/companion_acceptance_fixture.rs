@@ -10,7 +10,7 @@ use super::{pkg_playerbots_bot, pkg_playerbots_provisioning, Controller};
 use crate::nav::game_nav_chunk;
 use crate::threat::top_threat_target; // package-api: exempt private observers record authoritative Core threat ordering
 use crate::{
-    game_area_trigger, game_areatrigger_teleport, game_character, game_character_quest,
+    game_area_trigger, game_areatrigger_teleport, game_aura, game_character, game_character_quest,
     game_character_shard, game_creature_move_schedule, game_creature_quest, game_creature_spawn,
     game_group, game_group_member, game_group_member_partition, game_group_roster_revision,
     game_item_instance, game_quest_objective, game_quest_template, game_spell_cast_event,
@@ -488,6 +488,25 @@ fn wound_without_moving(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
     {
         return Err(format!(
             "companion acceptance wound changed Character {guid} location"
+        ));
+    }
+    Ok(())
+}
+
+fn clear_fortitude_if_present(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    let has_fortitude = || {
+        ctx.db
+            .game_aura()
+            .by_target()
+            .filter(&guid)
+            .any(|aura| aura.spell_id == 1243)
+    };
+    if has_fortitude() {
+        crate::spell::do_cancel_aura(ctx, guid, 1243)?;
+    }
+    if has_fortitude() {
+        return Err(format!(
+            "companion acceptance wound left Fortitude on Character {guid}"
         ));
     }
     Ok(())
@@ -1148,8 +1167,8 @@ pub fn playerbots_companion_acceptance_apply_fault(
         FAULT_WOUND => {
             wound_without_moving(ctx, plan.leader_guid)?;
             wound_without_moving(ctx, fault.target_guid)?;
-            crate::spell::do_cancel_aura(ctx, plan.leader_guid, 1243)?;
-            crate::spell::do_cancel_aura(ctx, fault.target_guid, 1243)?;
+            clear_fortitude_if_present(ctx, plan.leader_guid)?;
+            clear_fortitude_if_present(ctx, fault.target_guid)?;
         }
         FAULT_CONTROL => super::fixture::playerbots_fixture_roles_control(
             ctx,
