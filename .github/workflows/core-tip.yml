@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8183c8a30a080a0d9a789db40256824f78b781e2
+          ref: 855d96c858331d604da9a262510daa89302f53d2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -681,7 +681,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8183c8a30a080a0d9a789db40256824f78b781e2
+          ref: 855d96c858331d604da9a262510daa89302f53d2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -812,6 +812,7 @@ jobs:
                 --locked -p lyracore-module \
                 --test playerbots_transfer --test playerbots_transfer_lifecycle \
                 --test playerbots_transfer_upgrade --test playerbots_transfer_orders \
+                --test playerbots_transfer_recovery \
                 --no-fail-fast -- --ignored --nocapture --test-threads=1
               module_status=$?
               test "$gateway_status" -eq 0 && test "$module_status" -eq 0
