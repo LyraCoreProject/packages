@@ -79,6 +79,7 @@ pub enum Reason {
     Stay,
     TransferPosition,
     Transfer,
+    Grind,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

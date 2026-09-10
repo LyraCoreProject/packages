@@ -92,6 +92,7 @@ pub enum Failure {
     TransferArrivalUnavailable,
     TransferDestinationChanged,
     TransferPurposeChanged,
+    GrindReadLimit,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -847,7 +848,11 @@ fn objective(
     let admission = if bot.controller == Controller::Legacy {
         None
     } else if party.is_none() {
-        match super::quest_catalog::reconcile_active(ctx, bot.character_guid) {
+        match super::quest_catalog::reconcile_active(
+            ctx,
+            bot.character_guid,
+            &state.deferred_destinations,
+        ) {
             super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
             super::quest_catalog::ReconcileResult::Missing => None,
             super::quest_catalog::ReconcileResult::ReadLimit => {
@@ -1187,6 +1192,13 @@ fn run(
     now: i64,
     return_home: bool,
 ) {
+    #[cfg(feature = "debug_reducers")]
+    let _decision_time = super::config_parsed(ctx, "decision_timing", false).then(|| {
+        spacetimedb::log_stopwatch::LogStopwatch::new(&format!(
+            "playerbots_decision guid={} generation={} observed_micros={now}",
+            bot.character_guid, state.generation
+        ))
+    });
     let owns_runner = matches!(bot.controller, Controller::Legacy | Controller::Cohort);
     let Some(me) = ctx.db.game_world_entity().guid().find(bot.character_guid) else {
         state.chosen = Some(Candidate {
@@ -1201,6 +1213,19 @@ fn run(
         state.save(ctx);
         return;
     };
+    let previous_grind_target = state.chosen.and_then(|candidate| {
+        if candidate.id.reason != Reason::Grind {
+            return None;
+        }
+        match candidate.id.action {
+            Action::Attack(target)
+            | Action::Cast(CastAction { target, .. })
+            | Action::Move(MoveTarget::Entity(target) | MoveTarget::CastingPosition(target)) => {
+                Some(target)
+            }
+            _ => None,
+        }
+    });
     super::transfer::begin_arrival(&mut state, &me, now);
     let mut party = match if return_home {
         Ok(None)
@@ -1519,6 +1544,25 @@ fn run(
         }
     }
     let quest_wait = super::quest_catalog::active_wait_until(ctx, me.guid);
+    let grind_target = if party.is_none()
+        && !quest_objective
+        && !quest_read_limited
+        && quest_wait.is_none_or(|until| until <= now)
+    {
+        Some(super::quest_loop::grind_target(
+            ctx,
+            bot,
+            &me,
+            previous_grind_target,
+            |target| {
+                state.recovery.as_ref().is_none_or(|recovery| {
+                    recovery.eligible_work(super::recovery::Work::Fight(target))
+                })
+            },
+        ))
+    } else {
+        None
+    };
     let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
     let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
     let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
@@ -1828,6 +1872,41 @@ fn run(
                     node(Action::Hold, Reason::Quest, 110),
                 ));
             } else {
+                match &grind_target {
+                    Some(super::quest_loop::LiveCreatureTarget::Found(target)) => {
+                        match super::quest_loop::combat_strategy(
+                            ctx,
+                            bot,
+                            &me,
+                            target.guid,
+                            state.objective_sequence,
+                            Reason::Grind,
+                            105,
+                        ) {
+                            Ok(grind) => strategies.push(strategy(Trigger::Always, grind)),
+                            Err(unavailable) => {
+                                state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                                strategies.push(strategy(
+                                    Trigger::Always,
+                                    node(Action::Hold, Reason::Grind, 105),
+                                ));
+                            }
+                        }
+                    }
+                    Some(super::quest_loop::LiveCreatureTarget::ReadLimit) => {
+                        state.failure(Failure::GrindReadLimit, now);
+                        strategies.push(strategy(
+                            Trigger::Always,
+                            node(Action::Hold, Reason::Grind, 105),
+                        ));
+                    }
+                    Some(
+                        super::quest_loop::LiveCreatureTarget::Missing
+                        | super::quest_loop::LiveCreatureTarget::Deferred
+                        | super::quest_loop::LiveCreatureTarget::Controlled,
+                    )
+                    | None => {}
+                }
                 strategies.push(strategy(Trigger::Away, travel_action));
             }
         }
@@ -1969,18 +2048,27 @@ fn run(
     let party_holds_control = party
         .as_ref()
         .is_some_and(|party| !party.enemies.is_empty() && companion_fight_target.is_none());
-    let stale_quest_attack = (quest_objective || quest_read_limited)
-        && ctx.db.game_melee_attack().attacker_guid().find(me.guid).is_some_and(|attack| {
+    let stale_attack = ctx
+        .db
+        .game_melee_attack()
+        .attacker_guid()
+        .find(me.guid)
+        .is_some_and(|attack| {
             let quest_keeps_target = matches!(quest_plan,
                 Some(super::quest_loop::QuestPlan::Attack { target, .. }) if target == attack.target_guid);
+            let grind_keeps_target = matches!(&grind_target,
+                Some(super::quest_loop::LiveCreatureTarget::Found(target)) if target.guid == attack.target_guid);
             let defense_keeps_target = decision.purpose.is_some_and(|candidate| {
                 candidate.id.reason == Reason::Defense
                     && candidate.id.action == Action::Attack(attack.target_guid)
             });
-            !quest_keeps_target && !defense_keeps_target
+            (quest_objective || quest_read_limited || previous_grind_target.is_some())
+                && !quest_keeps_target
+                && !grind_keeps_target
+                && !defense_keeps_target
         });
     if party_holds_control
-        || stale_quest_attack
+        || stale_attack
         || (previous_fight_target.is_some() && previous_fight_target != companion_fight_target)
     {
         let _ = crate::actor::stop_attack(ctx, me.guid);
@@ -1997,12 +2085,24 @@ fn run(
         state.save(ctx);
         return;
     }
+    if chosen.is_some_and(|candidate| {
+        candidate.id.reason == Reason::Grind && candidate.id.action != Action::Hold
+    }) {
+        if let Some(objective) = state
+            .objective
+            .as_mut()
+            .filter(|objective| objective.kind == ObjectiveKind::ReturnHome)
+        {
+            objective.deadline_micros = now.saturating_add(OBJECTIVE_LIFETIME);
+        }
+    }
     if let Some(deadline) = state
         .objective
         .as_ref()
         .filter(|o| {
             o.kind == ObjectiveKind::ReturnHome
                 && o.stage == ObjectiveStage::Travelling
+                && chosen.is_some_and(|candidate| candidate.id.reason == Reason::ReturnHome)
                 && now >= o.deadline_micros
         })
         .map(|o| o.deadline_micros)

@@ -149,8 +149,8 @@ fn live_giver(
 fn search_entities(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
-    entry: u32,
     dead: bool,
+    mut wanted: impl FnMut(&crate::WorldEntity) -> bool,
 ) -> EntitySearch {
     let (gx0, gx1, gy0, gy1) =
         lyracore_shared::spatial::covering_cell_box(me.x, me.y, SEARCH_RADIUS_YD);
@@ -168,8 +168,8 @@ fn search_entities(
                     };
                 }
                 scanned += 1;
-                if entity.entry == entry
-                    && entity.dead == dead
+                if entity.dead == dead
+                    && wanted(&entity)
                     && distance_sq(me, entity.x, entity.y, entity.z)
                         <= SEARCH_RADIUS_YD * SEARCH_RADIUS_YD
                 {
@@ -190,7 +190,43 @@ pub(super) fn live_creature_target(
     entry: u32,
     eligible_work: impl Fn(u64) -> bool,
 ) -> LiveCreatureTarget {
-    let search = search_entities(ctx, me, entry, false);
+    let search = search_entities(ctx, me, false, |target| target.entry == entry);
+    select_live_target(ctx, me, search, eligible_work, None, None)
+}
+
+pub(super) fn grind_target(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+    me: &crate::WorldEntity,
+    preferred: Option<u64>,
+    eligible_work: impl Fn(u64) -> bool,
+) -> LiveCreatureTarget {
+    if (me.map_id, me.instance_id) != (bot.home_map, 0) {
+        return LiveCreatureTarget::Missing;
+    }
+    let leash_sq = super::goals::QUEST_LEASH_YD * super::goals::QUEST_LEASH_YD;
+    let search = search_entities(ctx, me, false, |target| {
+        (target.x - bot.home_x).powi(2) + (target.y - bot.home_y).powi(2) <= leash_sq
+            && super::goals::grind_target_is_worthwhile(ctx, me, target)
+    });
+    select_live_target(
+        ctx,
+        me,
+        search,
+        eligible_work,
+        Some(super::goals::pick_salt(ctx, me.guid)),
+        preferred,
+    )
+}
+
+fn select_live_target(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    search: EntitySearch,
+    eligible_work: impl Fn(u64) -> bool,
+    salt: Option<u64>,
+    preferred: Option<u64>,
+) -> LiveCreatureTarget {
     let mut deferred = false;
     let mut eligible: Vec<_> = search
         .rows
@@ -208,15 +244,36 @@ pub(super) fn live_creature_target(
             .then_with(|| left.guid.cmp(&right.guid))
     });
     let mut controlled = false;
+    let mut found = Vec::new();
     for (index, target) in eligible.into_iter().enumerate() {
         if index == CONTROL_TARGET_LIMIT {
-            return LiveCreatureTarget::ReadLimit;
+            if found.is_empty() {
+                return LiveCreatureTarget::ReadLimit;
+            }
+            break;
         }
         match crate::spell::control_status(ctx, target.guid, CONTROL_AURA_LIMIT) {
-            Ok(None) => return LiveCreatureTarget::Found(target),
+            Ok(None) => {
+                if preferred == Some(target.guid) {
+                    return LiveCreatureTarget::Found(target);
+                }
+                found.push(target);
+                if salt.is_none()
+                    || (preferred.is_none() && found.len() == super::goals::PICK_AMONG_NEAREST)
+                {
+                    break;
+                }
+            }
             Ok(Some(_)) => controlled = true,
             Err(_) => return LiveCreatureTarget::ReadLimit,
         }
+    }
+    if !found.is_empty() {
+        found.truncate(super::goals::PICK_AMONG_NEAREST);
+        let index = salt
+            .and_then(|salt| super::goals::pick_index(salt, found.len()))
+            .unwrap_or(0);
+        return LiveCreatureTarget::Found(found.swap_remove(index));
     }
     if search.exhausted {
         LiveCreatureTarget::ReadLimit
@@ -250,7 +307,7 @@ fn entitled_corpse(
     source_entry: u32,
     item_entry: u32,
 ) -> Search<(u64, u8)> {
-    let search = search_entities(ctx, me, source_entry, true);
+    let search = search_entities(ctx, me, true, |target| target.entry == source_entry);
     let mut corpses = search.rows;
     if corpses.is_empty() && !search.exhausted {
         return Search::Missing;
@@ -448,9 +505,71 @@ pub(super) fn plan(
 }
 
 fn node(action: Action, objective: u64) -> ActionNode {
-    let mut node = ActionNode::ready(action, Reason::Quest, 110);
+    action_node(action, Reason::Quest, 110, objective)
+}
+
+fn action_node(action: Action, reason: Reason, priority: i32, objective: u64) -> ActionNode {
+    let mut node = ActionNode::ready(action, reason, priority);
     node.candidate.id.objective = objective;
     node
+}
+
+pub(super) fn combat_strategy(
+    ctx: &ReducerContext,
+    bot: &PlayerbotsBot,
+    me: &crate::WorldEntity,
+    target: u64,
+    objective: u64,
+    reason: Reason,
+    priority: i32,
+) -> Result<ActionNode, super::companion::RoleReadError> {
+    if let Some(spell) =
+        super::companion::combat_spell(ctx, bot, me.guid, target, &[super::cond::ALWAYS])?
+    {
+        let cast = CastAction { target, spell };
+        let mut selected = action_node(Action::Cast(cast), reason, priority, objective);
+        if crate::spell::pending_cast(ctx, me.guid)
+            .is_none_or(|pending| pending.spell_id != spell || pending.target_guid != target)
+        {
+            match crate::actor::cast_readiness(ctx, me.guid, spell, target) {
+                Ok(()) => {}
+                Err(refusal)
+                    if matches!(
+                        refusal.kind,
+                        crate::spell::CastRefusalKind::OutOfRange
+                            | crate::spell::CastRefusalKind::NoLineOfSight
+                    ) =>
+                {
+                    selected.prerequisites.push(action_node(
+                        Action::Move(MoveTarget::CastingPosition(target)),
+                        reason,
+                        priority,
+                        objective,
+                    ));
+                }
+                Err(_) => selected.readiness = Readiness::Refused,
+            }
+        }
+        return Ok(selected);
+    }
+    let mut selected = action_node(Action::Attack(target), reason, priority, objective);
+    if ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(target)
+        .is_some_and(|target| {
+            distance_sq(me, target.x, target.y, target.z) > MELEE_RANGE_YD * MELEE_RANGE_YD
+        })
+    {
+        selected.prerequisites.push(action_node(
+            Action::Move(MoveTarget::Entity(target)),
+            reason,
+            priority,
+            objective,
+        ));
+    }
+    Ok(selected)
 }
 
 pub(super) fn strategy(
@@ -464,50 +583,7 @@ pub(super) fn strategy(
 ) -> Result<ActionNode, super::companion::RoleReadError> {
     let mut selected = match plan {
         QuestPlan::Attack { target, .. } => {
-            if let Some(spell) =
-                super::companion::combat_spell(ctx, bot, me.guid, target, &[super::cond::ALWAYS])?
-            {
-                let cast = CastAction { target, spell };
-                let mut selected = node(Action::Cast(cast), objective);
-                if crate::spell::pending_cast(ctx, me.guid).is_none_or(|pending| {
-                    pending.spell_id != spell || pending.target_guid != target
-                }) {
-                    match crate::actor::cast_readiness(ctx, me.guid, spell, target) {
-                        Ok(()) => {}
-                        Err(refusal)
-                            if matches!(
-                                refusal.kind,
-                                crate::spell::CastRefusalKind::OutOfRange
-                                    | crate::spell::CastRefusalKind::NoLineOfSight
-                            ) =>
-                        {
-                            selected.prerequisites.push(node(
-                                Action::Move(MoveTarget::CastingPosition(target)),
-                                objective,
-                            ));
-                        }
-                        Err(_) => selected.readiness = Readiness::Refused,
-                    }
-                }
-                selected
-            } else {
-                let mut selected = node(Action::Attack(target), objective);
-                if ctx
-                    .db
-                    .game_world_entity()
-                    .guid()
-                    .find(target)
-                    .is_some_and(|target| {
-                        distance_sq(me, target.x, target.y, target.z)
-                            > MELEE_RANGE_YD * MELEE_RANGE_YD
-                    })
-                {
-                    selected
-                        .prerequisites
-                        .push(node(Action::Move(MoveTarget::Entity(target)), objective));
-                }
-                selected
-            }
+            combat_strategy(ctx, bot, me, target, objective, Reason::Quest, 110)?
         }
         QuestPlan::Accept { quest, giver } => node(
             Action::AcceptQuest(QuestInteraction {

@@ -1360,6 +1360,17 @@ pub fn playerbots_quest_loop_fixture_stage_named(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    stage_named_with_rotation(ctx, character_guid, 0).map(|_| ())
+}
+
+pub(super) fn stage_named_with_rotation(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    source_insertion_rotation: u8,
+) -> Result<Vec<u64>, String> {
+    if source_insertion_rotation >= 10 {
+        return Err("quest target insertion rotation must be below 10".to_string());
+    }
     playerbots_quest_fixture_stage(ctx, character_guid)?;
     require_fixture(ctx)?;
     stage_loopback_smite(ctx)?;
@@ -1425,7 +1436,9 @@ pub fn playerbots_quest_loop_fixture_stage_named(
     }
     let spawns = ctx.db.game_creature_spawn();
     let entities = ctx.db.game_world_entity();
-    for offset in 0..10u64 {
+    let mut inserted_sources = Vec::with_capacity(10);
+    for insertion in 0..10u64 {
+        let offset = (insertion + u64::from(source_insertion_rotation)) % 10;
         let guid = creature_guid(6).saturating_add(offset);
         let x = character.x + 160.0 + offset as f32 * 0.4;
         let y = character.y + (offset % 2) as f32 * 0.4;
@@ -1448,6 +1461,7 @@ pub fn playerbots_quest_loop_fixture_stage_named(
         spawns.insert(spawn);
         entities.guid().delete(guid);
         crate::creatures::insert_creature_entity(ctx, entity);
+        inserted_sources.push(guid);
     }
     let fixtures = ctx.db.pkg_playerbots_quest_loop_fixture();
     let row = PlayerbotsQuestLoopFixture {
@@ -1463,7 +1477,7 @@ pub fn playerbots_quest_loop_fixture_stage_named(
         fixtures.insert(row);
     }
     quest_catalog::refresh_catalog(ctx, "unknown");
-    Ok(())
+    Ok(inserted_sources)
 }
 
 /// Fill the first spatial cell visited by the quest target query. The rows are outside the circular
@@ -2221,7 +2235,7 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
         quests.insert(prefix);
     }
     quests.quest_entry().update(held);
-    let selected = match quest_catalog::reconcile_active(ctx, character_guid) {
+    let selected = match quest_catalog::reconcile_active(ctx, character_guid, &[]) {
         quest_catalog::ReconcileResult::Found(selected) => selected,
         quest_catalog::ReconcileResult::Missing => {
             return Err("supported held alternative missing".to_string());
@@ -2295,7 +2309,7 @@ pub fn playerbots_quest_fixture_lose_provided_item(
     } else {
         items.guid().delete(item.guid);
     }
-    match quest_catalog::reconcile_active(ctx, character_guid) {
+    match quest_catalog::reconcile_active(ctx, character_guid, &[]) {
         quest_catalog::ReconcileResult::Found(_) => {
             return Err("held quest remained admitted without its provided item".to_string());
         }
