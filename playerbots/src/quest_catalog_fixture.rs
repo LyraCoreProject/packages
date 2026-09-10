@@ -1,3 +1,5 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Synthetic private-Shard staging for the catalog and its callable executors.
 
 use super::pkg_playerbots_bot;
