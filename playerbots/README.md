@@ -302,33 +302,56 @@ back alive on the spot, with no resurrection, no sickness and its corpse left be
 
 ## Crossing a Shard boundary
 
-A party that walks into a dungeon on a sharded realm crosses to the Shard that serves it. The bots
-follow, and they come home again afterwards, through the same Transfer a player uses.
+Follow and Assist use current party locations certified by Realm-core to follow the selected member
+through a supported portal. Stay and Target keep their work local. The Package reads the imported
+source volume and landing for triggers 78, 119 and 121, selects a route to the member's map, and
+approaches its source volume through ordinary movement. The Core AreaTrigger operation checks
+party authority, instance admission and the exact destination before creating a durable Transfer
+Intent. A missing route records a bounded Refusal.
 
-Both directions read one rule off this Shard's own rows, because a Package never gets a directory
-of where anybody is:
+Before export, the runner advances its generation and clears local movement, casts, targets and
+decision observations. It retains the Bot Objective and a checkpoint describing its purpose and
+bounded Recovery state. The Gateway claims the exact Intent, completes Escrow, repairs party
+mirrors and releases the matching arrival fence. Pending authoritative Transfer state keeps the
+bot from rebuilding a body or starting another action, including through a Gateway restart.
 
-- **In.** The leader has no entity here, and the party has a live instance here. That instance row
-  is what resolved the leader's portal, and the Shard they set out from keeps it. The bot is placed
-  at the portal's landing point and one Transfer Intent is written.
-- **Home.** The leader has no entity here, and there is no party instance here either — which is
-  what the Shard that serves the dungeon looks like from inside one. After ten seconds the bot
-  crosses back to its home point.
+After release, ordinary runner work rebuilds the body and checks destination facts. A compatible
+Quest keeps its objective identity and deadline while rebuilding destinations and Recovery against
+current content and Navigation Inputs. An incompatible purpose records a typed Refusal before
+selecting replacement work. Companion Orders retain the selected member and are checked against
+current party authority. A crossing within one Shard still waits for the Gateway to complete its
+exact durable Intent before body reconstruction.
 
-The ten seconds are the difference between being abandoned and having simply arrived first: bots are
-driven across one at a time, so a bot can land a moment before the leader it followed.
+## Durable Package rows
 
-Arriving is not a special case. A Transfer carries the Character row, the roster row and the
-personality; it does not carry the goal row and it does not carry a live entity. So a bot arrives
-with no body and no goal, and the ordinary tick rebuilds one and decides afresh. That is the whole
-of arrival.
+Ordinary process restart retains these rows. Character deletion removes every Character-owned row
+through its registered indexed sweep. Successful Transfer removes source ownership through the
+same Core sweep after import. The destination either receives the retained row or rebuilds local
+state as listed below.
 
-On a realm of one Shard the same code runs and the crossing is already finished when the Intent is
-written, because the placement was the whole move. The Gateway completes the exact Intent and the
-next bot pass rebuilds the body. The durable Intent remains the crossing authority while the
-Gateway is unavailable or restarts, and the bot stays bodiless until the Gateway completes that
-row. The three-second rebuild applies only to a populated in-transit goal from before durable
-Intents.
+| Character-owned row | Transfer rule |
+| --- | --- |
+| `pkg_playerbots_bot` | Move controller, class, role, home and due state. Allocate a new local row id. |
+| `pkg_playerbots_personality` | Move thresholds. Allocate a new local row id. |
+| `pkg_playerbots_runner` | Move the normalized runner, generation, objective and checkpoint. Clear local foreground, candidates, progress observations, targets and route state before export. Rebuild eligible work after arrival. |
+| `pkg_playerbots_companion_order` | Move the authenticated order, revision, bounded history and issuer fences. Recheck current party authority on use. |
+| `pkg_playerbots_provisioning` | Move the retained profile, stage and cursor. Check destination inventory and spell facts before each operation. |
+| `pkg_playerbots_quest_objective` | Move retained Quest meaning. Reconcile source destinations against destination content and Navigation Inputs, or record why the objective changed. |
+| `pkg_playerbots_action` | Do not transport local action observations. Destination actions produce new observations. |
+| `pkg_playerbots_recovery_scan` | Do not transport local rotation row ids or scan cursors. Restart the scan against destination facts. |
+| `pkg_playerbots_quest_admission` | Recompute admission against the destination catalog. |
+| `pkg_playerbots_goal` | Delete the local Legacy goal with the source Character. It does not travel. |
+
+The following rows belong to the Shard. Character deletion and Transfer leave them in place.
+
+| Row | Purpose |
+| --- | --- |
+| `pkg_playerbots_scheduler` | Local scheduler observations. |
+| `pkg_playerbots_kit`, `pkg_playerbots_rotation` | Local class and role content. |
+| `pkg_playerbots_quest_catalog`, `pkg_playerbots_catalog_seed`, `pkg_playerbots_catalog_quest`, `pkg_playerbots_catalog_objective` | Local supported catalog and derived content evidence. |
+
+Debug fixture rows hold private setup and evidence. They are excluded from the production row
+contract.
 
 ## Limits
 
@@ -550,9 +573,10 @@ The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to th
 runner, recovery scan and scheduler tables. Finite recovery adds a nullable Recovery field to the
 runner and a Core navigation import revision table. Existing goals and action observations keep their
 schema and meaning.
-The roster selector travels with the Character; runner observations and foreground work do not.
-The Character delete operation removes the runner and recovery scan rows. Production publication still requires the
-schema review described in LyraCore's `docs/danger-zones.md`.
+The roster selector and normalized runner now travel with the Character. Local foreground work and
+progress observations are cleared before export. The [durable row rules](#durable-package-rows)
+define deletion and Transfer for each production Package table. Publication requires the schema
+review described in LyraCore's `docs/danger-zones.md`.
 
 The populated recovery migration starts from clean merged Core
 `c600a7cc3887508012a512c77d7fefc128cf791d` and Package Collection
