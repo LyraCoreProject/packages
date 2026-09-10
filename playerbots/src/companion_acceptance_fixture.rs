@@ -11,9 +11,10 @@ use crate::nav::game_nav_chunk;
 use crate::threat::top_threat_target; // package-api: exempt private observers record authoritative Core threat ordering
 use crate::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_character_quest,
-    game_character_shard, game_creature_move_schedule, game_creature_quest, game_group,
-    game_group_member, game_group_member_partition, game_group_roster_revision, game_item_instance,
-    game_quest_objective, game_quest_template, game_spell_cast_event, game_world_entity,
+    game_character_shard, game_creature_move_schedule, game_creature_quest, game_creature_spawn,
+    game_group, game_group_member, game_group_member_partition, game_group_roster_revision,
+    game_item_instance, game_quest_objective, game_quest_template, game_spell_cast_event,
+    game_world_entity,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, ScheduleAt, Table};
 use std::collections::BTreeSet;
@@ -829,9 +830,21 @@ pub fn playerbots_companion_acceptance_stage(
     let mut enemies = Vec::with_capacity(3);
     for entry in 5_098_001u32..=5_098_003 {
         let guid = (0xF130u64 << 48) | (u64::from(entry) << 24) | 1;
-        if crate::helpers::live_entity(ctx, guid)?.entry != entry {
+        let enemy = crate::helpers::live_entity(ctx, guid)?;
+        if enemy.entry != entry {
             return Err("companion acceptance pull target identity changed".to_string());
         }
+        let mut spawn = ctx
+            .db
+            .game_creature_spawn()
+            .guid()
+            .find(guid)
+            .filter(|spawn| spawn.entry == entry)
+            .ok_or("companion acceptance pull target spawn changed")?;
+        spawn.map_id = enemy.map_id;
+        (spawn.x, spawn.y, spawn.z) = (enemy.x, enemy.y, enemy.z);
+        spawn.orientation = enemy.orientation;
+        ctx.db.game_creature_spawn().guid().update(spawn);
         enemies.push(guid);
     }
     ctx.db
