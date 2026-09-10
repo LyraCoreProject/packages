@@ -405,20 +405,38 @@ crate::game_tick_pass!(fn playerbots_companion_acceptance_observe_tick(ctx) {
     }
     capture_spell_impacts(ctx, &plan);
     let combat_receipts = ctx.db.pkg_playerbots_companion_combat_receipt();
-    let retained: Vec<_> = combat_receipts
+    let mut receipt_count = combat_receipts
         .iter()
         .take(COMBAT_RECEIPT_LIMIT + 1)
-        .collect();
-    if retained.len() <= COMBAT_RECEIPT_LIMIT {
-        for mut receipt in retained {
-            if receipt.attacker_guid == plan.warrior_guid
-                && plan.enemy_guids.contains(&receipt.target_guid)
-                && top_threat_target(ctx, receipt.target_guid) == Some(plan.warrior_guid)
-                && !receipt.tank_is_top_threat
-            {
+        .count();
+    if receipt_count <= COMBAT_RECEIPT_LIMIT {
+        // Taunt can make the Warrior top threat without dealing damage, so no damage hook is
+        // guaranteed to create the receipt that this tick observes.
+        for target_guid in plan.enemy_guids.iter().copied() {
+            if top_threat_target(ctx, target_guid) != Some(plan.warrior_guid) {
+                continue;
+            }
+            if let Some(mut receipt) = combat_receipts.iter().take(COMBAT_RECEIPT_LIMIT + 1).find(
+                |receipt| {
+                    receipt.attacker_guid == plan.warrior_guid
+                        && receipt.target_guid == target_guid
+                },
+            ) {
+                if receipt.tank_is_top_threat {
+                    continue;
+                }
                 receipt.tank_is_top_threat = true;
                 receipt.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
                 combat_receipts.id().update(receipt);
+            } else if receipt_count < COMBAT_RECEIPT_LIMIT {
+                combat_receipts.insert(CompanionCombatReceipt {
+                    id: 0,
+                    attacker_guid: plan.warrior_guid,
+                    target_guid,
+                    tank_is_top_threat: true,
+                    observed_micros: ctx.timestamp.to_micros_since_unix_epoch(),
+                });
+                receipt_count += 1;
             }
         }
     }
