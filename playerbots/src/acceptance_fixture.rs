@@ -1921,9 +1921,10 @@ fn stage_journey_for(
             plan.seed, plan.class, plan.role, bot.class, bot.role
         ));
     }
-    if bot.controller != Controller::Legacy {
-        return Err("acceptance journey setup requires Legacy control".to_string());
+    if bot.controller != Controller::Cohort {
+        return Err("acceptance journey setup requires new Cohort control".to_string());
     }
+    super::runner::playerbots_select_controller(ctx, character_guid, Controller::Frozen)?;
 
     playerbots_acceptance_resolve_seed_plan(ctx, plan.seed)?;
     let journeys = ctx.db.pkg_playerbots_acceptance_journey();
@@ -2087,7 +2088,7 @@ pub fn playerbots_acceptance_stage_journey(ctx: &ReducerContext, seed: u64) -> R
         return if journey.seed == seed {
             let bot = exact_bot(ctx, journey.character_guid)?;
             if (bot.class, bot.role) == (journey.class, journey.role)
-                && bot.controller == Controller::Legacy
+                && bot.controller == Controller::Frozen
                 && journey.journey_started_micros.is_none()
                 && journey.first_due_micros.is_none()
             {
@@ -2138,8 +2139,8 @@ pub fn playerbots_acceptance_begin_journey(
             Err("acceptance journey start state is inconsistent".to_string())
         };
     }
-    if bot.controller != Controller::Legacy {
-        return Err("acceptance journey must begin from Legacy control".to_string());
+    if bot.controller != Controller::Frozen {
+        return Err("acceptance journey must begin from Frozen control".to_string());
     }
 
     let started_micros = ctx.timestamp.to_micros_since_unix_epoch();

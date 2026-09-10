@@ -21,6 +21,7 @@ Every verb is Operator-gated. Call them with `spacetime call <database> -- <verb
 | `playerbots_spawn_class_role N x y z class role` | Spawn `N` bots of one class and role. Refuses a pairing this Package has no kit for. |
 | `playerbots_populate` | Top the population up to `population_count`. Idempotent. |
 | `playerbots_despawn_all` | Delete every bot Character and everything it owns. |
+| `playerbots_migrate_legacy_controllers [guids]` | Move one sorted batch of at most 16 eligible populated Legacy bots to Cohort. Transfer-owned rows wait for a later batch. |
 
 Roles are `0` tank, `1` healer, `2` damage.
 
@@ -90,13 +91,15 @@ the profile can learn it.
 
 `pkg_playerbots_personality` holds the part of a fight the rotation leaves open: where a bot breaks
 off, and where a healer places a heal. Two bots on one rotation at the same health diverge on those
-alone. The row is the floor; a Runtime Script can answer for either of them instead.
+alone. The row is the floor. The retained Legacy executor can ask a Runtime Script instead. Newly
+spawned Cohort bots use the rows directly.
 
 ## Personality as a script
 
-A row is one number. A script is a decision. This Package exposes both personality axes as Package
-Events, so a Runtime Script it ships can answer them per bot, per fight, and an Operator can change
-that answer while the realm is up.
+A row is one number. A script is a decision. The retained Legacy executor exposes both personality
+axes as Package Events, so a Runtime Script can answer them per bot, per fight, and an Operator can
+change that answer while the realm is up. The transitional cutover does not claim that these events
+affect Cohort decisions.
 
 | event | `event.actor` | `event.target` | the answer |
 | --- | --- | --- | --- |
@@ -271,10 +274,10 @@ finish a collect quest — and that is the only thing that ever gives a bot a sl
 to set off would shut it. A quest with nothing to give back has nothing to free, so on a full bag it
 is not walked to at all: that trip could only end in a Refusal.
 
-## Serendipity
+## Legacy serendipity
 
-The reason to run this Package: you are killing kobolds, somebody on the same quest asks you to
-group up, and you do.
+The retained Legacy executor can initiate a group while populated Legacy rows finish their cutover.
+New Cohort bots do not initiate this grouping path.
 
 An ungrouped bot with quest work in its log looks around about every fifteen seconds, staggered by
 Character so two bots on one pad never look on the same second. It invites the first fellow quester
@@ -467,20 +470,23 @@ migration default; it does not claim to publish an older Package binary before u
 
 ## Durable controller and objective
 
-`playerbots_select_controller(guid, controller)` selects one controller for that Character. The
-SpacetimeDB argument names are `legacy`, `recordOnly`, `cohort`, and `frozen`.
+`playerbots_select_controller(guid, controller)` selects one supported controller for that
+Character. The SpacetimeDB argument names remain `legacy`, `recordOnly`, `cohort`, and `frozen`
+because the enum is stored data. A new `legacy` request is refused before consent or Runner state
+changes.
 
 | Controller | Behavior |
 | --- | --- |
-| Legacy | Existing quest and party policy. This is the additive migration default. |
+| Legacy | Existing quest and party policy for populated rows awaiting the bounded cutover. New selection is refused. |
 | RecordOnly | Records the new decision without issuing gameplay from either controller. |
 | Cohort | Runs the durable objective and typed action runner. |
 | Frozen | Cancels Package casts and movement, stops bot attacks, and prevents new bot work. |
 
-Selection also updates core-owned session-less action consent. Legacy and Cohort allow group
-admission; RecordOnly and Frozen suppress it. Every selection clears this Character's unclaimed
-Group Intents, including a repeated selection. A group action admitted before the selection may
-finish at Realm-core afterwards. There is no atomic operation across Shards.
+Selection also updates core-owned session-less action consent. Cohort allows group admission;
+RecordOnly and Frozen suppress it. The Legacy migration retains its prior allowed consent. Every
+accepted selection clears this Character's unclaimed Group Intents, including a repeated selection.
+A group action admitted before the selection may finish at Realm-core afterwards. There is no atomic
+operation across Shards.
 
 Every gameplay entry checks current Account Claim and Fence ownership and Character World Session
 status. A human taking ownership suspends the bot even before `online` changes. Cancellation matches
@@ -527,7 +533,8 @@ them. Oversized or ambiguous aura, family, threat, enemy, pending-cast, and rota
 record their typed Party or role read failure instead of choosing from a partial scan.
 An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
 control. A membership whose parent Group is unavailable holds the existing objective and records the
-typed failure. The existing Legacy policy remains available under its explicit selector.
+typed failure. The transitional Legacy executor remains only for populated rows that have not yet
+migrated.
 
 A dead companion retains its role and objective while it releases and uses the spirit healer. Once
 alive, it regroups with the same leader. Survival movement has priority over healing while the bot
@@ -583,10 +590,12 @@ payload, reason and objective identity. Movement names Home, an Entity, or an al
 position is required. Cast carries its spell and target; Attack carries its target. There is no
 string registry.
 
-The migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the roster and adds
-runner, recovery scan and scheduler tables. Finite recovery adds a nullable Recovery field to the
-runner and a Core navigation import revision table. Existing goals and action observations keep their
-schema and meaning.
+The earlier additive migration appends `controller = Legacy` and `scheduler_lag_micros = 0` to the
+roster. That default preserves the serialized meaning of populated rows. New constructors now write
+Cohort explicitly. The bounded cutover accepts at most 16 sorted Character GUIDs, changes each
+eligible Legacy row through the normal controller transition exactly once, and safely replays
+already migrated or missing rows. A durable Transfer Intent, Runner checkpoint, fenced Character, or
+old IN_TRANSIT goal leaves that row unchanged for a later batch after its existing settlement path.
 The roster selector and normalized runner now travel with the Character. Local foreground work and
 progress observations are cleared before export. The [durable row rules](#durable-package-rows)
 define deletion and Transfer for each production Package table. Publication requires the schema

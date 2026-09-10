@@ -396,7 +396,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
         .filter(|bot| {
             bot.class == super::class::WARRIOR
                 && bot.role == super::ROLE_TANK
-                && bot.controller == super::Controller::Legacy
+                && bot.controller == super::Controller::Cohort
         })
         .ok_or("Gateway Transfer destination leader changed")?;
     ctx.db.pkg_playerbots_bot().id().delete(leader.id);

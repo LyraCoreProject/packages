@@ -88,6 +88,8 @@ pub(crate) use companion_acceptance_fixture::{
     sweep_transfer_pkg_playerbots_companion_impact_status,
 };
 #[cfg(feature = "debug_reducers")]
+mod controller_transition_fixture;
+#[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
 pub(crate) use goals::*;
 pub(crate) use orders::*;
@@ -181,6 +183,7 @@ pub struct PlayerbotsBot {
     pub home_z: f32,
     /// Wall-clock microseconds before which the brain pass leaves this bot alone.
     pub next_think_micros: i64,
+    /// The schema default preserves populated rows. New constructors write Cohort explicitly.
     #[default(Controller::Legacy)]
     pub controller: Controller,
     #[default(0i64)]
@@ -881,7 +884,7 @@ fn spawn_one(
         // lock-step for the rest of its life.
         next_think_micros: ctx.timestamp.to_micros_since_unix_epoch()
             + (guid % 10) as i64 * 100_000,
-        controller: Controller::Legacy,
+        controller: Controller::Cohort,
         scheduler_lag_micros: 0,
     });
     crate::actor::set_sessionless_action_consent(ctx, guid, true);

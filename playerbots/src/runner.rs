@@ -9,6 +9,7 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
 };
+use crate::transfer::game_bot_transfer_intent;
 use crate::{
     game_character_quest, game_creature_spline, game_gameobject, game_melee_attack, game_spell,
     game_world_entity,
@@ -16,6 +17,7 @@ use crate::{
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
 pub const BATCH_LIMIT: usize = 16;
+const CONTROLLER_MIGRATION_BATCH_LIMIT: usize = 16;
 const INTERVAL: i64 = 1_000_000;
 const OBJECTIVE_LIFETIME: i64 = 120_000_000;
 const DEFER_INTERVAL: i64 = 30_000_000;
@@ -653,7 +655,8 @@ pub(super) fn pass(ctx: &ReducerContext) {
     }
 }
 
-/// Selection is idempotent. A changed controller cancels work before the new generation can act.
+/// Supported selection is idempotent. A changed controller cancels work before the new generation
+/// can act. Legacy remains a stored value during cutover but cannot be selected again.
 #[reducer]
 pub fn playerbots_select_controller(
     ctx: &ReducerContext,
@@ -661,6 +664,17 @@ pub fn playerbots_select_controller(
     controller: Controller,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    if controller == Controller::Legacy {
+        return Err("Legacy controller selection is retired; select Cohort instead".to_string());
+    }
+    transition_controller(ctx, guid, controller)
+}
+
+fn transition_controller(
+    ctx: &ReducerContext,
+    guid: u64,
+    controller: Controller,
+) -> Result<(), String> {
     let mut bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -707,6 +721,64 @@ pub fn playerbots_select_controller(
         now
     };
     ctx.db.pkg_playerbots_bot().id().update(bot);
+    Ok(())
+}
+
+/// Move one explicit, bounded batch of populated Legacy rows to Cohort.
+///
+/// The caller repeats sorted batches after restart. Already migrated, missing and Transfer-owned
+/// rows are no-ops, so replay is safe and a crossing can finish before a later batch migrates its
+/// arriving row.
+#[reducer]
+pub fn playerbots_migrate_legacy_controllers(
+    ctx: &ReducerContext,
+    character_guids: Vec<u64>,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if character_guids.len() > CONTROLLER_MIGRATION_BATCH_LIMIT {
+        return Err(format!(
+            "Legacy controller migration batch exceeds {CONTROLLER_MIGRATION_BATCH_LIMIT} Characters"
+        ));
+    }
+    if character_guids.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("Legacy controller migration batch must be strictly increasing".to_string());
+    }
+
+    for guid in character_guids {
+        let Some(bot) = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next()
+        else {
+            continue;
+        };
+        if bot.controller != Controller::Legacy {
+            continue;
+        }
+        let transfer_checkpoint = ctx
+            .db
+            .pkg_playerbots_runner()
+            .character_guid()
+            .find(guid)
+            .is_some_and(|state| state.transfer_checkpoint.is_some());
+        let transfer_intent = ctx
+            .db
+            .game_bot_transfer_intent()
+            .by_bot()
+            .filter(guid)
+            .next()
+            .is_some();
+        if transfer_checkpoint
+            || transfer_intent
+            || crate::helpers::character_by_guid(ctx, guid).is_none()
+            || super::goals::legacy_transfer_pending(ctx, guid)
+        {
+            continue;
+        }
+        transition_controller(ctx, guid, Controller::Cohort)?;
+    }
     Ok(())
 }
 
