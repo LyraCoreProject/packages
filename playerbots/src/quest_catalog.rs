@@ -460,6 +460,7 @@ fn destinations(
     ctx: &ReducerContext,
     entity: EntityDefinition,
     map_id: u32,
+    instance_id: u64,
 ) -> Vec<CatalogDestination> {
     let mut found: Vec<_> = match entity.kind {
         CatalogEntityKind::Creature => {
@@ -470,7 +471,7 @@ fn destinations(
                     entry: entity.entry,
                     guid: spawn.guid,
                     map_id: spawn.map_id,
-                    instance_id: 0,
+                    instance_id,
                     x: spawn.x,
                     y: spawn.y,
                     z: spawn.z,
@@ -481,7 +482,7 @@ fn destinations(
             ctx,
             entity.entry,
             map_id,
-            0,
+            instance_id,
             DESTINATION_LIMIT,
         )
         .into_iter()
@@ -505,6 +506,8 @@ fn source_destinations(
     ctx: &ReducerContext,
     source_kind: Option<CatalogEntityKind>,
     entries: &[u32],
+    map_id: u32,
+    instance_id: u64,
 ) -> Vec<CatalogDestination> {
     let Some(kind) = source_kind else {
         return Vec::new();
@@ -517,11 +520,32 @@ fn source_destinations(
                 kind,
                 entry: *entry,
             },
-            0,
+            map_id,
+            instance_id,
         ));
     }
     found.sort_by_key(|destination| destination.guid);
     found
+}
+
+fn current_catalog_destination(
+    ctx: &ReducerContext,
+    entity: EntityDefinition,
+    catalog: &[CatalogDestination],
+    map_id: u32,
+    instance_id: u64,
+) -> Option<CatalogDestination> {
+    // Creature spawns are map-scoped. The exact catalog row supplies their instance, and the
+    // Character must already occupy that same partition before it can be used here.
+    if !catalog
+        .iter()
+        .any(|destination| (destination.map_id, destination.instance_id) == (map_id, instance_id))
+    {
+        return None;
+    }
+    destinations(ctx, entity, map_id, instance_id)
+        .into_iter()
+        .find(|current| catalog.contains(current))
 }
 
 fn work_area(destinations: &[CatalogDestination]) -> Option<CatalogWorkArea> {
@@ -611,8 +635,8 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
                 crate::quest::quest_role::END,
             ) as u8,
         ]);
-        let mut entity_destinations = destinations(ctx, definition.start, 0);
-        entity_destinations.extend(destinations(ctx, definition.actual_ender, 0));
+        let mut entity_destinations = destinations(ctx, definition.start, 0, 0);
+        entity_destinations.extend(destinations(ctx, definition.actual_ender, 0, 0));
         for destination in &entity_destinations {
             hash_destination(&mut hasher, destination);
         }
@@ -660,6 +684,7 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
                         kind: objective.source_kind.unwrap_or(CatalogEntityKind::Creature),
                         entry: *entry,
                     },
+                    0,
                     0,
                 ) {
                     hash_destination(&mut hasher, &destination);
@@ -785,8 +810,8 @@ pub(super) fn refresh_catalog(ctx: &ReducerContext, reference_source_revision: &
     let objectives = ctx.db.pkg_playerbots_catalog_objective();
     for definition in QUESTS.iter().copied() {
         let template = ctx.db.game_quest_template().entry().find(definition.entry);
-        let start_destinations = destinations(ctx, definition.start, 0);
-        let actual_ender_destinations = destinations(ctx, definition.actual_ender, 0);
+        let start_destinations = destinations(ctx, definition.start, 0, 0);
+        let actual_ender_destinations = destinations(ctx, definition.actual_ender, 0, 0);
         let eligibility = template
             .map(|template| {
                 (
@@ -831,7 +856,7 @@ pub(super) fn refresh_catalog(ctx: &ReducerContext, reference_source_revision: &
         }
         for objective in definition.objectives.iter().copied() {
             let mut evidence =
-                source_destinations(ctx, objective.source_kind, objective.source_entries);
+                source_destinations(ctx, objective.source_kind, objective.source_entries, 0, 0);
             if objective.kind == CatalogObjectiveKind::TalkOnly
                 || objective.executor == ObjectiveExecutor::ProvidedItem
             {
@@ -1189,6 +1214,7 @@ fn source_gate(
     ctx: &ReducerContext,
     catalog: &PlayerbotsCatalogObjective,
     require_current_destination: bool,
+    character: &crate::WorldEntity,
 ) -> Result<Option<CatalogDestination>, AdmissionRefusal> {
     let mut entries = Vec::new();
     match catalog.executor {
@@ -1272,9 +1298,15 @@ fn source_gate(
             }
         }
     }
-    match source_destinations(ctx, catalog.source_kind, &entries)
-        .into_iter()
-        .next()
+    match source_destinations(
+        ctx,
+        catalog.source_kind,
+        &entries,
+        character.map_id,
+        character.instance_id,
+    )
+    .into_iter()
+    .find(|current| catalog.source_destinations.contains(current))
     {
         Some(destination) => Ok(Some(destination)),
         None if !require_current_destination => Ok(None),
@@ -1307,7 +1339,7 @@ enum AdmissionKind {
 
 fn executor_gate(
     ctx: &ReducerContext,
-    character_guid: u64,
+    character: &crate::WorldEntity,
     admission_kind: AdmissionKind,
     quest: &PlayerbotsCatalogQuest,
     catalog: &PlayerbotsCatalogObjective,
@@ -1376,7 +1408,12 @@ fn executor_gate(
                     "kill objective differs from the catalog",
                 ));
             }
-            source_gate(ctx, catalog, admission_kind == AdmissionKind::Available)
+            source_gate(
+                ctx,
+                catalog,
+                admission_kind == AdmissionKind::Available,
+                character,
+            )
         }
         CatalogObjectiveKind::CollectItem => {
             let Some(core) = core else {
@@ -1428,7 +1465,7 @@ fn executor_gate(
                         ));
                     }
                     if admission_kind == AdmissionKind::Held
-                        && crate::items::item_count(ctx, character_guid, catalog.target_entry)
+                        && crate::items::item_count(ctx, character.guid, catalog.target_entry)
                             < catalog.required_count
                     {
                         return Err(missing(
@@ -1438,9 +1475,12 @@ fn executor_gate(
                     }
                     Ok(None)
                 }
-                ObjectiveExecutor::CreatureLoot | ObjectiveExecutor::GameObjectLoot => {
-                    source_gate(ctx, catalog, admission_kind == AdmissionKind::Available)
-                }
+                ObjectiveExecutor::CreatureLoot | ObjectiveExecutor::GameObjectLoot => source_gate(
+                    ctx,
+                    catalog,
+                    admission_kind == AdmissionKind::Available,
+                    character,
+                ),
                 _ => {
                     return Err(missing(
                         MissingCapability::ObjectiveMismatch,
@@ -1466,7 +1506,12 @@ fn executor_gate(
                     "GameObject objective differs from the catalog",
                 ));
             }
-            source_gate(ctx, catalog, admission_kind == AdmissionKind::Available)
+            source_gate(
+                ctx,
+                catalog,
+                admission_kind == AdmissionKind::Available,
+                character,
+            )
         }
     }
 }
@@ -1598,7 +1643,7 @@ fn inspect(
             .find(|objective| objective.obj_index == catalog_objective.objective_index);
         let source = executor_gate(
             ctx,
-            character_guid,
+            &character,
             admission_kind,
             &quest,
             catalog_objective,
@@ -1664,16 +1709,16 @@ fn inspect(
         });
     let start = (admission_kind == AdmissionKind::Available)
         .then(|| {
-            destinations(
+            current_catalog_destination(
                 ctx,
                 EntityDefinition {
                     kind: quest.start_kind,
                     entry: quest.start_entry,
                 },
-                0,
+                &quest.start_destinations,
+                character.map_id,
+                character.instance_id,
             )
-            .into_iter()
-            .next()
         })
         .flatten();
     if admission_kind == AdmissionKind::Available && start.is_none() {
@@ -1682,16 +1727,16 @@ fn inspect(
             "start giver has no stored destination",
         ));
     }
-    let actual_ender = destinations(
+    let actual_ender = current_catalog_destination(
         ctx,
         EntityDefinition {
             kind: quest.actual_ender_kind,
             entry: quest.actual_ender_entry,
         },
-        0,
+        &quest.actual_ender_destinations,
+        character.map_id,
+        character.instance_id,
     )
-    .into_iter()
-    .next()
     .or_else(|| {
         retained
             .as_ref()
