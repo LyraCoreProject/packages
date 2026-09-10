@@ -13,7 +13,6 @@ const LEADER_MEMBER: u64 = 5_098_001;
 const COMPANION_MEMBER: u64 = 5_098_002;
 const PRIEST_MEMBER: u64 = 5_098_003;
 const MAGE_MEMBER: u64 = 5_098_004;
-const COMPANION_ARRIVED_MEMBER: u64 = 5_098_005;
 const PARTY_LOOT_METHOD: u8 = 0;
 const FAULT_LOOT_METHOD: u8 = 3;
 const DESTINATION_POSITION: (f32, f32, f32) = (-14.5732, -385.475, 62.4561);
@@ -148,7 +147,7 @@ fn exact_gateway_party(
         || partitions.iter().any(|partition| {
             let membership_revision = match partition.character_guid {
                 guid if guid == leader_guid => LEADER_MEMBER,
-                guid if guid == companion_guid => COMPANION_ARRIVED_MEMBER,
+                guid if guid == companion_guid => COMPANION_MEMBER,
                 guid if guid == priest_guid => PRIEST_MEMBER,
                 guid if guid == mage_guid => MAGE_MEMBER,
                 _ => 0,
