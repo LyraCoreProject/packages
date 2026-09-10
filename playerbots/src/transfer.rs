@@ -301,7 +301,9 @@ pub(super) fn companion_recovery_complete(
         })
         .and_then(|member| member.unit.as_ref())
         .is_some_and(|member| {
-            (member.map_id, member.instance_id) == (me.map_id, me.instance_id)
+            !member.dead
+                && member.health > 0
+                && (member.map_id, member.instance_id) == (me.map_id, me.instance_id)
                 && (member.x - me.x).powi(2) + (member.y - me.y).powi(2) + (member.z - me.z).powi(2)
                     <= 3.05 * 3.05
         })
