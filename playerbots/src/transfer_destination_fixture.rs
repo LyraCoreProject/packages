@@ -11,8 +11,8 @@ use super::runner::{pkg_playerbots_runner, ObjectiveKind};
 use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content before staging
 use crate::nav::game_navigation_revision; // package-api: exempt private fixture requires Navigation Inputs staged by the real import reducer
 use crate::{
-    game_character, game_character_quest, game_creature_quest, game_creature_spawn,
-    game_creature_template, game_quest_objective, game_quest_template, game_world_entity,
+    game_character_quest, game_creature_quest, game_creature_spawn, game_creature_template,
+    game_quest_objective, game_quest_template, game_world_entity,
 };
 use spacetimedb::{reducer, ReducerContext, Table};
 
