@@ -24,6 +24,8 @@ const COMPANION_GROUP: u64 = 5_090_300;
 const ROLES_GROUP: u64 = 5_098_000;
 const ROLES_PRIEST_TRAINER: u32 = 5_098_200;
 const ROLES_FORTITUDE_OFFERING: u64 = 5_098_201;
+const ROLES_WARRIOR_TRAINER: u32 = 5_098_202;
+const ROLES_TAUNT_OFFERING: u64 = 5_098_203;
 
 /// Move the fixture's human stand-in onto an Account no other private party member uses before
 /// exercising the authenticated Gateway Actor Gate.
@@ -1126,6 +1128,46 @@ pub fn playerbots_fixture_roles_stronger_fortitude(
     crate::helpers::require_operator(ctx)?;
     let caster = crate::helpers::live_entity(ctx, caster_guid)?;
     crate::spell::cast_triggered(ctx, caster_guid, 21_562, caster.level as u8, target_guid)
+}
+
+/// Add the level-valid Warrior trainer offering used by the companion route and arm the normal
+/// level-up provisioning cycle. The ordinary runner remains the only writer of the spellbook row.
+#[reducer]
+pub fn playerbots_fixture_roles_prepare_taunt(
+    ctx: &ReducerContext,
+    warrior_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(warrior_guid)
+        .next()
+        .ok_or("role fixture Warrior missing")?;
+    if (bot.class, bot.role) != (super::class::WARRIOR, super::ROLE_TANK) {
+        return Err("Taunt fixture requires a Warrior tank".to_string());
+    }
+    let warrior = crate::helpers::live_entity(ctx, warrior_guid)?;
+    let taunt = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(355)
+        .ok_or("seed Taunt spell header missing")?;
+    if warrior.level != u32::from(taunt.spell_level) || taunt.spell_level != 10 {
+        return Err("Taunt fixture requires its level-10 Warrior and header".to_string());
+    }
+    provision_trainer(ctx, ROLES_WARRIOR_TRAINER, super::class::WARRIOR)?;
+    provision_offering(ctx, ROLES_TAUNT_OFFERING, ROLES_WARRIOR_TRAINER, 355, 10);
+    super::provisioning::playerbots_arm_provisioning_on_levelup(
+        ctx,
+        &crate::hooks::LevelupPayload {
+            character_guid: warrior_guid,
+            new_level: warrior.level,
+        },
+    );
+    Ok(())
 }
 
 /// Add one source-derived, level-valid Priest trainer offering and arm its normal profile action.
