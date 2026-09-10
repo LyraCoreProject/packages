@@ -7,6 +7,7 @@
 //! orders, combat, recovery, AreaTriggers, and Transfer remain on their ordinary owners.
 
 use super::{pkg_playerbots_bot, pkg_playerbots_provisioning, Controller};
+use crate::threat::top_threat_target; // package-api: exempt private observers record authoritative Core threat ordering
 use crate::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_character_quest,
     game_character_shard, game_creature_move_schedule, game_creature_quest, game_group,
@@ -139,7 +140,6 @@ crate::game_hook!(on_damage_taken, fn playerbots_companion_acceptance_observe_da
     {
         return;
     }
-    let top_threat_target = crate::threat::top_threat_target; // package-api: exempt private observer records authoritative Core threat ordering
     let tank_is_top_threat = payload.attacker_guid == plan.warrior_guid
         && top_threat_target(ctx, payload.target_guid) == Some(plan.warrior_guid);
     let receipts = ctx.db.pkg_playerbots_companion_combat_receipt();
@@ -285,8 +285,7 @@ crate::game_tick_pass!(fn playerbots_companion_acceptance_observe_tick(ctx) {
         for mut receipt in retained {
             if receipt.attacker_guid == plan.warrior_guid
                 && plan.enemy_guids.contains(&receipt.target_guid)
-                && crate::threat::top_threat_target(ctx, receipt.target_guid)
-                    == Some(plan.warrior_guid)
+                && top_threat_target(ctx, receipt.target_guid) == Some(plan.warrior_guid)
                 && !receipt.tank_is_top_threat
             {
                 receipt.tank_is_top_threat = true;
