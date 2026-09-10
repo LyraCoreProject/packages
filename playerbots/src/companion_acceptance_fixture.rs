@@ -103,6 +103,7 @@ pub struct CompanionCombatReceipt {
     pub observed_micros: i64,
 }
 
+#[derive(Clone)]
 #[table(accessor = pkg_playerbots_companion_cast_receipt, public)]
 pub struct CompanionCastReceipt {
     #[primary_key]
@@ -312,7 +313,7 @@ fn observed_cast_target(plan: &CompanionAcceptance, target_guid: u64) -> bool {
 
 fn record_impact_failure(
     ctx: &ReducerContext,
-    retained: &mut Vec<CompanionCastReceipt>,
+    retained: &mut [CompanionCastReceipt],
     receipt_id: Option<u64>,
     failure: u8,
     event: Option<&crate::SpellImpactEvent>,
