@@ -12,7 +12,7 @@ pub fn playerbots_controller_transition_fixture_stage_legacy(
     stale_in_transit: bool,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    let mut bot = ctx
+    let bot = ctx
         .db
         .pkg_playerbots_bot()
         .by_character()
@@ -39,9 +39,7 @@ pub fn playerbots_controller_transition_fixture_stage_legacy(
     {
         return Err("controller transition fixture refuses Transfer-owned state".to_string());
     }
-    crate::actor::set_sessionless_action_consent(ctx, character_guid, true);
-    bot.controller = Controller::Legacy;
-    ctx.db.pkg_playerbots_bot().id().update(bot);
+    super::runner::transition_controller(ctx, character_guid, Controller::Legacy)?;
     if stale_in_transit {
         // The preceding event transfer removed the live body before leaving this compatibility
         // marker. Use the Core logout path to model that persisted boundary.

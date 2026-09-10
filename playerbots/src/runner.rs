@@ -670,7 +670,7 @@ pub fn playerbots_select_controller(
     transition_controller(ctx, guid, controller)
 }
 
-fn transition_controller(
+pub(super) fn transition_controller(
     ctx: &ReducerContext,
     guid: u64,
     controller: Controller,
