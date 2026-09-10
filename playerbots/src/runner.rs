@@ -2100,10 +2100,21 @@ fn run(
         .objective
         .as_ref()
         .filter(|o| {
-            o.kind == ObjectiveKind::ReturnHome
+            let selected_owned_purpose = chosen.is_some_and(|candidate| {
+                candidate.id.objective == o.identity
+                    && match o.kind {
+                        ObjectiveKind::ReturnHome => candidate.id.reason == Reason::ReturnHome,
+                        ObjectiveKind::Quest => matches!(
+                            candidate.id.reason,
+                            Reason::Quest | Reason::TransferPosition | Reason::Transfer
+                        ),
+                        ObjectiveKind::Companion => false,
+                    }
+            });
+            state.transfer_checkpoint.is_none()
                 && o.stage == ObjectiveStage::Travelling
-                && chosen.is_some_and(|candidate| candidate.id.reason == Reason::ReturnHome)
                 && now >= o.deadline_micros
+                && selected_owned_purpose
         })
         .map(|o| o.deadline_micros)
     {
