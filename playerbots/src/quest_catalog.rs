@@ -857,6 +857,231 @@ pub(super) fn refresh_catalog(ctx: &ReducerContext, reference_source_revision: &
     }
 }
 
+#[cfg(feature = "debug_reducers")]
+fn same_catalog_header(left: &PlayerbotsQuestCatalog, right: &PlayerbotsQuestCatalog) -> bool {
+    // A refresh writes the next refresh time, so it is scheduling metadata rather than cache
+    // identity. Every identity and content field must still match.
+    left.revision == right.revision
+        && left.name == right.name
+        && left.blueprint_revision == right.blueprint_revision
+        && left.reference_source_revision == right.reference_source_revision
+        && left.content_revision == right.content_revision
+        && left.quest_count == right.quest_count
+}
+
+#[cfg(feature = "debug_reducers")]
+fn same_catalog_seed(left: &PlayerbotsCatalogSeed, right: &PlayerbotsCatalogSeed) -> bool {
+    left.class == right.class
+        && left.fixture_seed == right.fixture_seed
+        && left.catalog_revision == right.catalog_revision
+        && left.quest_order == right.quest_order
+}
+
+#[cfg(feature = "debug_reducers")]
+fn same_catalog_quest(left: &PlayerbotsCatalogQuest, right: &PlayerbotsCatalogQuest) -> bool {
+    left.quest_entry == right.quest_entry
+        && left.catalog_revision == right.catalog_revision
+        && left.catalog_order == right.catalog_order
+        && left.min_level == right.min_level
+        && left.required_races == right.required_races
+        && left.required_classes == right.required_classes
+        && left.prerequisite_quest == right.prerequisite_quest
+        && left.start_kind == right.start_kind
+        && left.start_entry == right.start_entry
+        && left.start_destinations == right.start_destinations
+        && left.actual_ender_kind == right.actual_ender_kind
+        && left.actual_ender_entry == right.actual_ender_entry
+        && left.actual_ender_destinations == right.actual_ender_destinations
+        && left.content_revision == right.content_revision
+}
+
+#[cfg(feature = "debug_reducers")]
+fn same_catalog_objective(
+    left: &PlayerbotsCatalogObjective,
+    right: &PlayerbotsCatalogObjective,
+) -> bool {
+    left.id == right.id
+        && left.quest_entry == right.quest_entry
+        && left.objective_index == right.objective_index
+        && left.kind == right.kind
+        && left.target_entry == right.target_entry
+        && left.required_count == right.required_count
+        && left.executor == right.executor
+        && left.source_kind == right.source_kind
+        && left.source_entries == right.source_entries
+        && left.source_destinations == right.source_destinations
+        && left.work_area == right.work_area
+        && left.destination_evidence_revision == right.destination_evidence_revision
+        && left.catalog_revision == right.catalog_revision
+}
+
+/// Remove only the exact generated cache which `playerbots_spawn` creates on a fresh private
+/// fixture database. Returning an error rolls the reducer transaction back to the original rows.
+#[cfg(feature = "debug_reducers")]
+pub(super) fn clear_private_fixture_catalog(ctx: &ReducerContext) -> Result<(), String> {
+    let expected_quests = QUESTS.len();
+    let expected_objectives: usize = QUESTS.iter().map(|quest| quest.objectives.len()).sum();
+    let headers: Vec<_> = ctx
+        .db
+        .pkg_playerbots_quest_catalog()
+        .iter()
+        .take(2)
+        .collect();
+    let mut seeds: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_seed()
+        .iter()
+        .take(4)
+        .collect();
+    let mut quests: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_quest()
+        .iter()
+        .take(expected_quests + 1)
+        .collect();
+    let mut objectives: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_objective()
+        .iter()
+        .take(expected_objectives + 1)
+        .collect();
+    let cache_is_in_use = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .iter()
+        .next()
+        .is_some()
+        || ctx
+            .db
+            .pkg_playerbots_quest_admission()
+            .iter()
+            .next()
+            .is_some();
+    if headers.is_empty() {
+        if seeds.is_empty() && quests.is_empty() && objectives.is_empty() && !cache_is_in_use {
+            return Ok(());
+        }
+        return Err("destination catalogue fixture state is occupied".to_string());
+    }
+    let header = headers
+        .first()
+        .filter(|_| headers.len() == 1)
+        .ok_or("destination catalogue fixture state is occupied")?;
+    if header.revision != CATALOG_REVISION
+        || header.name != CATALOG_NAME
+        || header.blueprint_revision != CATALOG_BLUEPRINT_REVISION
+        || header.reference_source_revision != "unknown"
+        || header.content_revision != observed_content_revision(ctx)
+        || usize::try_from(header.quest_count).ok() != Some(expected_quests)
+        || seeds.len() != 3
+        || quests.len() != expected_quests
+        || objectives.len() != expected_objectives
+        || cache_is_in_use
+    {
+        return Err("destination catalogue fixture state is occupied".to_string());
+    }
+    seeds.sort_by_key(|row| row.class);
+    quests.sort_by_key(|row| row.quest_entry);
+    objectives.sort_by_key(|row| row.id);
+    let expected_seed_classes = [1u8, 5, 8];
+    let mut expected_quest_entries: Vec<_> = QUESTS.iter().map(|quest| quest.entry).collect();
+    let mut expected_objective_tuples: Vec<_> = QUESTS
+        .iter()
+        .flat_map(|quest| {
+            quest.objectives.iter().map(|objective| {
+                (
+                    objective_id(quest.entry, objective.index),
+                    quest.entry,
+                    objective.index,
+                )
+            })
+        })
+        .collect();
+    expected_quest_entries.sort_unstable();
+    expected_objective_tuples.sort_unstable();
+    if seeds.iter().map(|row| row.class).collect::<Vec<_>>() != expected_seed_classes
+        || quests.iter().map(|row| row.quest_entry).collect::<Vec<_>>() != expected_quest_entries
+        || objectives
+            .iter()
+            .map(|row| (row.id, row.quest_entry, row.objective_index))
+            .collect::<Vec<_>>()
+            != expected_objective_tuples
+    {
+        return Err("destination catalogue fixture state is occupied".to_string());
+    }
+
+    refresh_catalog(ctx, "unknown");
+    let canonical_header = ctx
+        .db
+        .pkg_playerbots_quest_catalog()
+        .revision()
+        .find(CATALOG_REVISION)
+        .expect("catalog refresh inserts its header");
+    let mut canonical_seeds: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_seed()
+        .iter()
+        .take(4)
+        .collect();
+    let mut canonical_quests: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_quest()
+        .iter()
+        .take(expected_quests + 1)
+        .collect();
+    let mut canonical_objectives: Vec<_> = ctx
+        .db
+        .pkg_playerbots_catalog_objective()
+        .iter()
+        .take(expected_objectives + 1)
+        .collect();
+    canonical_seeds.sort_by_key(|row| row.class);
+    canonical_quests.sort_by_key(|row| row.quest_entry);
+    canonical_objectives.sort_by_key(|row| row.id);
+    if canonical_seeds.len() != seeds.len()
+        || canonical_quests.len() != quests.len()
+        || canonical_objectives.len() != objectives.len()
+        || !same_catalog_header(header, &canonical_header)
+        || !seeds
+            .iter()
+            .zip(&canonical_seeds)
+            .all(|(left, right)| same_catalog_seed(left, right))
+        || !quests
+            .iter()
+            .zip(&canonical_quests)
+            .all(|(left, right)| same_catalog_quest(left, right))
+        || !objectives
+            .iter()
+            .zip(&canonical_objectives)
+            .all(|(left, right)| same_catalog_objective(left, right))
+    {
+        return Err("destination catalogue fixture state is occupied".to_string());
+    }
+    ctx.db
+        .pkg_playerbots_quest_catalog()
+        .revision()
+        .delete(CATALOG_REVISION);
+    for row in canonical_seeds {
+        ctx.db
+            .pkg_playerbots_catalog_seed()
+            .class()
+            .delete(row.class);
+    }
+    for row in canonical_quests {
+        ctx.db
+            .pkg_playerbots_catalog_quest()
+            .quest_entry()
+            .delete(row.quest_entry);
+    }
+    for row in canonical_objectives {
+        ctx.db
+            .pkg_playerbots_catalog_objective()
+            .id()
+            .delete(row.id);
+    }
+    Ok(())
+}
+
 /// Recheck observed catalog inputs at most once per interval for the whole Shard. Every admission
 /// still reads the current quest, relation, objective, loot, and destination rows it depends on.
 pub(super) fn ensure_catalog(ctx: &ReducerContext) {

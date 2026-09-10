@@ -163,15 +163,7 @@ fn preflight_destination(
     entries: &[u32],
     guids: &[u64],
 ) -> Result<(), String> {
-    if ctx
-        .db
-        .pkg_playerbots_quest_catalog()
-        .revision()
-        .find(CATALOG_REVISION)
-        .is_some()
-    {
-        return Err("destination catalogue fixture state is occupied".to_string());
-    }
+    super::quest_catalog::clear_private_fixture_catalog(ctx)?;
     if ctx.db.game_navigation_revision().id().find(0).is_none() {
         return Err("destination Navigation Inputs were not imported".to_string());
     }
