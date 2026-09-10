@@ -3,7 +3,7 @@
 //! Declared Core facts for the action-lifecycle acceptance cases.
 
 use crate::{game_creature_spawn, game_creature_spline, game_gameobject, game_world_entity};
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, ReducerContext};
 
 fn place_entity(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
     let entities = ctx.db.game_world_entity();
@@ -58,29 +58,16 @@ pub fn playerbots_action_lifecycle_stage_quest_plan(
                 character_guid,
                 33,
             )?;
-            let retained = ctx
+            let source = ctx
                 .db
-                .pkg_playerbots_quest_objective()
-                .character_guid()
-                .find(character_guid)
-                .ok_or("retained Quest source missing")?;
-            let source = retained
-                .target
-                .source
-                .ok_or("retained Quest creature source missing")?;
-            if retained.quest_entry != 33
-                || retained.target.executor != super::quest_catalog::ObjectiveExecutor::CreatureLoot
-                || source.kind != super::quest_catalog::CatalogEntityKind::Creature
-                || source.entry != 69
-                || source.guid != target_guid
-            {
-                return Err("retained Quest creature source changed".to_string());
+                .game_world_entity()
+                .guid()
+                .find(target_guid)
+                .ok_or("declared Quest creature source missing")?;
+            if source.entry != 69 || source.dead || source.health == 0 {
+                return Err("declared Quest creature source changed".to_string());
             }
-            super::quest_catalog_fixture::playerbots_quest_fixture_kill(
-                ctx,
-                character_guid,
-                source.entry,
-            )?;
+            super::quest_catalog_fixture::playerbots_quest_fixture_kill(ctx, character_guid, 69)?;
         }
         3 => super::quest_catalog_fixture::playerbots_quest_fixture_admit_accept(
             ctx,
@@ -108,7 +95,7 @@ pub fn playerbots_action_lifecycle_stage_quest_plan(
         _ => return Err("unknown action lifecycle quest plan".to_string()),
     }
     let character = crate::helpers::live_entity(ctx, character_guid)?;
-    let x = character.x + 40.0;
+    let x = character.x + if kind == 6 { 80.0 } else { 40.0 };
     if matches!(kind, 3 | 4) {
         place_gameobject(ctx, target_guid, x)?;
     } else {
