@@ -58,9 +58,36 @@ pub struct PlayerbotsTransferAssistSource {
 struct SourceParty {
     order: CompanionOrderState,
     receipt: CommandRecord,
-    leader_partition: crate::GroupMemberPartition,
-    priest_partition: crate::GroupMemberPartition,
-    partitions: Vec<crate::GroupMemberPartition>,
+    leader_partition: PartitionSnapshot,
+    priest_partition: PartitionSnapshot,
+    partitions: Vec<PartitionSnapshot>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PartitionSnapshot {
+    character_guid: u64,
+    group_id: u64,
+    membership_revision: u64,
+    member_active: bool,
+    map_id: u32,
+    instance_id: u64,
+    locator_revision: u64,
+    state: crate::PartyPartitionState,
+}
+
+impl From<&crate::GroupMemberPartition> for PartitionSnapshot {
+    fn from(row: &crate::GroupMemberPartition) -> Self {
+        Self {
+            character_guid: row.character_guid,
+            group_id: row.group_id,
+            membership_revision: row.membership_revision,
+            member_active: row.member_active,
+            map_id: row.map_id,
+            instance_id: row.instance_id,
+            locator_revision: row.locator_revision,
+            state: row.state,
+        }
+    }
 }
 
 struct RetainedWork {
@@ -182,19 +209,19 @@ fn source_party(
     let leader_partition = active_partitions
         .iter()
         .find(|partition| partition.character_guid == leader_guid)
-        .map(|partition| (*partition).clone())
+        .map(|partition| PartitionSnapshot::from(*partition))
         .ok_or("Assist source fixture leader partition is absent")?;
     let priest_partition = active_partitions
         .iter()
         .find(|partition| partition.character_guid == priest_guid)
-        .map(|partition| (*partition).clone())
+        .map(|partition| PartitionSnapshot::from(*partition))
         .ok_or("Assist source fixture Priest partition is absent")?;
     Ok(SourceParty {
         order,
         receipt,
         leader_partition,
         priest_partition,
-        partitions,
+        partitions: partitions.iter().map(PartitionSnapshot::from).collect(),
     })
 }
 
@@ -296,26 +323,33 @@ fn relocate_live_character(
 
 fn relocate_partition(
     ctx: &ReducerContext,
-    mut partition: crate::GroupMemberPartition,
-) -> Result<crate::GroupMemberPartition, String> {
+    character_guid: u64,
+) -> Result<PartitionSnapshot, String> {
+    let mut partition = ctx
+        .db
+        .game_group_member_partition()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("Assist source fixture member partition disappeared")?;
     partition.map_id = DESTINATION_MAP;
     partition.instance_id = DESTINATION_INSTANCE;
     partition.locator_revision = partition
         .locator_revision
         .checked_add(1)
         .ok_or("Assist source fixture partition revision exhausted")?;
+    let snapshot = PartitionSnapshot::from(&partition);
     ctx.db
         .game_group_member_partition()
         .character_guid()
-        .update(partition.clone());
-    Ok(partition)
+        .update(partition);
+    Ok(snapshot)
 }
 
 fn retained_partitions(
     ctx: &ReducerContext,
-    before: &[crate::GroupMemberPartition],
-    leader: &crate::GroupMemberPartition,
-    priest: &crate::GroupMemberPartition,
+    before: &[PartitionSnapshot],
+    leader: PartitionSnapshot,
+    priest: PartitionSnapshot,
 ) -> Result<bool, String> {
     let mut after: Vec<_> = ctx
         .db
@@ -330,18 +364,16 @@ fn retained_partitions(
         );
     }
     after.sort_by_key(|partition| (partition.membership_revision, partition.character_guid));
+    let after: Vec<_> = after.iter().map(PartitionSnapshot::from).collect();
     let mut expected = before.to_vec();
     for changed in [leader, priest] {
         let row = expected
             .iter_mut()
             .find(|row| row.character_guid == changed.character_guid)
             .ok_or("Assist source fixture changed an unknown partition")?;
-        *row = changed.clone();
+        *row = changed;
     }
-    Ok(
-        serialize(&after, "partition mirror")?
-            == serialize(&expected, "expected partition mirror")?,
-    )
+    Ok(after == expected)
 }
 
 /// Retain a real Assist order while its selected Priest and leader leave the source partition.
@@ -425,10 +457,10 @@ pub fn playerbots_transfer_assist_source_stage(
     crate::world::remove_live_character(ctx, priest_body); // package-api: exempt private fixture declares remote party member
     relocate_character(ctx, leader_guid, LEADER_DESTINATION)?;
     relocate_character(ctx, priest_guid, PRIEST_DESTINATION)?;
-    let leader_after = relocate_partition(ctx, party.leader_partition.clone())?;
-    let priest_after = relocate_partition(ctx, party.priest_partition.clone())?;
+    let leader_after = relocate_partition(ctx, leader_guid)?;
+    let priest_after = relocate_partition(ctx, priest_guid)?;
     let retained_after = retained_work(ctx, bot_guid, party.order.group_id)?;
-    if !retained_partitions(ctx, &party.partitions, &leader_after, &priest_after)?
+    if !retained_partitions(ctx, &party.partitions, leader_after, priest_after)?
         || retained_after.runner != retained_before.runner
         || retained_after.order != retained_before.order
         || retained_after.group != retained_before.group
@@ -514,7 +546,7 @@ pub fn playerbots_transfer_assist_destination_stage(
             .db
             .game_group_member()
             .by_group()
-            .filter(&5_098_000)
+            .filter(&5_098_000u64)
             .next()
             .is_some()
         || ctx.db.game_group().group_id().find(5_098_000).is_some()

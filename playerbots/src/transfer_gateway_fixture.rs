@@ -1,8 +1,9 @@
 //! Private three-database authority and mirror-failure staging for Gateway Transfer cases.
 
+use super::pkg_playerbots_bot;
 use crate::{
     game_character, game_character_shard, game_group, game_group_member,
-    game_group_member_partition, game_group_roster_revision, game_world_entity, pkg_playerbots_bot,
+    game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
