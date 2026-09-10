@@ -7,13 +7,13 @@
 //! orders, combat, recovery, AreaTriggers, and Transfer remain on their ordinary owners.
 
 use super::{pkg_playerbots_bot, pkg_playerbots_provisioning, Controller};
+use crate::nav::game_nav_chunk;
 use crate::threat::top_threat_target; // package-api: exempt private observers record authoritative Core threat ordering
 use crate::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_character_quest,
     game_character_shard, game_creature_move_schedule, game_creature_quest, game_group,
     game_group_member, game_group_member_partition, game_group_roster_revision, game_item_instance,
-    game_nav_chunk, game_quest_objective, game_quest_template, game_spell_cast_event,
-    game_world_entity,
+    game_quest_objective, game_quest_template, game_spell_cast_event, game_world_entity,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, ScheduleAt, Table};
 use std::collections::BTreeSet;
@@ -143,13 +143,13 @@ crate::game_hook!(on_damage_taken, fn playerbots_companion_acceptance_observe_da
     let tank_is_top_threat = payload.attacker_guid == plan.warrior_guid
         && top_threat_target(ctx, payload.target_guid) == Some(plan.warrior_guid);
     let receipts = ctx.db.pkg_playerbots_companion_combat_receipt();
-    let mut retained: Vec<_> = receipts.iter().take(COMBAT_RECEIPT_LIMIT + 1).collect();
+    let retained: Vec<_> = receipts.iter().take(COMBAT_RECEIPT_LIMIT + 1).collect();
     if retained.len() > COMBAT_RECEIPT_LIMIT {
         return;
     }
     let receipt_count = retained.len();
     if let Some(mut receipt) = retained
-        .drain(..)
+        .into_iter()
         .find(|receipt| {
             receipt.attacker_guid == payload.attacker_guid
                 && receipt.target_guid == payload.target_guid

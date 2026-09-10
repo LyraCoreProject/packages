@@ -3,7 +3,7 @@
 //! Declared Core facts for the action-lifecycle acceptance cases.
 
 use crate::{game_creature_spawn, game_gameobject, game_world_entity};
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, ReducerContext};
 
 fn place_entity(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
     let entities = ctx.db.game_world_entity();
