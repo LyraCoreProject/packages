@@ -1068,22 +1068,37 @@ pub fn playerbots_companion_acceptance_begin(ctx: &ReducerContext) -> Result<(),
         plan.mage_two_guid,
     ];
     for guid in bots {
-        let provisioning = ctx
+        if ctx
             .db
             .pkg_playerbots_provisioning()
             .character_guid()
             .find(guid)
-            .filter(|row| row.action_cursor > 0 && row.free_grants)
-            .ok_or_else(|| format!("bot {guid} has no ordinary provisioning receipt"))?;
-        let _ = provisioning;
-        if !ctx
+            .is_none_or(|row| !row.free_grants)
+        {
+            return Err(format!(
+                "bot {guid} has no stable free provisioning profile"
+            ));
+        }
+        let items: Vec<_> = ctx
             .db
             .game_item_instance()
             .by_owner_guid()
             .filter(guid)
-            .any(|item| item.slot <= 18)
-        {
+            .collect();
+        if !items.iter().any(|item| item.slot <= 18) {
             return Err(format!("bot {guid} has no equipped item before begin"));
+        }
+        for (entry, expected_count) in [(1_251, 5), (6_948, 1)] {
+            let stored_count: u32 = items
+                .iter()
+                .filter(|item| item.entry == entry)
+                .map(|item| item.stack_count)
+                .sum();
+            if stored_count != expected_count {
+                return Err(format!(
+                    "bot {guid} has {stored_count} of required item {entry}; expected {expected_count}"
+                ));
+            }
         }
         if ctx
             .db
