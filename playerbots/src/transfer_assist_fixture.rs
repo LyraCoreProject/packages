@@ -55,6 +55,20 @@ pub struct PlayerbotsTransferAssistSource {
     pub staged_micros: i64,
 }
 
+// Source staging evidence belongs to the companion it describes. It remains on the source during
+// Escrow and expires when that source Character is deleted after Transfer.
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_transfer_assist_source(ctx, character_guid) {
+    let evidence = ctx.db.pkg_playerbots_transfer_assist_source();
+    if evidence
+        .id()
+        .find(0)
+        .is_some_and(|row| row.bot_guid == character_guid)
+    {
+        evidence.id().delete(0);
+    }
+});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_transfer_assist_source());
+
 struct SourceParty {
     order: CompanionOrderState,
     receipt: CommandRecord,
@@ -289,15 +303,12 @@ fn relocate_character(
     guid: u64,
     destination: (f32, f32, f32, f32),
 ) -> Result<(), String> {
-    let characters = ctx.db.game_character();
-    let mut character = characters
-        .guid()
-        .find(guid)
+    let mut character = crate::helpers::character_by_guid(ctx, guid)
         .ok_or("Assist source fixture Character disappeared")?;
     character.map_id = DESTINATION_MAP;
     character.pending_instance_id = DESTINATION_INSTANCE;
     (character.x, character.y, character.z, character.orientation) = destination;
-    characters.guid().update(character);
+    ctx.db.game_character().guid().update(character);
     Ok(())
 }
 
@@ -537,13 +548,8 @@ pub fn playerbots_transfer_assist_destination_stage(
     {
         return Err("Assist destination fixture requires four distinct Characters".to_string());
     }
-    if ctx.db.game_character().guid().find(bot_guid).is_some()
-        || ctx
-            .db
-            .game_character()
-            .guid()
-            .find(unused_mage_guid)
-            .is_some()
+    if crate::helpers::character_by_guid(ctx, bot_guid).is_some()
+        || crate::helpers::character_by_guid(ctx, unused_mage_guid).is_some()
         || ctx
             .db
             .game_group_member()

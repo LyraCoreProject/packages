@@ -131,18 +131,15 @@ fn place_character(
     instance_id: u64,
     landing: (f32, f32, f32, f32),
 ) -> Result<(), String> {
-    let characters = ctx.db.game_character();
-    let mut character = characters
-        .guid()
-        .find(guid)
-        .ok_or("Transfer fixture Character missing")?;
+    let mut character =
+        crate::helpers::character_by_guid(ctx, guid).ok_or("Transfer fixture Character missing")?;
     character.map_id = map_id;
     character.pending_instance_id = instance_id;
     character.x = landing.0;
     character.y = landing.1;
     character.z = landing.2;
     character.orientation = landing.3;
-    characters.guid().update(character);
+    ctx.db.game_character().guid().update(character);
     Ok(())
 }
 
