@@ -1,9 +1,10 @@
 //! Private three-database authority and mirror-failure staging for Gateway Transfer cases.
 
 use super::pkg_playerbots_bot;
+use crate::transfer::game_transfer_in; // package-api: exempt private fixture binds the arrival before injecting a mirror fault
 use crate::{
     game_character, game_character_shard, game_group, game_group_member,
-    game_group_member_partition, game_group_roster_revision, game_transfer_in, game_world_entity,
+    game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
