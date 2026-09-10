@@ -198,10 +198,16 @@ pub fn playerbots_transfer_gateway_realm_stage(
         });
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     locators.insert(locator(companion_guid, source_map, source_instance, now));
-    locators.insert(locator(leader_guid, source_map, source_instance, now));
     locators.insert(locator(priest_guid, source_map, source_instance, now));
     locators.insert(locator(mage_guid, source_map, source_instance, now));
-    crate::realm_core::record_shard(ctx, leader_guid, destination_map, destination_instance); // package-api: exempt private fixture models a completed Realm locator crossing
+    restage_completed_member_crossing(
+        ctx,
+        leader_guid,
+        source_map,
+        source_instance,
+        destination_map,
+        destination_instance,
+    )?;
     let leader = locators
         .character_guid()
         .find(leader_guid)
