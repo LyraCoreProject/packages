@@ -41,6 +41,9 @@ const CAST_GO_KIND: u8 = 2;
 const IMPACT_FAILURE_EVENT_OVERFLOW: u8 = 1;
 const IMPACT_FAILURE_RECEIPT_OVERFLOW: u8 = 2;
 const IMPACT_FAILURE_EVENT_CHANGED: u8 = 3;
+const REPAIR_WALL_HALF_OBSTACLE_CELLS: usize = 4;
+// Two walk cells are 1.04 yards, just beyond the movement Gate's one-yard clearance.
+const REPAIR_WALL_CLEARANCE_WALK_CELLS: usize = 2;
 const EXPECTED_FAULTS: [(u8, i64); 4] = [
     (FAULT_WOUND, 20_000_000),
     (FAULT_CONTROL, 40_000_000),
@@ -857,10 +860,6 @@ fn stage_repair_wall(ctx: &ReducerContext, priest_guid: u64, mage_guid: u64) -> 
     let wall_x = priest.x + 50.0;
     let cell_x = lyracore_shared::terrain::cell_index(wall_x).ok_or("repair wall off grid")?;
     let cell_y = lyracore_shared::terrain::cell_index(priest.y).ok_or("repair wall off grid")?;
-    let walk_sub = lyracore_shared::nav::sub_index(wall_x, cell_x, lyracore_shared::nav::WALK_DIM)
-        .ok_or("repair wall off grid")?;
-    let walk_y = lyracore_shared::nav::sub_index(priest.y, cell_y, lyracore_shared::nav::WALK_DIM)
-        .ok_or("repair wall off grid")?;
     let obstacle_sub =
         lyracore_shared::nav::sub_index(wall_x, cell_x, lyracore_shared::nav::OBS_DIM)
             .ok_or("repair wall off grid")?;
@@ -882,13 +881,30 @@ fn stage_repair_wall(ctx: &ReducerContext, priest_guid: u64, mage_guid: u64) -> 
     } else if chunk.obs.len() != lyracore_shared::nav::OBS_BYTES {
         return Err("repair wall found an invalid obstruction grid".to_string());
     }
-    for sub_y in walk_y.saturating_sub(2)..=(walk_y + 2).min(lyracore_shared::nav::WALK_DIM - 1) {
-        lyracore_shared::nav::walk_set(&mut chunk.walk, walk_sub, sub_y, false);
+    let obstacle_y_start = obstacle_y.saturating_sub(REPAIR_WALL_HALF_OBSTACLE_CELLS);
+    let obstacle_y_end =
+        (obstacle_y + REPAIR_WALL_HALF_OBSTACLE_CELLS).min(lyracore_shared::nav::OBS_DIM - 1);
+    if !lyracore_shared::nav::WALK_DIM.is_multiple_of(lyracore_shared::nav::OBS_DIM) {
+        return Err("companion acceptance repair wall grid ratio changed".to_string());
+    }
+    let walk_per_obstacle = lyracore_shared::nav::WALK_DIM / lyracore_shared::nav::OBS_DIM;
+    let walk_x_start =
+        (obstacle_sub * walk_per_obstacle).saturating_sub(REPAIR_WALL_CLEARANCE_WALK_CELLS);
+    let walk_x_end = (((obstacle_sub + 1) * walk_per_obstacle - 1)
+        + REPAIR_WALL_CLEARANCE_WALK_CELLS)
+        .min(lyracore_shared::nav::WALK_DIM - 1);
+    let walk_y_start =
+        (obstacle_y_start * walk_per_obstacle).saturating_sub(REPAIR_WALL_CLEARANCE_WALK_CELLS);
+    let walk_y_end = (((obstacle_y_end + 1) * walk_per_obstacle - 1)
+        + REPAIR_WALL_CLEARANCE_WALK_CELLS)
+        .min(lyracore_shared::nav::WALK_DIM - 1);
+    for sub_x in walk_x_start..=walk_x_end {
+        for sub_y in walk_y_start..=walk_y_end {
+            lyracore_shared::nav::walk_set(&mut chunk.walk, sub_x, sub_y, false);
+        }
     }
     let base_z = chunk.base_z;
-    for sub_y in
-        obstacle_y.saturating_sub(4)..=(obstacle_y + 4).min(lyracore_shared::nav::OBS_DIM - 1)
-    {
+    for sub_y in obstacle_y_start..=obstacle_y_end {
         lyracore_shared::nav::obs_raise(
             &mut chunk.obs,
             base_z,
