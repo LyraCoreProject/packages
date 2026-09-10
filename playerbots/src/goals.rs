@@ -59,7 +59,7 @@ const QUEST_SIGHT_YD: f32 = 60.0;
 /// How far a bot ranges from its home point before it walks back. The leash is what keeps a
 /// population a neighbourhood rather than a diaspora: a chase can drag a bot a long way, and a bot
 /// past the leash walks home before it does anything else.
-const QUEST_LEASH_YD: f32 = 150.0;
+pub(super) const QUEST_LEASH_YD: f32 = 150.0;
 
 /// How far a bot looks for a fellow quester to invite. Well inside [`QUEST_SIGHT_YD`], so the scan
 /// reads the list the quest loop is already holding, and close enough that the two are working the
@@ -1943,6 +1943,31 @@ fn is_elite(ctx: &ReducerContext, entry: u32) -> bool {
         .is_some_and(|template| crate::xp::rank_xp_multiplier(template.rank) > 1)
 }
 
+/// The shared suitability policy for a fight chosen only for experience. Callers retain ownership
+/// of their spatial budget, home leash, target rotation, and current-work exclusion.
+pub(super) fn grind_target_is_worthwhile(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    target: &crate::WorldEntity,
+) -> bool {
+    !target.is_player()
+        && !target.dead
+        && target.owner_guid == 0
+        && !has_quest_relation(ctx, target.entry)
+        && worth_grinding(me.level, target.level, is_elite(ctx, target.entry))
+}
+
+// Quest actors stay available for any current or later relation. One indexed presence read
+// excludes every role without making the progression fallback scan a relation set.
+fn has_quest_relation(ctx: &ReducerContext, creature_entry: u32) -> bool {
+    ctx.db
+        .game_creature_quest()
+        .by_creature()
+        .filter(&creature_entry)
+        .next()
+        .is_some()
+}
+
 /// Kill something for the experience. What a bot does when no quest it can take is on offer and
 /// nothing it holds can be worked — a bot standing still in a field reads as broken.
 ///
@@ -1958,14 +1983,10 @@ fn grind(
     personality: &PlayerbotsPersonality,
     sight: &[crate::WorldEntity],
 ) -> Option<QuestStep> {
-    let victim = pick_near(me, sight, pick_salt(ctx, me.guid), |e| {
-        !e.is_player()
-            && !e.dead
-            && e.owner_guid == 0
-            && !crate::faction::is_friendly(ctx, me.faction_template, e.faction_template)
-            && offered_by(ctx, e.entry, crate::quest::quest_role::START).is_empty()
-            && worth_grinding(me.level, e.level, is_elite(ctx, e.entry))
-            && live_target_is_available(ctx, me.guid, e)
+    let victim = pick_near(me, sight, pick_salt(ctx, me.guid), |target| {
+        grind_target_is_worthwhile(ctx, me, target)
+            && !crate::faction::is_friendly(ctx, me.faction_template, target.faction_template)
+            && live_target_is_available(ctx, me.guid, target)
     })?;
     fight(ctx, me, bot, None, personality, victim.guid);
     Some(QuestStep::no_progress(goal::GRIND))
@@ -2112,7 +2133,7 @@ fn talkable(me: &crate::WorldEntity, e: &crate::WorldEntity) -> bool {
 /// How many of the nearest candidates a bot chooses between. Three is enough that twenty-five
 /// bots on one pad do not all run at the one nearest wolf, and few enough that none of them sets
 /// off for a target another bot is nearer to by a long way.
-const PICK_AMONG_NEAREST: usize = 3;
+pub(super) const PICK_AMONG_NEAREST: usize = 3;
 
 /// One of the [`PICK_AMONG_NEAREST`] nearest entities `wanted` accepts, chosen by `salt` — the
 /// bot's guid mixed with the time window, so two bots on the same spot choose differently and one
@@ -2140,7 +2161,7 @@ pub(crate) fn pick_index(salt: u64, n: usize) -> Option<usize> {
 }
 
 /// The salt [`pick_near`] takes: the bot and the current eight-second window.
-fn pick_salt(ctx: &ReducerContext, character_guid: u64) -> u64 {
+pub(super) fn pick_salt(ctx: &ReducerContext, character_guid: u64) -> u64 {
     let window = ctx.timestamp.to_micros_since_unix_epoch() / WANDER_LEG_MICROS;
     character_guid ^ (window as u64).wrapping_mul(0xBF58_476D_1CE4_E5B9)
 }

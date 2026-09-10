@@ -34,6 +34,14 @@ pub(crate) use provisioning::*;
 pub(crate) use quest_catalog::*;
 pub(crate) use runner::*;
 #[cfg(feature = "debug_reducers")]
+mod acceptance_fixture;
+#[cfg(feature = "debug_reducers")]
+pub(crate) use acceptance_fixture::*;
+#[cfg(feature = "debug_reducers")]
+mod imported_fixture;
+#[cfg(feature = "debug_reducers")]
+mod load_fixture;
+#[cfg(feature = "debug_reducers")]
 mod fixture;
 #[cfg(feature = "debug_reducers")]
 mod transfer_assist_fixture;

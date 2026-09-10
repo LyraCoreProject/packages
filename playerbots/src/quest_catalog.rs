@@ -1827,7 +1827,25 @@ pub(super) fn admit_held(
     inspect(ctx, character_guid, quest_entry, AdmissionKind::Held)
 }
 
-pub(super) fn reconcile_active(ctx: &ReducerContext, character_guid: u64) -> ReconcileResult {
+fn deferred_admission(
+    admission: &QuestAdmission,
+    deferred: &[super::runner::DeferredDestination],
+) -> bool {
+    deferred.iter().any(|blocked| {
+        let destination = &blocked.destination;
+        destination.map_id == admission.destination.map_id
+            && destination.instance_id == admission.destination.instance_id
+            && destination.x == admission.destination.x
+            && destination.y == admission.destination.y
+            && destination.z == admission.destination.z
+    })
+}
+
+pub(super) fn reconcile_active(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    deferred: &[super::runner::DeferredDestination],
+) -> ReconcileResult {
     ensure_catalog(ctx);
     let reconsider = ctx
         .db
@@ -1870,6 +1888,7 @@ pub(super) fn reconcile_active(ctx: &ReducerContext, character_guid: u64) -> Rec
     let mut first_refusal = None;
     for (entry, _) in held {
         match admit_held(ctx, character_guid, entry) {
+            Ok(admission) if deferred_admission(&admission, deferred) => {}
             Ok(admission) => {
                 if let Some((considered, refusal)) = first_refusal.as_ref() {
                     record_admission(
@@ -1911,6 +1930,7 @@ pub(super) fn reconcile_active(ctx: &ReducerContext, character_guid: u64) -> Rec
     let mut available_refusal = None;
     for entry in entries {
         match admit_available(ctx, character_guid, entry) {
+            Ok(admission) if deferred_admission(&admission, deferred) => {}
             Ok(admission) => {
                 if let Some((considered, refusal)) = available_refusal.as_ref() {
                     record_admission(ctx, character_guid, *considered, Some(entry), Some(refusal));

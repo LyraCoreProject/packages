@@ -33,6 +33,14 @@ a value an Operator has edited. Read them with
 `spacetime sql <database> "select * from game_package_config"`, change one with
 `set_package_config`.
 
+Debug builds can record each ordinary runner execution with
+`set_package_config playerbots decision_timing true true`. The default is off. Each host stopwatch
+log names the Character, controller generation and observation time. Its elapsed duration covers
+the runner's fact reads, action Gates and state writes. It excludes the scheduler and the initial
+Sessionless Action Consent check. The duration includes stopwatch overhead and stays separate from
+whole-tick CPU metrics. Setting the value to `false` stops these logs. Non-debug builds do not read
+this option or start a stopwatch.
+
 | key | default | meaning |
 | --- | --- | --- |
 | `population_count` | `10` | What `playerbots_populate` tops up to. |
@@ -623,3 +631,13 @@ build Module Wasm from core `be3fa67d0f0c24749230560544a3e8e8b577f61d` with coll
 publishes that preceding Wasm, populates real bot, goal, quest and action rows, then upgrades the
 same private Standalone to the current Wasm. It records both Wasm identities and asserts the old
 rows survive, selector defaults apply, and backfill takes bounded passes.
+
+The debug-only `playerbots_load_stage(count, seed)` prepares a fresh roster of 10, 25 or 100 bots
+in a repeating Warrior, Priest and Mage sequence. It records each position, class, role and first
+due offset. The declared flat terrain and navigation cells cannot replace existing input.
+A navigation wall at x 1400 spans y 1190 through 1225. The manifest records each blocked sub-cell.
+Routes can pass either end of the wall inside the staged terrain. Navigation must be enabled.
+`playerbots_load_begin()` activates the cohort once. Ordinary scheduled decisions then move each
+bot toward a home point 700 yards away. No fixture operation drives decisions during measurement.
+This measures the declared movement workload. Imported-world and companion capacity need their own
+observations.
