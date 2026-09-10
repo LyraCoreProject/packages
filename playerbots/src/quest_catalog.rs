@@ -1741,6 +1741,10 @@ fn inspect(
         retained
             .as_ref()
             .map(|retained| retained.actual_ender.clone())
+            .filter(|destination| {
+                (destination.map_id, destination.instance_id)
+                    == (character.map_id, character.instance_id)
+            })
     })
     .ok_or_else(|| {
         missing(
@@ -1752,6 +1756,10 @@ fn inspect(
         retained
             .as_ref()
             .and_then(|retained| retained.target.source.clone())
+            .filter(|destination| {
+                (destination.map_id, destination.instance_id)
+                    == (character.map_id, character.instance_id)
+            })
     });
     let complete = held
         .as_ref()
