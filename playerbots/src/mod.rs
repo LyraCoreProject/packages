@@ -38,6 +38,11 @@ mod fixture;
 #[cfg(feature = "debug_reducers")]
 mod transfer_assist_fixture;
 #[cfg(feature = "debug_reducers")]
+pub(crate) use transfer_assist_fixture::{
+    sweep_delete_pkg_playerbots_transfer_assist_source,
+    sweep_transfer_pkg_playerbots_transfer_assist_source,
+};
+#[cfg(feature = "debug_reducers")]
 mod transfer_orders_fixture;
 #[cfg(feature = "debug_reducers")]
 mod quest_catalog_fixture;
