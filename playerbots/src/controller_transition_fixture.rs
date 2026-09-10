@@ -45,7 +45,7 @@ pub fn playerbots_controller_transition_fixture_stage_legacy(
         // marker. Use the Core logout path to model that persisted boundary.
         let body = crate::helpers::live_entity(ctx, character_guid)
             .map_err(|_| "controller transition fixture requires a live source body")?;
-        crate::world::remove_live_character(ctx, body);
+        crate::world::remove_live_character(ctx, body); // package-api: exempt private fixture models the preceding bodiless Transfer state
         super::goals::record_legacy_transfer(
             ctx,
             character_guid,
