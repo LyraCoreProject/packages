@@ -321,6 +321,15 @@ pub fn playerbots_fixture_orders_target_state(
         0 => {
             target.health = 0;
             target.dead = true;
+            let mut spawn = ctx
+                .db
+                .game_creature_spawn()
+                .guid()
+                .find(target_guid)
+                .ok_or("order fixture target spawn missing")?;
+            spawn.respawn_at = crate::creatures::timer_never(ctx);
+            spawn.despawn_at = crate::creatures::timer_never(ctx);
+            ctx.db.game_creature_spawn().guid().update(spawn);
         }
         1 => target.map_id = target.map_id.saturating_add(1),
         2 => {
