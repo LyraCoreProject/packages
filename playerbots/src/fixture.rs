@@ -1215,7 +1215,16 @@ pub fn playerbots_fixture_companion_move(
     y: f32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    companion_unit(ctx, guid, x, y, 100)
+    companion_unit(ctx, guid, x, y, 100)?;
+    if let Some(mut spawn) = ctx.db.game_creature_spawn().guid().find(guid) {
+        let entity = crate::helpers::live_entity(ctx, guid)?;
+        spawn.x = entity.x;
+        spawn.y = entity.y;
+        spawn.z = entity.z;
+        ctx.db.game_creature_spawn().guid().update(spawn);
+        ctx.db.game_creature_spline().guid().delete(guid);
+    }
+    Ok(())
 }
 
 #[reducer]
