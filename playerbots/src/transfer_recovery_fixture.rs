@@ -4,7 +4,7 @@ use super::actions::pkg_playerbots_action;
 use super::runner::{CompanionTransferPurpose, TransferCheckpoint, TransferPurpose};
 use super::{pkg_playerbots_bot, pkg_playerbots_runner};
 use crate::game_creature_spline;
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, ReducerContext};
 
 const STALLED_MICROS: i64 = 30_000_000;
 const DEFERRED_MICROS: i64 = 5_000_000;
