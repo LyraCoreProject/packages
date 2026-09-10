@@ -139,8 +139,9 @@ crate::game_hook!(on_damage_taken, fn playerbots_companion_acceptance_observe_da
     {
         return;
     }
+    let top_threat_target = crate::threat::top_threat_target; // package-api: exempt private observer records authoritative Core threat ordering
     let tank_is_top_threat = payload.attacker_guid == plan.warrior_guid
-        && crate::threat::top_threat_target(ctx, payload.target_guid) == Some(plan.warrior_guid);
+        && top_threat_target(ctx, payload.target_guid) == Some(plan.warrior_guid);
     let receipts = ctx.db.pkg_playerbots_companion_combat_receipt();
     let mut retained: Vec<_> = receipts.iter().take(COMBAT_RECEIPT_LIMIT + 1).collect();
     if retained.len() > COMBAT_RECEIPT_LIMIT {
