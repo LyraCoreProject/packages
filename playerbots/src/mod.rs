@@ -78,10 +78,14 @@ pub(crate) use companion_acceptance_fixture::{
     sweep_delete_pkg_playerbots_companion_cast_receipt,
     sweep_delete_pkg_playerbots_companion_combat_receipt,
     sweep_delete_pkg_playerbots_companion_fault,
+    sweep_delete_pkg_playerbots_companion_impact_receipt,
+    sweep_delete_pkg_playerbots_companion_impact_status,
     sweep_transfer_pkg_playerbots_companion_acceptance,
     sweep_transfer_pkg_playerbots_companion_cast_receipt,
     sweep_transfer_pkg_playerbots_companion_combat_receipt,
     sweep_transfer_pkg_playerbots_companion_fault,
+    sweep_transfer_pkg_playerbots_companion_impact_receipt,
+    sweep_transfer_pkg_playerbots_companion_impact_status,
 };
 #[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
