@@ -701,15 +701,24 @@ fn stage_repair_wall(ctx: &ReducerContext, priest_guid: u64, mage_guid: u64) -> 
         .key()
         .find(key)
         .ok_or("repair wall needs the declared flat navigation")?;
+    if chunk.walk.len() != lyracore_shared::nav::WALK_BYTES {
+        return Err("repair wall found an invalid walkability grid".to_string());
+    }
+    if chunk.obs.is_empty() {
+        chunk.obs = vec![lyracore_shared::nav::OBS_NONE; lyracore_shared::nav::OBS_BYTES];
+    } else if chunk.obs.len() != lyracore_shared::nav::OBS_BYTES {
+        return Err("repair wall found an invalid obstruction grid".to_string());
+    }
     for sub_y in walk_y.saturating_sub(2)..=(walk_y + 2).min(lyracore_shared::nav::WALK_DIM - 1) {
         lyracore_shared::nav::walk_set(&mut chunk.walk, walk_sub, sub_y, false);
     }
+    let base_z = chunk.base_z;
     for sub_y in
         obstacle_y.saturating_sub(4)..=(obstacle_y + 4).min(lyracore_shared::nav::OBS_DIM - 1)
     {
         lyracore_shared::nav::obs_raise(
             &mut chunk.obs,
-            priest.z,
+            base_z,
             obstacle_sub,
             sub_y,
             priest.z + 4.0,
