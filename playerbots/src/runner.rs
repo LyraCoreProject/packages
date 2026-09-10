@@ -2103,7 +2103,10 @@ fn run(
             let selected_owned_purpose = chosen.is_some_and(|candidate| {
                 candidate.id.objective == o.identity
                     && match o.kind {
-                        ObjectiveKind::ReturnHome => candidate.id.reason == Reason::ReturnHome,
+                        ObjectiveKind::ReturnHome => matches!(
+                            candidate.id.reason,
+                            Reason::ReturnHome | Reason::TransferPosition | Reason::Transfer
+                        ),
                         ObjectiveKind::Quest => matches!(
                             candidate.id.reason,
                             Reason::Quest | Reason::TransferPosition | Reason::Transfer
