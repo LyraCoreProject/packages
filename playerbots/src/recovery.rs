@@ -418,11 +418,16 @@ impl Recovery {
             .and_then(|guid| ctx.db.game_world_entity().guid().find(guid))
             .filter(|target| (target.map_id, target.instance_id) == (me.map_id, me.instance_id))
             .map(|target| target.health);
-        let health_progress = match (attempt.work, attempt.target_health, health) {
-            (Work::Fight(_), Some(before), Some(after)) => after < before,
-            (Work::Heal(_), Some(before), Some(after)) => after > before,
-            _ => false,
-        };
+        // Another party member's damage or healing does not advance this bot's approach.
+        let positioning = state
+            .chosen
+            .is_some_and(|candidate| matches!(candidate.id.action, Action::Move(_)));
+        let health_progress = !positioning
+            && match (attempt.work, attempt.target_health, health) {
+                (Work::Fight(_), Some(before), Some(after)) => after < before,
+                (Work::Heal(_), Some(before), Some(after)) => after > before,
+                _ => false,
+            };
         if health_progress || matches!((attempt.work, health), (Work::Fight(_), Some(0))) {
             if let Some(objective) = &mut state.objective {
                 if objective.identity == attempt.objective
