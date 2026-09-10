@@ -37,6 +37,27 @@ fn require_private_fixture(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
+fn prepare_private_fixture(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let imports = ctx.db.game_import_meta();
+    let rows: Vec<_> = imports.iter().take(2).collect();
+    match rows.as_slice() {
+        [] => {}
+        [seed]
+            if seed.family == "weather_seed"
+                && seed.source_sha.is_empty()
+                && seed.file_hash.is_empty()
+                && seed.row_count == 2 =>
+        {
+            // A fresh Module stamps this temporary Core seed. Remove only the exact bootstrap
+            // row, as the other Quest harnesses do, before the unchanged imported-content Gate.
+            imports.family().delete(seed.family.clone());
+        }
+        _ => return Err("destination catalogue fixture refuses imported content".to_string()),
+    }
+    require_private_fixture(ctx)
+}
+
 fn quest_template(entry: u32, prerequisite: u32) -> crate::QuestTemplate {
     crate::QuestTemplate {
         entry,
@@ -238,7 +259,7 @@ pub fn playerbots_transfer_quest_source_stage(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    require_private_fixture(ctx)?;
+    prepare_private_fixture(ctx)?;
     if ctx.db.game_navigation_revision().id().find(0).is_none() {
         return Err("source Navigation Inputs were not imported".to_string());
     }
@@ -337,7 +358,7 @@ pub fn playerbots_transfer_destination_catalogue_stage(
     character_guid: u64,
     mode: u8,
 ) -> Result<(), String> {
-    require_private_fixture(ctx)?;
+    prepare_private_fixture(ctx)?;
     if ctx
         .db
         .game_character()
