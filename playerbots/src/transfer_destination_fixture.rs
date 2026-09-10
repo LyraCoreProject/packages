@@ -352,12 +352,7 @@ pub fn playerbots_transfer_destination_catalogue_stage(
     mode: u8,
 ) -> Result<(), String> {
     prepare_private_fixture(ctx)?;
-    if ctx
-        .db
-        .game_character()
-        .guid()
-        .find(character_guid)
-        .is_some()
+    if crate::helpers::character_by_guid(ctx, character_guid).is_some()
         || ctx
             .db
             .game_world_entity()

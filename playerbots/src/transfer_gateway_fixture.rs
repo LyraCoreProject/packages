@@ -375,7 +375,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
     }
     if [companion_guid, priest_guid, mage_guid]
         .iter()
-        .any(|guid| ctx.db.game_character().guid().find(*guid).is_some())
+        .any(|guid| crate::helpers::character_by_guid(ctx, *guid).is_some())
         || ctx.db.game_group().group_id().find(GROUP).is_some()
         || ctx
             .db
@@ -402,16 +402,13 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
     ctx.db.pkg_playerbots_bot().id().delete(leader.id);
     crate::actor::set_sessionless_action_consent(ctx, leader_guid, true);
 
-    let characters = ctx.db.game_character();
-    let mut character = characters
-        .guid()
-        .find(leader_guid)
+    let mut character = crate::helpers::character_by_guid(ctx, leader_guid)
         .ok_or("Gateway Transfer destination leader Character is absent")?;
     character.map_id = destination_map;
     character.pending_instance_id = destination_instance;
     (character.x, character.y, character.z) = DESTINATION_POSITION;
     character.orientation = DESTINATION_ORIENTATION;
-    characters.guid().update(character);
+    ctx.db.game_character().guid().update(character);
 
     let entities = ctx.db.game_world_entity();
     let mut entity = entities
@@ -582,12 +579,7 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
         || !exact_known_partition(&party, leader_guid, 36, 5_098_078, 2)
         || !exact_known_partition(&party, priest_guid, 0, 0, 1)
         || !exact_known_partition(&party, mage_guid, 0, 0, 1)
-        || ctx
-            .db
-            .game_character()
-            .guid()
-            .find(companion_guid)
-            .is_some()
+        || crate::helpers::character_by_guid(ctx, companion_guid).is_some()
         || ctx
             .db
             .game_world_entity()
@@ -604,10 +596,7 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     {
         return Err("Gateway exit destination is not the exact settled entry source".to_string());
     }
-    let characters = ctx.db.game_character();
-    let mut leader = characters
-        .guid()
-        .find(leader_guid)
+    let mut leader = crate::helpers::character_by_guid(ctx, leader_guid)
         .filter(|row| (row.map_id, row.pending_instance_id) == (36, 5_098_078))
         .ok_or("Gateway exit destination leader Character changed")?;
     if ctx
@@ -624,7 +613,7 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     leader.pending_instance_id = 0;
     (leader.x, leader.y, leader.z) = EXIT_LEADER_POSITION;
     leader.orientation = EXIT_ORIENTATION;
-    characters.guid().update(leader);
+    ctx.db.game_character().guid().update(leader);
 
     let leader_partition = party
         .partitions
