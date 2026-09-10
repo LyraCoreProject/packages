@@ -67,6 +67,23 @@ mod transfer_gateway_fixture;
 #[cfg(feature = "debug_reducers")]
 mod action_lifecycle_fixture;
 #[cfg(feature = "debug_reducers")]
+mod companion_acceptance_fixture;
+#[cfg(feature = "debug_reducers")]
+pub(crate) use companion_acceptance_fixture::{
+    playerbots_companion_acceptance_observe_damage,
+    playerbots_companion_acceptance_observe_finished_cast,
+    playerbots_companion_acceptance_observe_resolved_cast,
+    playerbots_companion_acceptance_observe_tick,
+    sweep_delete_pkg_playerbots_companion_acceptance,
+    sweep_delete_pkg_playerbots_companion_cast_receipt,
+    sweep_delete_pkg_playerbots_companion_combat_receipt,
+    sweep_delete_pkg_playerbots_companion_fault,
+    sweep_transfer_pkg_playerbots_companion_acceptance,
+    sweep_transfer_pkg_playerbots_companion_cast_receipt,
+    sweep_transfer_pkg_playerbots_companion_combat_receipt,
+    sweep_transfer_pkg_playerbots_companion_fault,
+};
+#[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
 pub(crate) use goals::*;
 pub(crate) use orders::*;
