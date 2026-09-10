@@ -2,7 +2,7 @@
 
 use super::actions::{self, ActionKind, ActionOutcome};
 use super::decision::{Action, Candidate, CastAction, MoveTarget, QuestInteraction, Reason};
-use super::runner::{Destination, PlayerbotsRunner, Running};
+use super::runner::{Destination, ObjectiveKind, PlayerbotsRunner, Running};
 use crate::{game_aura, game_gameobject, game_world_entity};
 use spacetimedb::ReducerContext;
 
@@ -432,7 +432,11 @@ impl Recovery {
                     )
                 {
                     objective.last_verified_progress_micros = Some(now);
-                    objective.deadline_micros = now.saturating_add(120_000_000);
+                    objective.deadline_micros = if objective.kind == ObjectiveKind::Companion {
+                        i64::MAX
+                    } else {
+                        now.saturating_add(120_000_000)
+                    };
                 }
             }
             self.attempts.remove(index);
@@ -462,7 +466,11 @@ impl Recovery {
                     )
                 {
                     objective.last_verified_progress_micros = Some(now);
-                    objective.deadline_micros = now.saturating_add(120_000_000);
+                    objective.deadline_micros = if objective.kind == ObjectiveKind::Companion {
+                        i64::MAX
+                    } else {
+                        now.saturating_add(120_000_000)
+                    };
                 }
             }
         } else {
