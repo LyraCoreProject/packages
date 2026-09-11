@@ -2251,6 +2251,22 @@ fn stage_level_gap_history(ctx: &ReducerContext, character_guid: u64) -> Result<
     Ok(())
 }
 
+fn stage_level_gap_graveyard(ctx: &ReducerContext, character_guid: u64) -> Result<(), String> {
+    let entity = crate::helpers::live_entity(ctx, character_guid)?;
+    let graveyards = ctx.db.game_graveyard();
+    let mut graveyard = graveyards
+        .id()
+        .find(JOURNEY_GRAVEYARD_ID)
+        .ok_or("level-gap graveyard is missing")?;
+    graveyard.map_id = entity.map_id;
+    graveyard.x = entity.x;
+    graveyard.y = entity.y;
+    graveyard.z = entity.z;
+    graveyard.name = "Acceptance level-gap graveyard".to_string();
+    graveyards.id().update(graveyard);
+    Ok(())
+}
+
 /// Stage the source-derived level-seven boundary without granting XP or changing level after start.
 #[reducer]
 pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(), String> {
@@ -2275,6 +2291,7 @@ pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(),
         (1_200.0, 1_200.0, 50.0),
         5,
     )?;
+    stage_level_gap_graveyard(ctx, character_guid)?;
     super::quest_catalog_fixture::stage_named_with_rotation(ctx, character_guid, 0)?;
     stage_level_gap_history(ctx, character_guid)?;
     let templates = ctx.db.game_quest_template();
