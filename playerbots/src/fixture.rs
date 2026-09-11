@@ -811,6 +811,7 @@ pub fn playerbots_fixture_roles_stage(
         1,
     )?;
     for guid in [warrior_guid, priest_guid, mage_guid] {
+        super::runner::playerbots_select_controller(ctx, guid, super::Controller::Frozen)?;
         super::runner::playerbots_select_controller(ctx, guid, super::Controller::Cohort)?;
         runner_park_for(ctx, guid)?;
     }
