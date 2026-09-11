@@ -2241,6 +2241,54 @@ pub fn playerbots_fixture_runner_expire_objective(
     runner_due_for(ctx, guid)
 }
 
+/// Start the fixture's real Runner-owned cast, prove its transient identity, then expire its
+/// current Objective through a second real pass before the scheduled cast can run between calls.
+#[reducer]
+pub fn playerbots_fixture_runner_expire_live_cast_objective(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    use super::actions::{self, ActionKind, ActionOutcome};
+    use super::pkg_playerbots_runner;
+    use super::runner::Running;
+
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+
+    let state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let foreground = state
+        .foreground
+        .as_ref()
+        .ok_or("runner foreground missing")?;
+    let Running::Cast(handle) = &foreground.running else {
+        return Err("runner foreground is not a cast".to_string());
+    };
+    if handle.scheduled_id == 0 || state.chosen != Some(foreground.candidate) {
+        return Err("runner cast identity is not retained".to_string());
+    }
+    if crate::spell::pending_cast(ctx, guid).as_ref() != Some(handle) {
+        return Err("runner cast is not the exact pending cast".to_string());
+    }
+    let action =
+        actions::observation(ctx, guid, ActionKind::Cast).ok_or("runner cast action missing")?;
+    if action.character_guid != guid
+        || action.cast_id != handle.scheduled_id
+        || action.spell_id != handle.spell_id
+        || action.target_guid != handle.target_guid
+        || !matches!(action.outcome, ActionOutcome::Waiting(ref waiting) if waiting == handle)
+    {
+        return Err("runner cast action is not the exact Waiting cast".to_string());
+    }
+
+    playerbots_fixture_runner_expire_objective(ctx, guid)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)
+}
+
 fn runner_due_for(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
     let mut bot = ctx
         .db
