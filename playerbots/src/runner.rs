@@ -1116,6 +1116,11 @@ fn defer(state: &mut PlayerbotsRunner, now: i64) {
     defer_until(state, now.saturating_add(DEFER_INTERVAL));
 }
 
+fn defer_quest_and_continue(state: &mut PlayerbotsRunner, now: i64) {
+    defer(state, now);
+    state.next_eligible_micros = now.saturating_add(INTERVAL);
+}
+
 fn defer_until(state: &mut PlayerbotsRunner, until_micros: i64) {
     if let Some(o) = &mut state.objective {
         o.stage = ObjectiveStage::Deferred;
@@ -1500,6 +1505,19 @@ fn run(
         }
     }
     let prior_objective = state.objective_sequence;
+    let prior_objective_deferral = state
+        .objective
+        .as_ref()
+        .filter(|objective| {
+            objective.kind == ObjectiveKind::Quest && objective.stage == ObjectiveStage::Deferred
+        })
+        .and_then(|objective| {
+            state
+                .deferred_destinations
+                .iter()
+                .find(|deferred| deferred.destination == objective.destination)
+        })
+        .cloned();
     let quest_read_limited = objective(
         ctx,
         bot,
@@ -1509,6 +1527,18 @@ fn run(
         &mut state,
         now,
     );
+    if owns_runner && prior_objective != state.objective_sequence {
+        let mut recovery = state.recovery.take().unwrap_or_default();
+        recovery.retain_quest_objective(
+            state.objective_sequence,
+            &mut state.deferred_destinations,
+            prior_objective_deferral.as_ref(),
+        );
+        state.recovery = Some(recovery);
+        if state.foreground.is_some() {
+            stop(ctx, me.guid, &mut state);
+        }
+    }
     if quest_read_limited
         && state
             .transfer_checkpoint
@@ -1558,9 +1588,6 @@ fn run(
         }
     }
     if owns_runner {
-        if prior_objective != state.objective_sequence && state.foreground.is_some() {
-            stop(ctx, me.guid, &mut state);
-        }
         observe(ctx, &me, &mut state, now);
     }
     let quest_unavailable = Candidate {
@@ -2392,6 +2419,21 @@ fn run(
     if let (Some(reason), Some(candidate)) =
         (quest_plan.and_then(super::quest_loop::wait_reason), chosen)
     {
+        if reason == super::quest_loop::WaitReason::Deferred
+            && candidate.id.action == Action::Hold
+            && candidate.id.reason == Reason::Quest
+        {
+            if let Some(recovery) = &mut state.recovery {
+                recovery.activate(None, now);
+            }
+            stop(ctx, me.guid, &mut state);
+            state.failure(Failure::NoMovement, now);
+            state.chosen = Some(candidate);
+            state.retry_candidate = None;
+            defer_quest_and_continue(&mut state, now);
+            state.save(ctx);
+            return;
+        }
         if reason == super::quest_loop::WaitReason::ReadLimit
             && candidate.id.action == Action::Move(MoveTarget::Home)
             && candidate.id.reason == Reason::ReturnHome

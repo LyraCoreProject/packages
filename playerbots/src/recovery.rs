@@ -360,12 +360,21 @@ impl Recovery {
         now: i64,
     ) -> Option<Deferral> {
         let geometry = crate::nav::inputs(ctx, me.map_id);
+        let quest_objective = state
+            .objective
+            .as_ref()
+            .filter(|objective| objective.kind == ObjectiveKind::Quest)
+            .map(|objective| objective.identity);
         self.attempts.retain(|attempt| {
             let retain = (attempt.destination.map_id, attempt.destination.instance_id)
                 == (me.map_id, me.instance_id)
                 && attempt.geometry == geometry
                 && match attempt.deferred_until_micros {
-                    Some(until) => until > now,
+                    Some(until) => {
+                        until > now
+                            || (attempt.reason == Reason::Quest
+                                && quest_objective == Some(attempt.objective))
+                    }
                     None => {
                         self.active == Some(attempt.work)
                             || now.saturating_sub(attempt.last_observed_micros) < DEFER_MICROS
@@ -505,6 +514,43 @@ impl Recovery {
             });
         }
         None
+    }
+
+    pub(super) fn retain_quest_objective(
+        &mut self,
+        objective: u64,
+        deferred_destinations: &mut Vec<super::runner::DeferredDestination>,
+        objective_deferral: Option<&super::runner::DeferredDestination>,
+    ) {
+        let removed: Vec<_> = self
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.reason == Reason::Quest && attempt.objective != objective)
+            .map(|attempt| {
+                (
+                    attempt.work,
+                    attempt.destination.clone(),
+                    attempt.deferred_until_micros,
+                )
+            })
+            .collect();
+        self.attempts
+            .retain(|attempt| attempt.reason != Reason::Quest || attempt.objective == objective);
+        if removed
+            .iter()
+            .any(|(work, _, _)| Some(*work) == self.active)
+        {
+            self.active = None;
+        }
+        for (_, destination, until_micros) in removed {
+            deferred_destinations.retain(|deferred| {
+                objective_deferral.is_some_and(|objective| {
+                    objective.destination == deferred.destination
+                        && objective.until_micros == deferred.until_micros
+                }) || deferred.destination != destination
+                    || Some(deferred.until_micros) != until_micros
+            });
+        }
     }
 
     pub(super) fn select(
