@@ -2677,7 +2677,11 @@ fn execute(
                 crate::actor::repop(ctx, me.guid)
             };
             match result {
-                Ok(()) => state.last_outcome = RunnerOutcome::Accepted,
+                Ok(()) => {
+                    state.defense_target = None;
+                    state.last_target_health = None;
+                    state.last_outcome = RunnerOutcome::Accepted;
+                }
                 Err(_) => state.failure(
                     Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
                     now,
