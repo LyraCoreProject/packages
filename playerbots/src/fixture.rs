@@ -2241,16 +2241,17 @@ pub fn playerbots_fixture_runner_expire_objective(
     runner_due_for(ctx, guid)
 }
 
-/// Start the fixture's real Runner-owned cast, prove its transient identity, then expire its
-/// current Objective through a second real pass before the scheduled cast can run between calls.
+/// Start the fixture's real Recovery cast, expire its Home Objective, and prove the next real pass
+/// retains the exact cast because tactical work does not own that deadline.
 #[reducer]
-pub fn playerbots_fixture_runner_expire_live_cast_objective(
+pub fn playerbots_fixture_runner_expire_home_during_live_recovery_cast(
     ctx: &ReducerContext,
     guid: u64,
 ) -> Result<(), String> {
     use super::actions::{self, ActionKind, ActionOutcome};
+    use super::decision::{Action, Reason};
     use super::pkg_playerbots_runner;
-    use super::runner::Running;
+    use super::runner::{Failure, ObjectiveKind, ObjectiveStage, Running};
 
     crate::helpers::require_operator(ctx)?;
     playerbots_fixture_runner_pass_once(ctx, guid)?;
@@ -2268,7 +2269,15 @@ pub fn playerbots_fixture_runner_expire_live_cast_objective(
     let Running::Cast(handle) = &foreground.running else {
         return Err("runner foreground is not a cast".to_string());
     };
-    if handle.scheduled_id == 0 || state.chosen != Some(foreground.candidate) {
+    let objective = state.objective.as_ref().ok_or("runner objective missing")?;
+    if objective.kind != ObjectiveKind::ReturnHome
+        || objective.stage != ObjectiveStage::Travelling
+        || foreground.candidate.id.objective != objective.identity
+        || foreground.candidate.id.reason != Reason::Recovery
+        || !matches!(foreground.candidate.id.action, Action::Cast(_))
+        || handle.scheduled_id == 0
+        || state.chosen != Some(foreground.candidate)
+    {
         return Err("runner cast identity is not retained".to_string());
     }
     if crate::spell::pending_cast(ctx, guid).as_ref() != Some(handle) {
@@ -2284,9 +2293,57 @@ pub fn playerbots_fixture_runner_expire_live_cast_objective(
     {
         return Err("runner cast action is not the exact Waiting cast".to_string());
     }
+    let expected_foreground = foreground.clone();
+    let expected_handle = handle.clone();
 
     playerbots_fixture_runner_expire_objective(ctx, guid)?;
-    playerbots_fixture_runner_pass_once(ctx, guid)
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+
+    let retained = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing after expired Home pass")?;
+    let retained_objective = retained
+        .objective
+        .as_ref()
+        .ok_or("runner objective missing after expired Home pass")?;
+    let retained_foreground = retained
+        .foreground
+        .as_ref()
+        .ok_or("runner foreground missing after expired Home pass")?;
+    let Running::Cast(retained_handle) = &retained_foreground.running else {
+        return Err("runner foreground changed after expired Home pass".to_string());
+    };
+    if retained_objective.kind != ObjectiveKind::ReturnHome
+        || retained_objective.stage != ObjectiveStage::Travelling
+        || retained_objective.deadline_micros > ctx.timestamp.to_micros_since_unix_epoch()
+        || retained_foreground.candidate != expected_foreground.candidate
+        || retained_foreground.generation != expected_foreground.generation
+        || retained_foreground.map_id != expected_foreground.map_id
+        || retained_foreground.instance_id != expected_foreground.instance_id
+        || retained_foreground.started_micros != expected_foreground.started_micros
+        || retained_handle != &expected_handle
+        || retained.chosen != Some(expected_foreground.candidate)
+        || retained.failures.contains(&Failure::Deadline)
+    {
+        return Err("expired Home pass did not retain the tactical cast".to_string());
+    }
+    if crate::spell::pending_cast(ctx, guid).as_ref() != Some(&expected_handle) {
+        return Err("expired Home pass did not retain the pending cast".to_string());
+    }
+    let action =
+        actions::observation(ctx, guid, ActionKind::Cast).ok_or("runner cast action missing")?;
+    if action.character_guid != guid
+        || action.cast_id != expected_handle.scheduled_id
+        || action.spell_id != expected_handle.spell_id
+        || action.target_guid != expected_handle.target_guid
+        || !matches!(action.outcome, ActionOutcome::Waiting(ref waiting) if waiting == &expected_handle)
+    {
+        return Err("expired Home pass did not retain the exact Waiting cast".to_string());
+    }
+    Ok(())
 }
 
 fn runner_due_for(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
