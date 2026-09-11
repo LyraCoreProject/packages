@@ -2,7 +2,7 @@
 
 use super::{pkg_playerbots_bot, pkg_playerbots_runner, Controller};
 use crate::transfer::game_bot_transfer_intent;
-use spacetimedb::{reducer, ReducerContext, Table};
+use spacetimedb::{reducer, ReducerContext};
 
 /// Model a populated Legacy roster row on the current schema without using the retired selector.
 #[reducer]
