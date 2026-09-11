@@ -450,18 +450,24 @@ impl Recovery {
         }
         let advanced = movement_progress(ctx, me, state, attempt.last_movement.as_ref())
             .is_some_and(|(route, observation, advanced)| {
-                attempt.route = Some(route);
-                attempt.last_movement = Some(observation);
-                advanced
-                    && state.foreground.as_ref().is_some_and(|foreground| {
-                        !matches!(
-                            foreground.candidate.id.action,
-                            Action::Move(MoveTarget::RecoveryPosition(_))
-                        )
-                    })
+                let ordinary = state.foreground.as_ref().is_some_and(|foreground| {
+                    !matches!(
+                        foreground.candidate.id.action,
+                        Action::Move(MoveTarget::RecoveryPosition(_))
+                    )
+                });
+                if ordinary {
+                    attempt.route = Some(route);
+                    attempt.last_movement = Some(observation);
+                }
+                advanced && ordinary
             });
         if advanced {
-            attempt.stalled_micros = 0;
+            // After an approach was needed, movement can pause the stalled clock but only an
+            // authoritative work effect can erase the time already spent without progress.
+            if attempt.stalled_micros < CHANGE_APPROACH_MICROS {
+                attempt.stalled_micros = 0;
+            }
             attempt.position = None;
             if let Some(objective) = &mut state.objective {
                 if objective.identity == attempt.objective

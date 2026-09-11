@@ -693,7 +693,9 @@ pub(super) fn strategy(
     if away
         && matches!(
             plan,
-            QuestPlan::Wait(WaitReason::MissingTarget | WaitReason::Respawn)
+            QuestPlan::Wait(
+                WaitReason::MissingTarget | WaitReason::ReadLimit | WaitReason::Respawn
+            )
         )
     {
         selected.prerequisites.insert(0, travel);

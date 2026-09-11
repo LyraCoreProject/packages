@@ -2392,6 +2392,18 @@ fn run(
     if let (Some(reason), Some(candidate)) =
         (quest_plan.and_then(super::quest_loop::wait_reason), chosen)
     {
+        if reason == super::quest_loop::WaitReason::ReadLimit
+            && candidate.id.action == Action::Move(MoveTarget::Home)
+            && candidate.id.reason == Reason::ReturnHome
+            && state
+                .failures
+                .iter()
+                .rev()
+                .find(|failure| failure.reason == Failure::QuestReadLimit)
+                .is_none_or(|failure| failure.at_micros.saturating_add(DEFER_INTERVAL) <= now)
+        {
+            state.failure(Failure::QuestReadLimit, now);
+        }
         if matches!(candidate.id.reason, Reason::Quest | Reason::CrowdControl)
             && candidate.id.action == Action::Hold
         {
