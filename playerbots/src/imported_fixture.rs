@@ -237,6 +237,10 @@ pub fn playerbots_fixture_imported_staged(ctx: &ReducerContext) -> Result<(), St
             || bot.class != staged.class
             || bot.role != staged.role
             || bot.controller != Controller::Frozen
+            || bot.home_map != staged.map_id
+            || bot.home_x != staged.x
+            || bot.home_y != staged.y
+            || bot.home_z != staged.z
             || entity.map_id != staged.map_id
             || entity.x != staged.x
             || entity.y != staged.y
