@@ -194,6 +194,24 @@ pub(super) fn live_creature_target(
     select_live_target(ctx, me, search, eligible_work, None, None)
 }
 
+fn retained_creature(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    source: &CatalogDestination,
+) -> Option<crate::WorldEntity> {
+    if source.kind == CatalogEntityKind::Creature {
+        ctx.db.game_world_entity().guid().find(source.guid)
+    } else {
+        None
+    }
+    .filter(|target| {
+        target.entry == source.entry
+            && (target.map_id, target.instance_id) == (me.map_id, me.instance_id)
+            && distance_sq(me, target.x, target.y, target.z)
+                <= SEARCH_RADIUS_YD * SEARCH_RADIUS_YD
+    })
+}
+
 pub(super) fn grind_target(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
@@ -335,6 +353,47 @@ fn entitled_corpse(
     }
 }
 
+fn retained_creature_plan(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    source: &CatalogDestination,
+    quest: u32,
+    loot_item: Option<u32>,
+    eligible_work: &impl Fn(u64) -> bool,
+) -> Option<QuestPlan> {
+    let preferred = retained_creature(ctx, me, source)?;
+    if preferred.dead {
+        let item = loot_item?;
+        if crate::loot::corpse_access(ctx, me.guid, preferred.guid).is_err() {
+            return None;
+        }
+        return match wanted_loot_slot(ctx, preferred.guid, item) {
+            Search::Found(slot) => Some(QuestPlan::LootCreature {
+                quest,
+                corpse: preferred.guid,
+                slot,
+            }),
+            Search::Limit => Some(QuestPlan::Wait(WaitReason::ReadLimit)),
+            Search::Missing => None,
+        };
+    }
+    let preferred_guid = preferred.guid;
+    let search = EntitySearch {
+        rows: vec![preferred],
+        exhausted: false,
+    };
+    match select_live_target(ctx, me, search, eligible_work, None, Some(preferred_guid)) {
+        LiveCreatureTarget::Found(target) => Some(QuestPlan::Attack {
+            quest,
+            target: target.guid,
+        }),
+        LiveCreatureTarget::ReadLimit => Some(QuestPlan::Wait(WaitReason::ReadLimit)),
+        LiveCreatureTarget::Missing
+        | LiveCreatureTarget::Deferred
+        | LiveCreatureTarget::Controlled => None,
+    }
+}
+
 fn gameobject_work(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -435,6 +494,11 @@ pub(super) fn plan(
     };
     match retained.target.executor {
         ObjectiveExecutor::Attack => {
+            if let Some(plan) =
+                retained_creature_plan(ctx, me, source, quest, None, &eligible_fight)
+            {
+                return plan;
+            }
             match live_creature_target(ctx, me, source.entry, &eligible_fight) {
                 LiveCreatureTarget::Found(target) => QuestPlan::Attack {
                     quest,
@@ -447,6 +511,16 @@ pub(super) fn plan(
             }
         }
         ObjectiveExecutor::CreatureLoot => {
+            if let Some(plan) = retained_creature_plan(
+                ctx,
+                me,
+                source,
+                quest,
+                Some(retained.target.target_entry),
+                &eligible_fight,
+            ) {
+                return plan;
+            }
             match entitled_corpse(ctx, me, source.entry, retained.target.target_entry) {
                 Search::Found((corpse, slot)) => QuestPlan::LootCreature {
                     quest,
