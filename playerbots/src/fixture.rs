@@ -2318,6 +2318,7 @@ pub fn playerbots_fixture_runner_expire_home_during_live_recovery_cast(
     };
     if retained_objective.kind != ObjectiveKind::ReturnHome
         || retained_objective.stage != ObjectiveStage::Travelling
+        || retained_objective.identity != expected_foreground.candidate.id.objective
         || retained_objective.deadline_micros > ctx.timestamp.to_micros_since_unix_epoch()
         || retained_foreground.candidate != expected_foreground.candidate
         || retained_foreground.generation != expected_foreground.generation
