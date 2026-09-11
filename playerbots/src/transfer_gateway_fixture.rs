@@ -770,16 +770,14 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         .find(GROUP)
         .ok_or("Gateway Transfer mirror fault requires the exact mirrored party")?;
     let revision = ctx.db.game_group_roster_revision().group_id().find(GROUP);
-    let members: Vec<_> = ctx
-        .db
-        .game_group_member()
+    let group_members = ctx.db.game_group_member();
+    let members: Vec<_> = group_members
         .by_group()
         .filter(&GROUP)
         .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
-    let partitions: Vec<_> = ctx
-        .db
-        .game_group_member_partition()
+    let group_partitions = ctx.db.game_group_member_partition();
+    let partitions: Vec<_> = group_partitions
         .by_group()
         .filter(&GROUP)
         .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
@@ -803,10 +801,26 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         .map(|partition| partition.character_guid)
         .collect();
     partition_guids.sort_unstable();
-    // Import has detached the transferring Character from this cached party. The real arrival
-    // mirror must restore it after the injected equal-revision rules conflict is removed.
     let mut expected_retained_guids = vec![leader_guid, priest_guid, mage_guid];
     expected_retained_guids.sort_unstable();
+    let mut expected_mirrored_guids = expected_retained_guids.clone();
+    expected_mirrored_guids.push(companion_guid);
+    expected_mirrored_guids.sort_unstable();
+    let retained_party =
+        member_guids == expected_retained_guids && partition_guids == expected_retained_guids;
+    // Ordinary party reconciliation can restore the companion before the injected abort finishes.
+    // Detach only that exact cached companion before staging the equal-revision rules conflict.
+    let mirrored_party = enabled
+        && member_guids == expected_mirrored_guids
+        && partition_guids == expected_mirrored_guids
+        && partitions.iter().any(|partition| {
+            partition.character_guid == companion_guid
+                && partition.membership_revision == COMPANION_MEMBER
+                && partition.map_id == 36
+                && partition.instance_id == 5_098_078
+                && partition.locator_revision == 2
+                && partition.state == crate::PartyPartitionState::Known
+        });
     if (
         current.leader_guid,
         current.loot_method,
@@ -823,15 +837,20 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         || arrivals[0].bot_controller_generation == 0
         || arrivals[0].bot_intent_source == Identity::ZERO
         || arrivals[0].source_locator_revision == 0
-        || member_guids != expected_retained_guids
-        || partition_guids != expected_retained_guids
-        || partitions.iter().any(|partition| {
-            partition.group_id != GROUP
-                || !partition.member_active
-                || partition.character_guid == companion_guid
-        })
+        || (!retained_party && !mirrored_party)
+        || partitions
+            .iter()
+            .any(|partition| partition.group_id != GROUP || !partition.member_active)
     {
         return Err("Gateway Transfer fixture refuses to alter another party".to_string());
+    }
+    if mirrored_party {
+        let companion_member = members
+            .iter()
+            .find(|member| member.character_guid == companion_guid)
+            .expect("the exact mirrored party includes the transferring Character");
+        group_members.id().delete(companion_member.id);
+        group_partitions.character_guid().delete(companion_guid);
     }
     current.loot_method = if enabled {
         FAULT_LOOT_METHOD
