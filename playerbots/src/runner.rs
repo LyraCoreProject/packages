@@ -1681,7 +1681,9 @@ fn run(
     } else {
         None
     };
-    if owns_runner && state.transfer_checkpoint.is_none() {
+    if (owns_runner || bot.controller == Controller::RecordOnly)
+        && state.transfer_checkpoint.is_none()
+    {
         if let Some(o) = &mut state.objective {
             if at_destination {
                 o.stage = ObjectiveStage::Completed;
