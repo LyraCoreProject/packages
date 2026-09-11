@@ -35,6 +35,19 @@ def exited_unreaped(process: subprocess.Popen) -> bool:
     ) is not None
 
 
+def group_has_live_member(pgid: int) -> bool:
+    for stat_path in Path("/proc").glob("[0-9]*/stat"):
+        try:
+            stat = stat_path.read_text()
+            fields = stat[stat.rfind(")") + 2 :].split()
+            state, process_group = fields[0], int(fields[2])
+        except (IndexError, OSError, ValueError):
+            continue
+        if process_group == pgid and state != "Z":
+            return True
+    return False
+
+
 def exact_pass(log: str, expected: str) -> bool:
     summaries, results, pending = [], [], None
     lines = log.splitlines()
@@ -115,7 +128,7 @@ def run_case(command: list[str], path: Path, cwd: Path, seconds: float) -> tuple
             except ProcessLookupError:
                 pass
             cleanup_deadline = time.monotonic() + CLEANUP_SECONDS
-            while not exited_unreaped(process) and time.monotonic() < cleanup_deadline:
+            while group_has_live_member(process.pid) and time.monotonic() < cleanup_deadline:
                 time.sleep(0.05)
             try:
                 os.killpg(process.pid, signal.SIGKILL)
