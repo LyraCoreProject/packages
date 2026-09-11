@@ -378,6 +378,71 @@ pub fn playerbots_recovery_fixture_exhaust_attempt(
     Ok(())
 }
 
+#[reducer]
+pub fn playerbots_recovery_fixture_keep_two_quest_targets(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let fixture = ctx
+        .db
+        .pkg_playerbots_quest_loop_fixture()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("named quest-loop fixture is absent")?;
+    if fixture.quest_entry != 7 || fixture.target_entry != 6 || fixture.target_count != 10 {
+        return Err("named quest-loop fixture identity differs".to_string());
+    }
+    for offset in 2..10u64 {
+        let guid = creature_guid(6).saturating_add(offset);
+        ctx.db.game_world_entity().guid().delete(guid);
+        ctx.db.game_creature_spawn().guid().delete(guid);
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_expire_quest_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    use super::runner::pkg_playerbots_runner;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut runner = rows
+        .character_guid()
+        .find(character_guid)
+        .ok_or("runner missing")?;
+    let recovery = runner.recovery.as_mut().ok_or("recovery missing")?;
+    let attempt = recovery
+        .attempts
+        .iter_mut()
+        .find(|attempt| {
+            attempt.work == super::recovery::Work::Fight(target_guid)
+                && attempt.reason == super::decision::Reason::Quest
+        })
+        .ok_or("Quest target recovery attempt missing")?;
+    let previous_until = attempt
+        .deferred_until_micros
+        .ok_or("Quest target recovery attempt is not deferred")?;
+    let expired = ctx.timestamp.to_micros_since_unix_epoch().saturating_sub(1);
+    let destination = attempt.destination.clone();
+    attempt.deferred_until_micros = Some(expired);
+    let deferred = runner
+        .deferred_destinations
+        .iter_mut()
+        .find(|deferred| {
+            deferred.destination == destination && deferred.until_micros == previous_until
+        })
+        .ok_or("paired Quest target deferral missing")?;
+    deferred.until_micros = expired;
+    rows.character_guid().update(runner);
+    Ok(())
+}
+
 fn quest_offset(quest_entry: u32) -> u64 {
     QUESTS
         .iter()
