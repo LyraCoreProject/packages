@@ -3,6 +3,10 @@ use spacetimedb::{reducer, table, ReducerContext, SpacetimeType, Table};
 
 use super::{pkg_playerbots_bot, Controller};
 
+const IMPORTED_BOT_COUNT: usize = 25;
+const IMPORTED_SPOT_LIMIT: usize = 100;
+const IMPORTED_SPOT_CLEARANCE_YD: f32 = 1.5;
+
 #[derive(SpacetimeType, Clone)]
 pub struct ImportedBot {
     pub character_guid: u64,
@@ -101,8 +105,9 @@ pub fn playerbots_imported_stage(
     }
     let navigation = imported_inputs(ctx, &source_revision, &dump_sha256)?;
     super::ensure_defaults(ctx);
-    let mut bots = Vec::with_capacity(25);
-    for index in 0..25 {
+    let mut bots: Vec<ImportedBot> = Vec::with_capacity(IMPORTED_BOT_COUNT);
+    let mut candidate_index = 0;
+    for index in 0..IMPORTED_BOT_COUNT {
         let (class, role) = match index % 3 {
             0 => (super::class::WARRIOR, super::ROLE_TANK),
             1 => (super::class::PRIEST, super::ROLE_HEALER),
@@ -117,13 +122,27 @@ pub fn playerbots_imported_stage(
         if start.map_id != 0 || start.zone_id != 12 {
             return Err("imported fixture requires the Human Northshire start".to_string());
         }
-        let (x, y, z) = super::spawn_spot(ctx, (start.x, start.y, start.z), index);
-        if crate::terrain::ground_z(ctx, start.map_id, x, y).is_none()
-            || crate::nav::walkable(ctx, start.map_id, x, y) != Some(true)
-            || !z.is_finite()
-        {
-            return Err(format!("imported bot {index} start lacks a walkable floor"));
-        }
+        let (x, y, z) = loop {
+            if candidate_index == IMPORTED_SPOT_LIMIT {
+                return Err(format!(
+                    "imported bot {index} found no distinct walkable start in \
+                     {IMPORTED_SPOT_LIMIT} bounded candidates"
+                ));
+            }
+            let spot = super::spawn_spot(ctx, (start.x, start.y, start.z), candidate_index);
+            candidate_index += 1;
+            let ground = crate::terrain::ground_z(ctx, start.map_id, spot.0, spot.1);
+            let separated = bots
+                .iter()
+                .all(|bot| (bot.x - spot.0).hypot(bot.y - spot.1) > IMPORTED_SPOT_CLEARANCE_YD);
+            if ground.is_some_and(f32::is_finite)
+                && crate::nav::walkable(ctx, start.map_id, spot.0, spot.1) == Some(true)
+                && spot.2.is_finite()
+                && separated
+            {
+                break spot;
+            }
+        };
         let guid = super::spawn_one(
             ctx,
             class,
@@ -168,6 +187,76 @@ pub fn playerbots_imported_stage(
             staged_micros: ctx.timestamp.to_micros_since_unix_epoch(),
             started_micros: None,
         });
+    Ok(())
+}
+
+/// Require the parked imported roster to match its manifest and the supplied geometry exactly.
+#[cfg(feature = "debug_reducers")]
+#[reducer]
+pub fn playerbots_fixture_imported_staged(ctx: &ReducerContext) -> Result<(), String> {
+    use super::runner::pkg_playerbots_runner;
+
+    crate::helpers::require_operator(ctx)?;
+    let fixture = ctx
+        .db
+        .pkg_playerbots_imported_fixture()
+        .id()
+        .find(0)
+        .ok_or("imported fixture has not been staged")?;
+    if fixture.started_micros.is_some()
+        || fixture.bots.len() != IMPORTED_BOT_COUNT
+        || ctx.db.pkg_playerbots_bot().count() as usize != IMPORTED_BOT_COUNT
+        || ctx.db.pkg_playerbots_runner().count() as usize != IMPORTED_BOT_COUNT
+        || crate::nav::inputs(ctx, 0) != fixture.navigation
+    {
+        return Err("imported fixture is not an exact parked roster".to_string());
+    }
+    let mut guids = std::collections::BTreeSet::new();
+    for (index, staged) in fixture.bots.iter().enumerate() {
+        let bot = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(staged.character_guid)
+            .next()
+            .ok_or("staged imported bot is absent")?;
+        let entity = ctx
+            .db
+            .game_world_entity()
+            .guid()
+            .find(staged.character_guid)
+            .ok_or("staged imported Character is absent")?;
+        let runner = ctx
+            .db
+            .pkg_playerbots_runner()
+            .character_guid()
+            .find(staged.character_guid)
+            .ok_or("staged imported Runner is absent")?;
+        let expected_offset = ((index as i64 + i64::from(fixture.seed)) % 10) * 100_000;
+        if !guids.insert(staged.character_guid)
+            || bot.class != staged.class
+            || bot.role != staged.role
+            || bot.controller != Controller::Frozen
+            || entity.map_id != staged.map_id
+            || entity.x != staged.x
+            || entity.y != staged.y
+            || entity.z != staged.z
+            || entity.level != staged.level
+            || entity.xp != staged.xp
+            || staged.level != 1
+            || staged.xp != 0
+            || staged.first_due_offset_micros != expected_offset
+            || runner.objective.is_some()
+            || runner.foreground.is_some()
+            || !crate::terrain::ground_z(ctx, staged.map_id, staged.x, staged.y)
+                .is_some_and(f32::is_finite)
+            || crate::nav::walkable(ctx, staged.map_id, staged.x, staged.y) != Some(true)
+        {
+            return Err(format!(
+                "imported bot {index} differs from its parked manifest"
+            ));
+        }
+    }
     Ok(())
 }
 
