@@ -2028,6 +2028,19 @@ pub fn playerbots_fixture_runner_damage(
     Ok(())
 }
 
+/// Apply one real incoming hit, then keep the bot parked for an exact post-hit observation.
+#[reducer]
+pub fn playerbots_fixture_runner_damage_and_park(
+    ctx: &ReducerContext,
+    guid: u64,
+    attacker: u64,
+    damage: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_runner_damage(ctx, guid, attacker, damage)?;
+    runner_park_for(ctx, guid)
+}
+
 #[reducer]
 pub fn playerbots_fixture_runner_due(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
