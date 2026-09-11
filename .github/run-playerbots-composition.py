@@ -27,6 +27,14 @@ SUMMARY = re.compile(
 TERMINAL = re.compile(r"^test (\S+) \.\.\.(?: (.*))?$")
 
 
+def exited_unreaped(process: subprocess.Popen) -> bool:
+    return os.waitid(
+        os.P_PID,
+        process.pid,
+        os.WEXITED | os.WNOHANG | os.WNOWAIT,
+    ) is not None
+
+
 def exact_pass(log: str, expected: str) -> bool:
     summaries, results, pending = [], [], None
     lines = log.splitlines()
@@ -92,7 +100,7 @@ def run_case(command: list[str], path: Path, cwd: Path, seconds: float) -> tuple
         deadline = time.monotonic() + seconds
         failure = ""
         try:
-            while process.poll() is None:
+            while not exited_unreaped(process):
                 if time.monotonic() >= deadline:
                     failure = "case exceeded its execution time limit"
                     break
@@ -106,10 +114,9 @@ def run_case(command: list[str], path: Path, cwd: Path, seconds: float) -> tuple
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
-            try:
-                process.wait(timeout=CLEANUP_SECONDS)
-            except subprocess.TimeoutExpired:
-                pass
+            cleanup_deadline = time.monotonic() + CLEANUP_SECONDS
+            while not exited_unreaped(process) and time.monotonic() < cleanup_deadline:
+                time.sleep(0.05)
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
