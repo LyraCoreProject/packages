@@ -2326,7 +2326,10 @@ pub fn playerbots_fixture_runner_expire_home_during_live_recovery_cast(
         || retained_foreground.started_micros != expected_foreground.started_micros
         || retained_handle != &expected_handle
         || retained.chosen != Some(expected_foreground.candidate)
-        || retained.failures.contains(&Failure::Deadline)
+        || retained
+            .failures
+            .iter()
+            .any(|failure| failure.reason == Failure::Deadline)
     {
         return Err("expired Home pass did not retain the tactical cast".to_string());
     }
