@@ -399,6 +399,24 @@ pub fn playerbots_recovery_fixture_keep_two_quest_targets(
         ctx.db.game_world_entity().guid().delete(guid);
         ctx.db.game_creature_spawn().guid().delete(guid);
     }
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+        .filter(|retained| retained.quest_entry == 7)
+        .ok_or("Quest 7 Objective is not retained")?;
+    let entities = ctx.db.game_world_entity();
+    for (offset, delta) in [4.0, 4.5].into_iter().enumerate() {
+        let guid = creature_guid(6).saturating_add(offset as u64);
+        let mut target = entities
+            .guid()
+            .find(guid)
+            .ok_or("Quest 7 target is absent")?;
+        target.x = retained.destination.x + delta;
+        target.y = retained.destination.y + delta;
+        entities.guid().update(target);
+    }
     Ok(())
 }
 
