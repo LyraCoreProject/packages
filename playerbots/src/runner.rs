@@ -1508,9 +1508,7 @@ fn run(
     let prior_objective_deferral = state
         .objective
         .as_ref()
-        .filter(|objective| {
-            objective.kind == ObjectiveKind::Quest && objective.stage == ObjectiveStage::Deferred
-        })
+        .filter(|objective| objective.kind == ObjectiveKind::Quest)
         .and_then(|objective| {
             state
                 .deferred_destinations
