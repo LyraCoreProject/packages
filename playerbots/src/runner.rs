@@ -424,6 +424,20 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
     lookup
 }
 
+fn defense_target(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    target_guid: u64,
+) -> Result<Option<crate::WorldEntity>, crate::spell::ControlReadError> {
+    let Ok(target) = crate::combat::validate_attack_target(ctx, me, target_guid) else {
+        return Ok(None);
+    };
+    if crate::spell::control_status(ctx, target.guid, 64)?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(target))
+}
+
 impl PlayerbotsRunner {
     fn initial(guid: u64, now: i64) -> Self {
         Self {
@@ -1749,20 +1763,16 @@ fn run(
         .next();
     let flee_at = personality.as_ref().map_or(15, |p| p.flee_at_pct);
     let low_health = super::goals::should_flee(me.health, me.max_health, flee_at);
-    let mut threat = state
-        .defense_target
-        .and_then(|guid| ctx.db.game_world_entity().guid().find(guid))
-        .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id));
-    if let Some(target) = &threat {
-        match crate::spell::control_status(ctx, target.guid, 64) {
-            Ok(None) => {}
-            Ok(Some(_)) => threat = None,
+    let threat = match state.defense_target {
+        Some(guid) => match defense_target(ctx, &me, guid) {
+            Ok(target) => target,
             Err(_) => {
                 state.failure(Failure::ControlReadLimit, now);
-                threat = None;
+                None
             }
-        }
-    }
+        },
+        None => None,
+    };
     state.defense_target = threat.as_ref().map(|target| target.guid);
     let recovery_lookup = recovery_spell(ctx, bot);
     let spell = match &recovery_lookup {
@@ -1808,27 +1818,28 @@ fn run(
     if matches!(recovery_lookup, RecoveryLookup::Missing) {
         recovery.readiness = Readiness::Refused;
     }
-    let mut defense = node(
-        threat
-            .as_ref()
-            .map_or(Action::Hold, |target| Action::Attack(target.guid)),
-        Reason::Defense,
-        DEFENSE_PRIORITY,
-    );
-    if threat.is_none() {
-        defense.readiness = Readiness::Refused;
-    }
-    if let Some(target) = &threat {
-        let mut close = node(
-            Action::Move(MoveTarget::Entity(target.guid)),
+    let mut defense = match &threat {
+        Some(target) => match super::quest_loop::combat_strategy(
+            ctx,
+            bot,
+            &me,
+            target.guid,
+            objective_sequence,
             Reason::Defense,
             DEFENSE_PRIORITY,
-        );
-        if ((target.x - me.x).powi(2) + (target.y - me.y).powi(2)).sqrt() <= 4.0 {
-            close.readiness = Readiness::Complete;
+        ) {
+            Ok(defense) => defense,
+            Err(unavailable) => {
+                state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                node(Action::Hold, Reason::Defense, DEFENSE_PRIORITY)
+            }
+        },
+        None => {
+            let mut defense = node(Action::Hold, Reason::Defense, DEFENSE_PRIORITY);
+            defense.readiness = Readiness::Refused;
+            defense
         }
-        defense.prerequisites.push(close);
-    }
+    };
     if party.is_none() {
         defense.continuers.push(travel_action.clone());
     }
@@ -2889,7 +2900,21 @@ crate::game_hook!(on_damage_taken, fn playerbots_runner_reconsider_damage(ctx, p
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let mut state = ctx.db.pkg_playerbots_runner().character_guid().find(payload.target_guid)
         .unwrap_or_else(|| PlayerbotsRunner::initial(payload.target_guid, now));
-    state.defense_target = Some(payload.attacker_guid);
+    let me = ctx.db.game_world_entity().guid().find(payload.target_guid);
+    let retain_current = match (me.as_ref(), state.defense_target) {
+        (Some(me), Some(guid)) => match defense_target(ctx, me, guid) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(_) => {
+                state.failure(Failure::ControlReadLimit, now);
+                false
+            }
+        },
+        _ => false,
+    };
+    if !retain_current {
+        state.defense_target = Some(payload.attacker_guid);
+    }
     state.save(ctx);
     bot.next_think_micros = bot.next_think_micros.min(now);
     ctx.db.pkg_playerbots_bot().id().update(bot);
