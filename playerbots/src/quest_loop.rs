@@ -191,7 +191,14 @@ pub(super) fn live_creature_target(
     eligible_work: impl Fn(u64) -> bool,
 ) -> LiveCreatureTarget {
     let search = search_entities(ctx, me, false, |target| target.entry == entry);
-    select_live_target(ctx, me, search, eligible_work, None, None)
+    select_live_target(
+        ctx,
+        me,
+        search,
+        eligible_work,
+        Some(super::goals::pick_salt(ctx, me.guid)),
+        None,
+    )
 }
 
 fn preferred_creature(
