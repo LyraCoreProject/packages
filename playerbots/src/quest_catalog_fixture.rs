@@ -1888,6 +1888,74 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
     Ok(())
 }
 
+/// Leave the corpse search inconclusive while one independently valid live source remains.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_stage_corpse_limit_with_live_alternative(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    playerbots_quest_loop_fixture_stage_corpse_limit(ctx, character_guid)?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("retained quest objective is absent")?;
+    let source = retained
+        .target
+        .source
+        .ok_or("retained creature-loot source is absent")?;
+    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(source.entry)
+        .ok_or("retained creature-loot template is absent")?;
+    let source_spawn = ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(source.guid)
+        .ok_or("retained creature-loot spawn is absent")?;
+    let alternative_guid = source.guid.saturating_add(1);
+    if ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(alternative_guid)
+        .is_some()
+        || ctx
+            .db
+            .game_world_entity()
+            .guid()
+            .find(alternative_guid)
+            .is_some()
+    {
+        return Err("alternate creature-loot source is occupied".to_string());
+    }
+    crate::creatures::despawn_creature_entity(ctx, source.guid);
+    let spawn = ctx.db.game_creature_spawn().insert(crate::CreatureSpawn {
+        guid: alternative_guid,
+        entry: source.entry,
+        map_id: character.map_id,
+        x: character.x + 2.0,
+        y: character.y,
+        z: character.z,
+        orientation: source_spawn.orientation,
+        respawn_at: crate::creatures::timer_never(ctx),
+        despawn_at: crate::creatures::timer_never(ctx),
+        movement_type: source_spawn.movement_type,
+        respawn_secs: source_spawn.respawn_secs,
+        life_seq: source_spawn.life_seq,
+    });
+    crate::creatures::insert_creature_entity(
+        ctx,
+        crate::creatures::build_creature_entity(&spawn, &template, 0, 0),
+    );
+    Ok(())
+}
+
 #[reducer]
 pub fn playerbots_quest_fixture_admit_accept(
     ctx: &ReducerContext,
