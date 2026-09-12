@@ -2674,7 +2674,7 @@ pub fn playerbots_quest_loop_fixture_start_moving_cast(
     ctx.db
         .game_character_quest()
         .by_character_quest()
-        .filter((character_guid, 7))
+        .filter((character_guid, 7u32))
         .next()
         .filter(|quest| !quest.rewarded && quest.counts.first() == Some(&0))
         .ok_or("moving-cast fixture requires open Quest 7 with zero credit")?;
