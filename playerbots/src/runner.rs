@@ -1838,8 +1838,20 @@ fn run(
         Reason::Recovery,
         800,
     );
-    if matches!(recovery_lookup, RecoveryLookup::Missing) {
-        recovery.readiness = Readiness::Refused;
+    match &recovery_lookup {
+        RecoveryLookup::Pending => {}
+        RecoveryLookup::Missing => recovery.readiness = Readiness::Refused,
+        RecoveryLookup::Spell(spell) => {
+            let pending = crate::spell::pending_cast(ctx, me.guid);
+            let retains_heal = pending.is_some_and(|pending| {
+                pending.spell_id == spell.spell_id && pending.target_guid == me.guid
+            });
+            if !retains_heal
+                && crate::actor::cast_readiness(ctx, me.guid, spell.spell_id, me.guid).is_err()
+            {
+                recovery.readiness = Readiness::Refused;
+            }
+        }
     }
     let mut defense = match &threat {
         Some(target) => match super::quest_loop::combat_strategy(
