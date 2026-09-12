@@ -2412,9 +2412,6 @@ fn run(
             super::provisioning::ReconcileStep::Ready
             | super::provisioning::ReconcileStep::Recorded => {}
             super::provisioning::ReconcileStep::Worked => {
-                if let Some(recovery) = &mut state.recovery {
-                    recovery.active = None;
-                }
                 let candidate = Candidate {
                     id: decision::CandidateId {
                         action: Action::Hold,

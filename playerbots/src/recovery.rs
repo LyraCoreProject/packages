@@ -461,6 +461,9 @@ impl Recovery {
         let positioning = state
             .chosen
             .is_some_and(|candidate| matches!(candidate.id.action, Action::Move(_)));
+        let provisioning = state
+            .chosen
+            .is_some_and(|candidate| candidate.id.reason == Reason::Provisioning);
         let health_progress = !positioning
             && match (attempt.work, attempt.target_health, health) {
                 (Work::Fight(_), Some(before), Some(after)) => after < before,
@@ -523,7 +526,7 @@ impl Recovery {
                     };
                 }
             }
-        } else {
+        } else if !provisioning {
             attempt.stalled_micros = attempt
                 .stalled_micros
                 .saturating_add(now.saturating_sub(attempt.last_observed_micros).max(0));
