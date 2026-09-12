@@ -2652,6 +2652,96 @@ pub fn playerbots_quest_loop_fixture_respawn_target(
     Ok(())
 }
 
+/// Put a Mage and Quest 7's primary target at the observed timed-cast boundary, then let the
+/// target's ordinary idle pass run it back to its spawn while one real Runner pass chooses work.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_start_moving_cast(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(character_guid)
+        .next()
+        .ok_or("moving-cast fixture bot missing")?;
+    if bot.class != 8 {
+        return Err("moving-cast fixture requires a Mage".to_string());
+    }
+    ctx.db
+        .game_character_quest()
+        .by_character_quest()
+        .filter((character_guid, 7))
+        .next()
+        .filter(|quest| !quest.rewarded && quest.counts.first() == Some(&0))
+        .ok_or("moving-cast fixture requires open Quest 7 with zero credit")?;
+    ctx.db
+        .game_spell()
+        .spell_id()
+        .find(133)
+        .filter(|spell| spell.range_yd == 35 && spell.cast_time_ms == 1_500)
+        .ok_or("moving-cast fixture requires the 35-yard, 1500ms Fireball")?;
+
+    let target_guid = creature_guid(6);
+    let entities = ctx.db.game_world_entity();
+    let mut target = entities
+        .guid()
+        .find(target_guid)
+        .filter(|target| !target.dead && target.health > 0)
+        .ok_or("moving-cast fixture target missing")?;
+    if (target.map_id, target.instance_id) != (0, 0) {
+        return Err("moving-cast fixture target partition differs".to_string());
+    }
+    let target_x = target.x;
+    let target_y = target.y;
+    let target_z = target.z;
+    let caster_x = target_x - 38.5;
+    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    character.x = caster_x;
+    character.y = target_y;
+    character.z = target_z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(character.x, character.y);
+    character.grid_x = grid_x;
+    character.grid_y = grid_y;
+    character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(character);
+
+    target.x = target_x;
+    target.y = target_y;
+    target.z = target_z;
+    target.target_guid = 0;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(target.x, target.y);
+    target.grid_x = grid_x;
+    target.grid_y = grid_y;
+    target.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(target);
+    ctx.db.game_creature_spline().guid().delete(character_guid);
+    ctx.db.game_creature_spline().guid().delete(target_guid);
+
+    let spawns = ctx.db.game_creature_spawn();
+    let mut spawn = spawns
+        .guid()
+        .find(target_guid)
+        .ok_or("moving-cast fixture target spawn missing")?;
+    spawn.x = target_x + 40.0;
+    spawn.y = target_y;
+    spawn.z = target_z;
+    spawn.movement_type = 0;
+    spawns.guid().update(spawn);
+
+    let mut parked = bot;
+    parked.home_map = 0;
+    parked.home_x = caster_x;
+    parked.home_y = target_y;
+    parked.home_z = target_z;
+    ctx.db.pkg_playerbots_bot().id().update(parked);
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)?;
+    super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)
+}
+
 #[reducer]
 pub fn playerbots_quest_loop_fixture_make_target_friendly(
     ctx: &ReducerContext,
