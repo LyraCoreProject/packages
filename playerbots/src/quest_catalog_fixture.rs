@@ -532,7 +532,7 @@ fn insert_alternative_gameobject(ctx: &ReducerContext, entry: u32) -> Result<u64
     Ok(guid)
 }
 
-fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
+pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
     let existing = ctx.db.game_spell().spell_id().find(LOOPBACK_SMITE);
     let existing_effect = ctx
         .db
