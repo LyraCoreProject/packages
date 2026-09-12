@@ -2305,6 +2305,20 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
     let target_z = target.z;
     let target_health = target.health;
     ctx.db.game_world_entity().guid().update(target);
+    let other_targets: Vec<_> = ctx
+        .db
+        .game_world_entity()
+        .iter()
+        .filter(|entity| {
+            entity.guid != target_guid
+                && entity.entry == retained.target.target_entry
+                && !entity.dead
+        })
+        .map(|entity| entity.guid)
+        .collect();
+    for other_target in other_targets {
+        crate::creatures::despawn_creature_entity(ctx, other_target);
+    }
     let _ = crate::actor::stop_attack(ctx, guid);
     ctx.db.game_creature_spline().guid().delete(guid);
     let mut me = crate::helpers::live_entity(ctx, guid)?;
