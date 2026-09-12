@@ -2710,6 +2710,17 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     entities.guid().update(target);
     ctx.db.game_creature_spline().guid().delete(target_guid);
 
+    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    character.x = target_x - 80.0;
+    character.y = target_y;
+    character.z = target_z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(character.x, character.y);
+    character.grid_x = grid_x;
+    character.grid_y = grid_y;
+    character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(character);
+    ctx.db.game_creature_spline().guid().delete(character_guid);
+
     let spawns = ctx.db.game_creature_spawn();
     let mut spawn = spawns
         .guid()
