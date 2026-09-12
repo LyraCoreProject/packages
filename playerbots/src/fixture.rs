@@ -2346,7 +2346,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
             work: Work::Fight(target_guid),
             reason: Reason::Quest,
             destination,
-            geometry: crate::nav::inputs(ctx, target.map_id),
+            geometry: crate::nav::inputs(ctx, target_map),
             objective: candidate.id.objective,
             last_observed_micros: now,
             stalled_micros: 0,
