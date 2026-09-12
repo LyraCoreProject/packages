@@ -2148,6 +2148,218 @@ pub fn playerbots_fixture_runner_pass_once(ctx: &ReducerContext, guid: u64) -> R
     runner_park_for(ctx, guid)
 }
 
+/// Put an admitted Quest at its source with no live target so a test can observe its bounded wait.
+#[reducer]
+pub fn playerbots_fixture_runner_stage_completed_quest_wait(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::quest_catalog::{
+        pkg_playerbots_quest_objective, CatalogObjectiveKind, ObjectiveExecutor,
+    };
+    use super::runner::{ObjectiveKind, ObjectiveStage};
+
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(guid)
+        .ok_or("retained Quest missing")?;
+    if retained.target.kind != CatalogObjectiveKind::KillCreature
+        || retained.target.executor != ObjectiveExecutor::Attack
+    {
+        return Err("completed Quest fixture requires a creature Fight".to_string());
+    }
+    let target_entry = retained.target.target_entry;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("Quest objective missing")?;
+    if objective.kind != ObjectiveKind::Quest
+        || objective.identity != retained.runner_objective_identity
+    {
+        return Err("retained Quest does not own the Runner objective".to_string());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    objective.stage = ObjectiveStage::Completed;
+    objective.last_verified_progress_micros = Some(now);
+    objective.deadline_micros = now.saturating_add(super::runner::OBJECTIVE_LIFETIME);
+    let destination = objective.destination.clone();
+    state.chosen = None;
+    state.candidate_order.clear();
+    state.foreground = None;
+    state.recovery = None;
+    state.failures.clear();
+    state.retry_candidate = None;
+    state.retry_count = 0;
+    state.next_eligible_micros = now;
+    rows.character_guid().update(state);
+
+    let _ = crate::actor::stop_attack(ctx, guid);
+    ctx.db.game_creature_spline().guid().delete(guid);
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.map_id = destination.map_id;
+    me.instance_id = destination.instance_id;
+    me.x = destination.x;
+    me.y = destination.y;
+    me.z = destination.z;
+    me.orientation = 0.0;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(me.x, me.y);
+    me.grid_x = grid_x;
+    me.grid_y = grid_y;
+    me.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(me);
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    bot.home_map = destination.map_id;
+    bot.home_x = destination.x;
+    bot.home_y = destination.y;
+    bot.home_z = destination.z;
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+
+    let targets: Vec<_> = ctx
+        .db
+        .game_world_entity()
+        .iter()
+        .filter(|entity| !entity.is_player() && entity.entry == target_entry && !entity.dead)
+        .map(|entity| entity.guid)
+        .collect();
+    if targets.is_empty() {
+        return Err("completed Quest fixture has no live target".to_string());
+    }
+    for target in targets {
+        crate::creatures::despawn_creature_entity(ctx, target);
+    }
+    runner_park_for(ctx, guid)
+}
+
+/// Advance only the fixture's completed-Quest wait clock to its normal 120-second boundary.
+#[reducer]
+pub fn playerbots_fixture_runner_expire_completed_quest_wait(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::runner::{ObjectiveKind, ObjectiveStage};
+
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("Quest objective missing")?;
+    if objective.kind != ObjectiveKind::Quest || objective.stage != ObjectiveStage::Completed {
+        return Err("Runner is not waiting at a completed Quest destination".to_string());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    objective.last_verified_progress_micros =
+        Some(now.saturating_sub(super::runner::OBJECTIVE_LIFETIME));
+    objective.deadline_micros = now.saturating_add(super::runner::OBJECTIVE_LIFETIME);
+    rows.character_guid().update(state);
+    runner_park_for(ctx, guid)
+}
+
+/// Retain a completed Quest Fight so a foreign hit can exercise Recovery's effect ownership check.
+#[reducer]
+pub fn playerbots_fixture_runner_stage_completed_quest_fight(
+    ctx: &ReducerContext,
+    guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::decision::{Action, Candidate, CandidateId, Reason};
+    use super::quest_catalog::{
+        pkg_playerbots_quest_objective, CatalogObjectiveKind, ObjectiveExecutor,
+    };
+    use super::recovery::{Attempt, Recovery, Work};
+    use super::runner::{Destination, ObjectiveKind, ObjectiveStage};
+
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(guid)
+        .ok_or("retained Quest missing")?;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("Quest objective missing")?;
+    if objective.kind != ObjectiveKind::Quest
+        || objective.identity != retained.runner_objective_identity
+        || retained.target.kind != CatalogObjectiveKind::KillCreature
+        || retained.target.executor != ObjectiveExecutor::Attack
+    {
+        return Err("retained Quest does not own a creature objective".to_string());
+    }
+    let mut target = crate::helpers::live_entity(ctx, target_guid)?;
+    if target.entry != retained.target.target_entry || target.dead {
+        return Err("Quest Fight target differs from the retained source".to_string());
+    }
+    target.health = 100;
+    target.max_health = 100;
+    ctx.db.game_world_entity().guid().update(target.clone());
+    let _ = crate::actor::stop_attack(ctx, guid);
+    ctx.db.game_creature_spline().guid().delete(guid);
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.map_id = target.map_id;
+    me.instance_id = target.instance_id;
+    me.x = target.x;
+    me.y = target.y;
+    me.z = target.z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(me.x, me.y);
+    me.grid_x = grid_x;
+    me.grid_y = grid_y;
+    me.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(me);
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    objective.stage = ObjectiveStage::Completed;
+    objective.last_verified_progress_micros = Some(now);
+    objective.deadline_micros = now.saturating_add(super::runner::OBJECTIVE_LIFETIME);
+    let candidate = Candidate {
+        id: CandidateId {
+            action: Action::Attack(target_guid),
+            reason: Reason::Quest,
+            objective: objective.identity,
+        },
+        priority: 110,
+    };
+    let destination = Destination {
+        map_id: target.map_id,
+        instance_id: target.instance_id,
+        x: target.x,
+        y: target.y,
+        z: target.z,
+        geometry_revision: crate::nav::coverage_generation(ctx, target.map_id),
+    };
+    state.chosen = Some(candidate);
+    state.candidate_order = vec![candidate];
+    state.foreground = None;
+    state.recovery = Some(Recovery {
+        attempts: vec![Attempt {
+            work: Work::Fight(target_guid),
+            reason: Reason::Quest,
+            destination,
+            geometry: crate::nav::inputs(ctx, target.map_id),
+            objective: candidate.id.objective,
+            last_observed_micros: now,
+            stalled_micros: 0,
+            target_health: Some(target.health),
+            position: None,
+            route: None,
+            last_movement: None,
+            deferred_until_micros: None,
+        }],
+        active: Some(Work::Fight(target_guid)),
+        position_sequence: 0,
+    });
+    state.retry_candidate = None;
+    state.retry_count = 0;
+    state.next_eligible_micros = now;
+    rows.character_guid().update(state);
+    runner_park_for(ctx, guid)
+}
+
 /// Retain the three ordinary attempts that leave Recovery's fourth slot available for Heal.
 #[reducer]
 pub fn playerbots_fixture_runner_stage_recovery_capacity(
