@@ -673,15 +673,10 @@ pub(super) fn combat_strategy(
         if crate::spell::pending_cast(ctx, me.guid)
             .is_none_or(|pending| pending.spell_id != spell || pending.target_guid != target)
         {
-            match crate::actor::cast_readiness(ctx, me.guid, spell, target) {
-                Ok(()) => {}
-                Err(refusal)
-                    if matches!(
-                        refusal.kind,
-                        crate::spell::CastRefusalKind::OutOfRange
-                            | crate::spell::CastRefusalKind::NoLineOfSight
-                    ) =>
-                {
+            match super::companion::cast_preparation(ctx, me, spell, target) {
+                super::companion::CastPreparation::Ready => {}
+                super::companion::CastPreparation::MoveForRange
+                | super::companion::CastPreparation::MoveForLineOfSight => {
                     selected.prerequisites.push(action_node(
                         Action::Move(MoveTarget::CastingPosition(target)),
                         reason,
@@ -689,7 +684,9 @@ pub(super) fn combat_strategy(
                         objective,
                     ));
                 }
-                Err(_) => selected.readiness = Readiness::Refused,
+                super::companion::CastPreparation::Refused => {
+                    selected.readiness = Readiness::Refused;
+                }
             }
         }
         return Ok(selected);
