@@ -2078,6 +2078,102 @@ pub fn playerbots_fixture_runner_pass_once(ctx: &ReducerContext, guid: u64) -> R
     runner_park_for(ctx, guid)
 }
 
+/// Retain the three ordinary attempts that leave Recovery's fourth slot available for Heal.
+#[reducer]
+pub fn playerbots_fixture_runner_stage_recovery_capacity(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    if state.foreground.is_some() {
+        return Err("runner has foreground work".to_string());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let identity = state
+        .objective_sequence
+        .checked_add(1)
+        .ok_or("objective identity exhausted")?;
+    let destination = super::runner::Destination {
+        map_id: bot.home_map,
+        instance_id: 0,
+        x: bot.home_x,
+        y: bot.home_y,
+        z: bot.home_z,
+        geometry_revision: crate::nav::coverage_generation(ctx, bot.home_map),
+    };
+    state.objective_sequence = identity;
+    state.objective = Some(super::runner::Objective {
+        identity,
+        kind: super::runner::ObjectiveKind::ReturnHome,
+        destination: destination.clone(),
+        stage: super::runner::ObjectiveStage::Travelling,
+        deadline_micros: now.saturating_add(120_000_000),
+        last_verified_progress_micros: None,
+        started_micros: now,
+        catalog_revision: 1,
+    });
+    state.chosen = None;
+    state.failures.clear();
+    state.retry_count = 0;
+    state.next_eligible_micros = now;
+    state.retry_candidate = None;
+    state.recovery = Some(super::recovery::Recovery {
+        attempts: [1u64, 2, 3]
+            .into_iter()
+            .map(|target| super::recovery::Attempt {
+                work: super::recovery::Work::Fight(target),
+                reason: super::decision::Reason::Grind,
+                destination: destination.clone(),
+                geometry: crate::nav::inputs(ctx, me.map_id),
+                objective: identity,
+                last_observed_micros: now,
+                stalled_micros: 1_000_000,
+                target_health: None,
+                position: None,
+                route: None,
+                last_movement: None,
+                deferred_until_micros: None,
+            })
+            .collect(),
+        active: None,
+        position_sequence: 0,
+    });
+    rows.character_guid().update(state);
+    Ok(())
+}
+
+/// Move the oldest retained ordinary attempt to its normal 30-second expiry boundary.
+#[reducer]
+pub fn playerbots_fixture_runner_expire_recovery_capacity(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let attempt = state
+        .recovery
+        .as_mut()
+        .and_then(|recovery| recovery.attempts.first_mut())
+        .ok_or("recovery attempt missing")?;
+    attempt.last_observed_micros = ctx
+        .timestamp
+        .to_micros_since_unix_epoch()
+        .saturating_sub(super::recovery::DEFER_MICROS);
+    rows.character_guid().update(state);
+    Ok(())
+}
+
 /// Select controlled companion behavior without opening a scheduler gap before the fixture's first
 /// explicit runner pass.
 #[reducer]
