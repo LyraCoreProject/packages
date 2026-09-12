@@ -2298,15 +2298,21 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
     }
     target.health = 100;
     target.max_health = 100;
-    ctx.db.game_world_entity().guid().update(target.clone());
+    let target_map = target.map_id;
+    let target_instance = target.instance_id;
+    let target_x = target.x;
+    let target_y = target.y;
+    let target_z = target.z;
+    let target_health = target.health;
+    ctx.db.game_world_entity().guid().update(target);
     let _ = crate::actor::stop_attack(ctx, guid);
     ctx.db.game_creature_spline().guid().delete(guid);
     let mut me = crate::helpers::live_entity(ctx, guid)?;
-    me.map_id = target.map_id;
-    me.instance_id = target.instance_id;
-    me.x = target.x;
-    me.y = target.y;
-    me.z = target.z;
+    me.map_id = target_map;
+    me.instance_id = target_instance;
+    me.x = target_x;
+    me.y = target_y;
+    me.z = target_z;
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(me.x, me.y);
     me.grid_x = grid_x;
     me.grid_y = grid_y;
@@ -2325,12 +2331,12 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
         priority: 110,
     };
     let destination = Destination {
-        map_id: target.map_id,
-        instance_id: target.instance_id,
-        x: target.x,
-        y: target.y,
-        z: target.z,
-        geometry_revision: crate::nav::coverage_generation(ctx, target.map_id),
+        map_id: target_map,
+        instance_id: target_instance,
+        x: target_x,
+        y: target_y,
+        z: target_z,
+        geometry_revision: crate::nav::coverage_generation(ctx, target_map),
     };
     state.chosen = Some(candidate);
     state.candidate_order = vec![candidate];
@@ -2344,7 +2350,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
             objective: candidate.id.objective,
             last_observed_micros: now,
             stalled_micros: 0,
-            target_health: Some(target.health),
+            target_health: Some(target_health),
             position: None,
             route: None,
             last_movement: None,
