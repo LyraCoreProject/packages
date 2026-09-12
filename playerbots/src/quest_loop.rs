@@ -247,10 +247,21 @@ fn select_live_target(
     preferred: Option<u64>,
 ) -> LiveCreatureTarget {
     let mut deferred = false;
+    let mut read_limited = false;
     let mut eligible: Vec<_> = search
         .rows
         .into_iter()
         .filter(|target| crate::combat::validate_attack_target(ctx, me, target.guid).is_ok())
+        .filter(|target| {
+            match crate::loot::tag::live_loot_tag_eligibility(ctx, target.guid, me.guid) {
+                crate::loot::tag::LiveLootTagEligibility::Available => true,
+                crate::loot::tag::LiveLootTagEligibility::Foreign => false,
+                crate::loot::tag::LiveLootTagEligibility::ReadLimit => {
+                    read_limited = true;
+                    false
+                }
+            }
+        })
         .filter(|target| {
             let eligible = eligible_work(target.guid);
             deferred |= !eligible;
@@ -294,7 +305,7 @@ fn select_live_target(
             .unwrap_or(0);
         return LiveCreatureTarget::Found(found.swap_remove(index));
     }
-    if search.exhausted {
+    if search.exhausted || read_limited {
         LiveCreatureTarget::ReadLimit
     } else if controlled {
         LiveCreatureTarget::Controlled
@@ -404,29 +415,30 @@ fn creature_plan(
     loot_item: Option<u32>,
     eligible_work: &impl Fn(u64) -> bool,
 ) -> Option<QuestPlan> {
+    let preferred = active_fight.unwrap_or(source.guid);
     preferred_creature_plan(
         ctx,
         me,
         source,
-        source.guid,
+        preferred,
         quest,
         loot_item,
         eligible_work,
     )
     .or_else(|| {
-        active_fight
-            .filter(|target| *target != source.guid)
-            .and_then(|target| {
+        (preferred != source.guid)
+            .then(|| {
                 preferred_creature_plan(
                     ctx,
                     me,
                     source,
-                    target,
+                    source.guid,
                     quest,
                     loot_item,
                     eligible_work,
                 )
             })
+            .flatten()
     })
 }
 

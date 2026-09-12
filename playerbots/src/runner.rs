@@ -2306,7 +2306,7 @@ fn run(
     }
     if let Some(fg) = &state.foreground {
         let incompatible = chosen.is_some_and(|c| c.id != fg.candidate.id);
-        let casting_target_invalid = match fg.candidate.id {
+        let foreground_target_invalid = match fg.candidate.id {
             decision::CandidateId {
                 action:
                     Action::Cast(CastAction { target, .. })
@@ -2330,6 +2330,14 @@ fn run(
                 reason: Reason::Quest,
                 ..
             } => true,
+            decision::CandidateId {
+                action:
+                    Action::Cast(CastAction { target, .. })
+                    | Action::Move(MoveTarget::Entity(target) | MoveTarget::CastingPosition(target)),
+                reason: Reason::Grind,
+                ..
+            } => !matches!(&grind_target,
+                Some(super::quest_loop::LiveCreatureTarget::Found(current)) if current.guid == target),
             decision::CandidateId {
                 action: Action::Move(MoveTarget::AreaTrigger(_)),
                 reason: Reason::TransferPosition,
@@ -2388,7 +2396,7 @@ fn run(
                 Reason::Survival | Reason::Resurrection
             );
         let preempts = stay_interrupts
-            || casting_target_invalid
+            || foreground_target_invalid
             || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
         if incompatible && preempts {
             stop(ctx, me.guid, &mut state);
