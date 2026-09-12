@@ -2412,6 +2412,48 @@ pub fn playerbots_quest_fixture_hide_live_target(
     Ok(())
 }
 
+/// Replace one declared Quest 7 target with a fresh life at its existing spawn point.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_respawn_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let fixture = ctx
+        .db
+        .pkg_playerbots_quest_loop_fixture()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("named quest-loop fixture is absent")?;
+    let first = creature_guid(6);
+    if fixture.quest_entry != 7
+        || fixture.target_entry != 6
+        || fixture.target_count != 10
+        || fixture.content_revision != NAMED_LOOP_CONTENT
+        || !(first..first + u64::from(fixture.target_count)).contains(&target_guid)
+    {
+        return Err("named quest-loop target identity differs".to_string());
+    }
+    let spawn = ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(target_guid)
+        .ok_or("quest target spawn is absent")?;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(spawn.entry)
+        .ok_or("quest target template is absent")?;
+    crate::creatures::despawn_creature_entity(ctx, target_guid);
+    let entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+    crate::creatures::insert_creature_entity(ctx, entity);
+    Ok(())
+}
+
 #[reducer]
 pub fn playerbots_quest_loop_fixture_make_target_friendly(
     ctx: &ReducerContext,
