@@ -391,7 +391,11 @@ pub fn playerbots_recovery_fixture_keep_two_quest_targets(
         .character_guid()
         .find(character_guid)
         .ok_or("named quest-loop fixture is absent")?;
-    if fixture.quest_entry != 7 || fixture.target_entry != 6 || fixture.target_count != 10 {
+    if fixture.quest_entry != 7
+        || fixture.target_entry != 6
+        || fixture.target_count != 10
+        || fixture.content_revision != NAMED_LOOP_CONTENT
+    {
         return Err("named quest-loop fixture identity differs".to_string());
     }
     for offset in 2..10u64 {
