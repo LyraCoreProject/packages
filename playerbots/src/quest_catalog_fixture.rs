@@ -46,6 +46,7 @@ const LOOPBACK_PRIEST_MANA: u32 = 400;
 const FRIENDLY_FIXTURE_FACTION: u32 = 5_090_972;
 const HELD_CATALOG_PREFIX_BASE: u32 = 5_098_000;
 const ACTIVE_QUEST_OVERFLOW_BASE: u32 = 5_098_100;
+const DISPERSION_POPULATION: usize = 25;
 
 const CREATURES: [u32; 12] = [823, 197, 196, 9296, 952, 241, 240, 261, 6, 299, 69, 38];
 const GAMEOBJECTS: [u32; 3] = [55, 56, CHEST_ENTRY];
@@ -1441,6 +1442,135 @@ pub fn playerbots_quest_loop_fixture_stage_named(
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     stage_named_with_rotation(ctx, character_guid, 0).map(|_| ())
+}
+
+/// Give the declared population the same Quest 7 facts and position, then park it before one
+/// common-time selection pass. The excluded Character owns the synthetic foreign Loot Tag.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_prepare_dispersion(
+    ctx: &ReducerContext,
+    excluded_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let primary = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(creature_guid(6))
+        .ok_or("primary quest target missing")?;
+    let giver = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(creature_guid(197))
+        .ok_or("Quest 7 giver missing")?;
+    let mut subjects: Vec<_> = ctx
+        .db
+        .pkg_playerbots_bot()
+        .iter()
+        .filter(|bot| bot.character_guid != excluded_guid)
+        .map(|bot| bot.character_guid)
+        .collect();
+    subjects.sort_unstable();
+    if subjects.len() != DISPERSION_POPULATION {
+        return Err("dispersion fixture requires exactly 25 subjects".to_string());
+    }
+    if crate::group::group_of(ctx, excluded_guid).is_some()
+        || subjects
+            .iter()
+            .any(|guid| crate::group::group_of(ctx, *guid).is_some())
+    {
+        return Err("dispersion fixture Characters must be ungrouped".to_string());
+    }
+    super::runner::transition_controller(ctx, excluded_guid, super::runner::Controller::Frozen)?;
+    ctx.db.game_creature_spline().guid().delete(excluded_guid);
+    use super::provisioning::pkg_playerbots_provisioning;
+    use super::runner::pkg_playerbots_runner;
+    let selection_x = primary.x - 40.0;
+    for guid in subjects {
+        super::runner::transition_controller(ctx, guid, super::runner::Controller::Frozen)?;
+        ctx.db.game_creature_spline().guid().delete(guid);
+        ctx.db.pkg_playerbots_runner().character_guid().delete(guid);
+        let mut provisioning = ctx
+            .db
+            .pkg_playerbots_provisioning()
+            .character_guid()
+            .find(guid)
+            .ok_or("dispersion fixture provisioning state missing")?;
+        provisioning.next_repair_micros = i64::MAX;
+        ctx.db
+            .pkg_playerbots_provisioning()
+            .character_guid()
+            .update(provisioning);
+        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        entity.x = giver.x;
+        entity.y = giver.y;
+        entity.z = giver.z;
+        let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+        entity.grid_x = grid_x;
+        entity.grid_y = grid_y;
+        entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+        ctx.db.game_world_entity().guid().update(entity);
+        playerbots_quest_fixture_admit_accept(ctx, guid, 7)?;
+        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        entity.x = selection_x;
+        entity.y = primary.y;
+        entity.z = primary.z;
+        let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+        entity.grid_x = grid_x;
+        entity.grid_y = grid_y;
+        entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+        ctx.db.game_world_entity().guid().update(entity);
+        let mut bot = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next()
+            .ok_or("dispersion fixture bot missing")?;
+        bot.home_map = primary.map_id;
+        bot.home_x = selection_x;
+        bot.home_y = primary.y;
+        bot.home_z = primary.z;
+        ctx.db.pkg_playerbots_bot().id().update(bot);
+        super::fixture::playerbots_fixture_runner_select_cohort(ctx, guid)?;
+    }
+    let mut excluded = crate::helpers::live_entity(ctx, excluded_guid)?;
+    excluded.x = primary.x;
+    excluded.y = primary.y;
+    excluded.z = primary.z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(excluded.x, excluded.y);
+    excluded.grid_x = grid_x;
+    excluded.grid_y = grid_y;
+    excluded.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(excluded);
+    Ok(())
+}
+
+/// Run one normal parked pass for every prepared subject at this reducer's single timestamp.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_pass_dispersion(
+    ctx: &ReducerContext,
+    excluded_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let mut subjects: Vec<_> = ctx
+        .db
+        .pkg_playerbots_bot()
+        .iter()
+        .filter(|bot| bot.character_guid != excluded_guid)
+        .map(|bot| bot.character_guid)
+        .collect();
+    subjects.sort_unstable();
+    if subjects.len() != DISPERSION_POPULATION {
+        return Err("dispersion fixture requires exactly 25 subjects".to_string());
+    }
+    for guid in subjects {
+        super::fixture::playerbots_fixture_runner_pass_once(ctx, guid)?;
+    }
+    Ok(())
 }
 
 pub(super) fn stage_named_with_rotation(
