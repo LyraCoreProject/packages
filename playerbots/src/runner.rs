@@ -494,6 +494,20 @@ impl PlayerbotsRunner {
         now.saturating_add(DEFER_INTERVAL)
     }
 
+    fn select_quest_read_limit(&mut self, candidate: Candidate, now: i64) {
+        let action_retry = self
+            .retry_candidate
+            .map(|_| (self.retry_count, self.next_eligible_micros));
+        self.chosen = Some(candidate);
+        let quest_retry_at = self.refusal_retry_at(Failure::QuestReadLimit, now);
+        if let Some((retry_count, next_eligible_micros)) = action_retry {
+            self.retry_count = retry_count;
+            self.next_eligible_micros = next_eligible_micros;
+        } else {
+            self.next_eligible_micros = quest_retry_at;
+        }
+    }
+
     pub(super) fn save(mut self, ctx: &ReducerContext) {
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
@@ -943,10 +957,7 @@ fn objective(
         ) {
             super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
             super::quest_catalog::ReconcileResult::Missing => None,
-            super::quest_catalog::ReconcileResult::ReadLimit => {
-                state.next_eligible_micros = state.refusal_retry_at(Failure::QuestReadLimit, now);
-                return true;
-            }
+            super::quest_catalog::ReconcileResult::ReadLimit => return true,
         }
     } else {
         None
@@ -1558,6 +1569,14 @@ fn run(
             stop(ctx, me.guid, &mut state);
         }
     }
+    let quest_unavailable = Candidate {
+        id: decision::CandidateId {
+            action: Action::Hold,
+            reason: Reason::Quest,
+            objective: state.objective_sequence,
+        },
+        priority: 110,
+    };
     if quest_read_limited
         && state
             .transfer_checkpoint
@@ -1569,14 +1588,14 @@ fn run(
             state.save(ctx);
             return;
         }
-        state.chosen = Some(Candidate {
-            id: decision::CandidateId {
-                action: Action::Hold,
-                reason: Reason::Quest,
-                objective: state.objective_sequence,
-            },
+        let quest_transfer_unavailable = Candidate {
             priority: 1000,
-        });
+            ..quest_unavailable
+        };
+        state.select_quest_read_limit(quest_transfer_unavailable, now);
+        if bot.controller == Controller::RecordOnly {
+            state.last_outcome = RunnerOutcome::Recorded;
+        }
         state.save(ctx);
         return;
     }
@@ -1608,14 +1627,6 @@ fn run(
     if owns_runner {
         observe(ctx, &me, &mut state, now);
     }
-    let quest_unavailable = Candidate {
-        id: decision::CandidateId {
-            action: Action::Hold,
-            reason: Reason::Quest,
-            objective: state.objective_sequence,
-        },
-        priority: 110,
-    };
     let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
         if quest_read_limited {
             if owns_runner {
@@ -1624,7 +1635,7 @@ fn run(
                 }
                 stop(ctx, me.guid, &mut state);
             }
-            state.chosen = Some(quest_unavailable);
+            state.select_quest_read_limit(quest_unavailable, now);
             if bot.controller == Controller::RecordOnly {
                 state.last_outcome = RunnerOutcome::Recorded;
             }
@@ -2190,6 +2201,9 @@ fn run(
         });
         state.candidate_order.insert(0, chosen.unwrap());
     }
+    if quest_read_limited && chosen == Some(quest_unavailable) {
+        state.select_quest_read_limit(quest_unavailable, now);
+    }
     if bot.controller == Controller::RecordOnly {
         state.chosen = chosen;
         state.last_outcome = RunnerOutcome::Recorded;
@@ -2229,7 +2243,6 @@ fn run(
             recovery.activate(None, now);
         }
         stop(ctx, me.guid, &mut state);
-        state.chosen = chosen;
         state.save(ctx);
         return;
     }
