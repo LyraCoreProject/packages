@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 6933cbb5bdd20379feac4ab301840cb9bf0ca01b
+          ref: 2e078e60db80213e3654895a14ebbde4a85b3e05
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -197,6 +197,13 @@ jobs:
           repository: LyraCoreProject/packages
           ref: 155c9e401afb06d5731acedf8fc35a81dbe4aaa6
           path: preceding-pb002-collection
+          persist-credentials: false
+      - name: Check out the policy comparison Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 50e2cd10870d2cfb4a36018bbbd559f9d07c2062
+          path: comparison-collection
           persist-credentials: false
       - name: Build the merged PB-002 Wasm for populated companion migration
         working-directory: preceding-pb002-core
@@ -273,6 +280,7 @@ jobs:
           echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_COMPANION_COMPARISON_COLLECTION=$GITHUB_WORKSPACE/comparison-collection" >> "$GITHUB_ENV"
       - name: Check out the merged PB-006 Module source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -681,7 +689,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 6933cbb5bdd20379feac4ab301840cb9bf0ca01b
+          ref: 2e078e60db80213e3654895a14ebbde4a85b3e05
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -902,7 +910,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 6933cbb5bdd20379feac4ab301840cb9bf0ca01b
+          ref: 2e078e60db80213e3654895a14ebbde4a85b3e05
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1093,7 +1101,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 6933cbb5bdd20379feac4ab301840cb9bf0ca01b
+          ref: 2e078e60db80213e3654895a14ebbde4a85b3e05
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
