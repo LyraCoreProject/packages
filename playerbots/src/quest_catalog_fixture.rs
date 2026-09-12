@@ -2711,6 +2711,14 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     ctx.db.game_creature_spline().guid().delete(target_guid);
 
     let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    for alternative_guid in target_guid + 1..target_guid + 10 {
+        entities
+            .guid()
+            .find(alternative_guid)
+            .filter(|alternative| alternative.entry == 6 && !alternative.dead)
+            .ok_or("moving-cast fixture alternative missing")?;
+        crate::creatures::despawn_creature_entity(ctx, alternative_guid);
+    }
     character.x = target_x - 80.0;
     character.y = target_y;
     character.z = target_z;
