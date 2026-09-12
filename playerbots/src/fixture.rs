@@ -2226,8 +2226,14 @@ pub fn playerbots_fixture_runner_stage_completed_quest_wait(
     let targets: Vec<_> = ctx
         .db
         .game_world_entity()
-        .iter()
-        .filter(|entity| !entity.is_player() && entity.entry == target_entry && !entity.dead)
+        .by_map()
+        .filter(&destination.map_id)
+        .filter(|entity| {
+            crate::helpers::in_same_partition(entity, destination.map_id, destination.instance_id)
+                && !entity.is_player()
+                && entity.entry == target_entry
+                && !entity.dead
+        })
         .map(|entity| entity.guid)
         .collect();
     if targets.is_empty() {
@@ -2309,9 +2315,11 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
     let other_targets: Vec<_> = ctx
         .db
         .game_world_entity()
-        .iter()
+        .by_map()
+        .filter(&target_map)
         .filter(|entity| {
-            entity.guid != target_guid
+            crate::helpers::in_same_partition(entity, target_map, target_instance)
+                && entity.guid != target_guid
                 && entity.entry == retained.target.target_entry
                 && !entity.dead
         })
