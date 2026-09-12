@@ -1729,6 +1729,75 @@ pub fn playerbots_fixture_partial_route(ctx: &ReducerContext, guid: u64) -> Resu
     Ok(())
 }
 
+/// Add a second creature beside the blocked-quest target for defensive target selection.
+#[reducer]
+pub fn playerbots_fixture_runner_second_attacker(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    let entry = 5_090_101;
+    let first_guid = fixture_giver();
+    let second_guid = first_guid + 1;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(entry)
+        .ok_or("blocked quest creature template missing")?;
+    let mut first = crate::helpers::live_entity(ctx, first_guid)?;
+    first.health = 1_000;
+    first.max_health = 1_000;
+    ctx.db.game_world_entity().guid().update(first);
+    let spawn = crate::CreatureSpawn {
+        guid: second_guid,
+        entry,
+        map_id: me.map_id,
+        x: me.x + 3.0,
+        y: me.y + 1.0,
+        z: me.z,
+        orientation: 0.0,
+        respawn_at: ctx.timestamp,
+        despawn_at: ctx.timestamp,
+        movement_type: 0,
+        respawn_secs: 60,
+        life_seq: 1,
+    };
+    ctx.db.game_creature_spawn().guid().delete(second_guid);
+    let spawn = ctx.db.game_creature_spawn().insert(spawn);
+    crate::creatures::despawn_creature_entity(ctx, second_guid);
+    let mut second = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+    second.health = 1_000;
+    second.max_health = 1_000;
+    ctx.db.game_world_entity().insert(second);
+    Ok(())
+}
+
+/// Kill one staged creature without granting the bot quest credit.
+#[reducer]
+pub fn playerbots_fixture_runner_kill_creature(
+    ctx: &ReducerContext,
+    killer: u64,
+    target: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let health = crate::helpers::live_entity(ctx, target)?.health;
+    let (amount, _) = crate::combat::fold_incoming_damage(ctx, killer, target, health);
+    let damage = crate::combat::final_damage(ctx, target, amount);
+    let outcome = crate::combat::apply_hit(
+        ctx,
+        killer,
+        target,
+        damage,
+        crate::combat::Hit::weapon(crate::combat::HitSource::MainHand, false),
+    );
+    if !outcome.killed {
+        return Err("fixture creature survived lethal damage".to_string());
+    }
+    Ok(())
+}
+
 const QUEST: u32 = 50910;
 const COLLECT: u32 = 5_090_120;
 const GUARANTEED: u32 = 5_090_121;
