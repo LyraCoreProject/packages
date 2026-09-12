@@ -584,7 +584,18 @@ pub(super) fn plan(
                     corpse,
                     slot,
                 },
-                Search::Limit => QuestPlan::Wait(WaitReason::ReadLimit),
+                Search::Limit => {
+                    match live_creature_target(ctx, me, source.entry, &eligible_fight) {
+                        LiveCreatureTarget::Found(target) => QuestPlan::Attack {
+                            quest,
+                            target: target.guid,
+                        },
+                        LiveCreatureTarget::ReadLimit
+                        | LiveCreatureTarget::Missing
+                        | LiveCreatureTarget::Deferred
+                        | LiveCreatureTarget::Controlled => QuestPlan::Wait(WaitReason::ReadLimit),
+                    }
+                }
                 Search::Missing => {
                     match live_creature_target(ctx, me, source.entry, &eligible_fight) {
                         LiveCreatureTarget::Found(target) => QuestPlan::Attack {
