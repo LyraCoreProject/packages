@@ -522,6 +522,18 @@ impl PlayerbotsRunner {
         }
     }
 
+    fn completed_quest_wait_expired(&self, now: i64) -> bool {
+        self.objective.as_ref().is_some_and(|objective| {
+            objective.kind == ObjectiveKind::Quest
+                && objective.stage == ObjectiveStage::Completed
+                && now.saturating_sub(
+                    objective
+                        .last_verified_progress_micros
+                        .unwrap_or(objective.started_micros),
+                ) >= OBJECTIVE_LIFETIME
+        })
+    }
+
     pub(super) fn save(mut self, ctx: &ReducerContext) {
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
@@ -1229,7 +1241,10 @@ fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut Playerbots
                     });
                     if let Some(o) = &mut state.objective {
                         if o.destination == *destination {
-                            o.last_verified_progress_micros = Some(now);
+                            // Reaching the source advances navigation, not the Quest effect clock.
+                            if o.kind != ObjectiveKind::Quest {
+                                o.last_verified_progress_micros = Some(now);
+                            }
                             state.retry_count = 0;
                             state.last_stall_check_micros = now;
                             if arrived {
@@ -1666,6 +1681,14 @@ fn run(
         .flatten();
     if owns_runner {
         if let Some(retained) = retained_quest.as_mut() {
+            // Credit and reward changes are authoritative even when another Character dealt damage.
+            if state.quest_progress.iter().any(|progress| {
+                progress.quest == retained.quest_entry && progress.observed_micros == now
+            }) {
+                if let Some(objective) = &mut state.objective {
+                    objective.last_verified_progress_micros = Some(now);
+                }
+            }
             super::quest_loop::invalidate_safe_position(ctx, &me, retained);
         }
     }
@@ -2510,11 +2533,50 @@ fn run(
                 super::quest_loop::WaitReason::Deferred => Failure::NoMovement,
                 super::quest_loop::WaitReason::Controlled => Failure::QuestControlled,
             };
+            let preserves_action_retry = candidate.id.reason == Reason::Quest
+                && matches!(
+                    reason,
+                    super::quest_loop::WaitReason::MissingTarget
+                        | super::quest_loop::WaitReason::ReadLimit
+                );
+            let action_retry = state
+                .retry_candidate
+                .filter(|retry| preserves_action_retry && retry.reason != Reason::Quest)
+                .map(|_| (state.retry_count, state.next_eligible_micros));
             if reason == super::quest_loop::WaitReason::Controlled {
                 state.last_outcome = RunnerOutcome::Refused(failure);
                 state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
             } else {
                 state.next_eligible_micros = state.refusal_retry_at(failure, now);
+            }
+            let completed_quest_wait_expired = candidate.id.reason == Reason::Quest
+                && matches!(
+                    reason,
+                    super::quest_loop::WaitReason::MissingTarget
+                        | super::quest_loop::WaitReason::ReadLimit
+                )
+                && state.completed_quest_wait_expired(now);
+            if let Some((retry_count, next_eligible_micros)) = action_retry {
+                state.retry_count = retry_count;
+                state.next_eligible_micros = next_eligible_micros;
+            }
+            if completed_quest_wait_expired {
+                if action_retry.is_none() {
+                    state.retry_candidate = None;
+                }
+                if let Some(recovery) = &mut state.recovery {
+                    recovery.activate(None, now);
+                }
+                stop(ctx, me.guid, &mut state);
+                state.chosen = Some(candidate);
+                defer_quest_and_continue(&mut state, now);
+                if let Some((retry_count, next_eligible_micros)) = action_retry {
+                    state.retry_count = retry_count;
+                    state.next_eligible_micros =
+                        next_eligible_micros.max(state.next_eligible_micros);
+                }
+                state.save(ctx);
+                return;
             }
             state.next_eligible_micros =
                 state.next_eligible_micros.max(now.saturating_add(INTERVAL));
@@ -2806,7 +2868,9 @@ fn execute(
                 state.retry_count = 0;
                 state.retry_candidate = None;
                 if let Some(objective) = &mut state.objective {
-                    objective.last_verified_progress_micros = Some(now);
+                    if objective.kind != ObjectiveKind::Quest {
+                        objective.last_verified_progress_micros = Some(now);
+                    }
                 }
             }
             super::quest_loop::StepResult::Waiting => {

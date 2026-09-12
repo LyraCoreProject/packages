@@ -470,9 +470,23 @@ impl Recovery {
                 (Work::Heal(_), Some(before), Some(after)) => after > before,
                 _ => false,
             };
-        if health_progress || matches!((attempt.work, health), (Work::Fight(_), Some(0))) {
+        let fight_ended = matches!((attempt.work, health), (Work::Fight(_), Some(0)));
+        let quest_effect = match (attempt.reason, attempt.work, health) {
+            (Reason::Quest, Work::Fight(target), Some(0)) => {
+                let recipients = crate::loot::corpse_eligible_recipients(ctx, target);
+                crate::loot::corpse_eligible_for_access(&recipients, me.guid)
+            }
+            (Reason::Quest, Work::Fight(target), Some(_)) if health_progress => matches!(
+                crate::loot::tag::live_loot_tag_eligibility(ctx, target, me.guid),
+                crate::loot::tag::LiveLootTagEligibility::Available
+            ),
+            (Reason::Quest, Work::Fight(_), _) => false,
+            _ => true,
+        };
+        if health_progress || fight_ended {
             if let Some(objective) = &mut state.objective {
                 if objective.identity == attempt.objective
+                    && quest_effect
                     && matches!(
                         attempt.reason,
                         Reason::ReturnHome | Reason::Follow | Reason::Quest | Reason::Transfer
@@ -518,7 +532,9 @@ impl Recovery {
                         Reason::ReturnHome | Reason::Follow | Reason::Quest | Reason::Transfer
                     )
                 {
-                    objective.last_verified_progress_micros = Some(now);
+                    if objective.kind != ObjectiveKind::Quest {
+                        objective.last_verified_progress_micros = Some(now);
+                    }
                     objective.deadline_micros = if objective.kind == ObjectiveKind::Companion {
                         i64::MAX
                     } else {
