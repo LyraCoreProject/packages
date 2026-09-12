@@ -2507,7 +2507,7 @@ fn defense_movement(
         .guid()
         .find(guid)
         .ok_or_else(|| {
-            format!("Defense casting-position movement toward {target} is not active")
+            format!("Defense movement toward {target} is not active")
         })?;
     Ok((foreground, spline))
 }
