@@ -27,6 +27,7 @@ const ROLES_PRIEST_TRAINER: u32 = 5_098_200;
 const ROLES_FORTITUDE_OFFERING: u64 = 5_098_201;
 const ROLES_WARRIOR_TRAINER: u32 = 5_098_202;
 const ROLES_TAUNT_OFFERING: u64 = 5_098_203;
+const COMPLETED_QUEST_EFFECT_LIFETIME_MICROS: i64 = 120_000_000;
 
 /// Move the fixture's human stand-in onto an Account no other private party member uses before
 /// exercising the authenticated Gateway Actor Gate.
@@ -2183,7 +2184,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_wait(
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     objective.stage = ObjectiveStage::Completed;
     objective.last_verified_progress_micros = Some(now);
-    objective.deadline_micros = now.saturating_add(super::runner::OBJECTIVE_LIFETIME);
+    objective.deadline_micros = now.saturating_add(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS);
     let destination = objective.destination.clone();
     state.chosen = None;
     state.candidate_order.clear();
@@ -2255,8 +2256,8 @@ pub fn playerbots_fixture_runner_expire_completed_quest_wait(
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     objective.last_verified_progress_micros =
-        Some(now.saturating_sub(super::runner::OBJECTIVE_LIFETIME));
-    objective.deadline_micros = now.saturating_add(super::runner::OBJECTIVE_LIFETIME);
+        Some(now.saturating_sub(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS));
+    objective.deadline_micros = now.saturating_add(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS);
     rows.character_guid().update(state);
     runner_park_for(ctx, guid)
 }
@@ -2335,7 +2336,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     objective.stage = ObjectiveStage::Completed;
     objective.last_verified_progress_micros = Some(now);
-    objective.deadline_micros = now.saturating_add(super::runner::OBJECTIVE_LIFETIME);
+    objective.deadline_micros = now.saturating_add(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS);
     let candidate = Candidate {
         id: CandidateId {
             action: Action::Attack(target_guid),

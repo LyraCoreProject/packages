@@ -19,7 +19,7 @@ use spacetimedb::{reducer, table, ReducerContext, Table};
 pub const BATCH_LIMIT: usize = 16;
 const CONTROLLER_MIGRATION_BATCH_LIMIT: usize = 16;
 const INTERVAL: i64 = 1_000_000;
-pub(super) const OBJECTIVE_LIFETIME: i64 = 120_000_000;
+const OBJECTIVE_LIFETIME: i64 = 120_000_000;
 const DEFER_INTERVAL: i64 = 30_000_000;
 const HISTORY_LIMIT: usize = 8;
 const RECOVERY_SCAN_LIMIT: usize = 24;
