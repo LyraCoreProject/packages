@@ -478,6 +478,22 @@ impl PlayerbotsRunner {
         self.last_outcome = RunnerOutcome::Refused(reason);
     }
 
+    fn refusal_retry_at(&mut self, reason: Failure, now: i64) -> i64 {
+        if let Some(retry_at) = self
+            .failures
+            .iter()
+            .rev()
+            .find(|failure| failure.reason == reason)
+            .map(|failure| failure.at_micros.saturating_add(DEFER_INTERVAL))
+            .filter(|retry_at| *retry_at > now)
+        {
+            self.last_outcome = RunnerOutcome::Waiting;
+            return retry_at;
+        }
+        self.failure(reason, now);
+        now.saturating_add(DEFER_INTERVAL)
+    }
+
     pub(super) fn save(mut self, ctx: &ReducerContext) {
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
@@ -928,7 +944,7 @@ fn objective(
             super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
             super::quest_catalog::ReconcileResult::Missing => None,
             super::quest_catalog::ReconcileResult::ReadLimit => {
-                state.failure(Failure::QuestReadLimit, now);
+                state.next_eligible_micros = state.refusal_retry_at(Failure::QuestReadLimit, now);
                 return true;
             }
         }
@@ -1481,6 +1497,11 @@ fn run(
 
     let arrival = state.transfer_checkpoint;
     let arriving = arrival.is_some();
+    let observed_objective = state.objective_sequence;
+    let observed_quest_creature = state
+        .recovery
+        .as_ref()
+        .and_then(|recovery| recovery.active_quest_creature(ctx, &me, observed_objective));
     if owns_runner {
         let mut recovery = state.recovery.take().unwrap_or_default();
         let deferred = recovery.observe(ctx, &me, &mut state, now);
@@ -1556,7 +1577,6 @@ fn run(
             },
             priority: 1000,
         });
-        state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
         state.save(ctx);
         return;
     }
@@ -1605,13 +1625,9 @@ fn run(
                 stop(ctx, me.guid, &mut state);
             }
             state.chosen = Some(quest_unavailable);
-            state.retry_candidate = Some(quest_unavailable.id);
-            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
-            state.last_outcome = if bot.controller == Controller::RecordOnly {
-                RunnerOutcome::Recorded
-            } else {
-                RunnerOutcome::Refused(Failure::QuestReadLimit)
-            };
+            if bot.controller == Controller::RecordOnly {
+                state.last_outcome = RunnerOutcome::Recorded;
+            }
             state.save(ctx);
         }
         return;
@@ -1628,11 +1644,29 @@ fn run(
             super::quest_loop::invalidate_safe_position(ctx, &me, retained);
         }
     }
+    let active_quest_creature = state
+        .recovery
+        .as_ref()
+        .and_then(|recovery| {
+            recovery.active_quest_creature(ctx, &me, state.objective_sequence)
+        })
+        .or_else(|| {
+            (observed_objective == state.objective_sequence)
+                .then_some(observed_quest_creature)
+                .flatten()
+                .filter(|target| {
+                    ctx.db
+                        .game_world_entity()
+                        .guid()
+                        .find(*target)
+                        .is_some_and(|target| target.dead)
+                })
+        });
     let quest_plan = retained_quest
         .as_ref()
         .filter(|_| !quest_read_limited)
         .map(|retained| {
-            super::quest_loop::plan(ctx, &me, retained, |target| {
+            super::quest_loop::plan(ctx, &me, retained, active_quest_creature, |target| {
                 state.recovery.as_ref().is_none_or(|recovery| {
                     recovery.eligible_work(super::recovery::Work::Fight(target))
                 })
@@ -2196,9 +2230,6 @@ fn run(
         }
         stop(ctx, me.guid, &mut state);
         state.chosen = chosen;
-        state.retry_candidate = Some(quest_unavailable.id);
-        state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
-        state.last_outcome = RunnerOutcome::Refused(Failure::QuestReadLimit);
         state.save(ctx);
         return;
     }
@@ -2437,14 +2468,8 @@ fn run(
         if reason == super::quest_loop::WaitReason::ReadLimit
             && candidate.id.action == Action::Move(MoveTarget::Home)
             && candidate.id.reason == Reason::ReturnHome
-            && state
-                .failures
-                .iter()
-                .rev()
-                .find(|failure| failure.reason == Failure::QuestReadLimit)
-                .is_none_or(|failure| failure.at_micros.saturating_add(DEFER_INTERVAL) <= now)
         {
-            state.failure(Failure::QuestReadLimit, now);
+            let _ = state.refusal_retry_at(Failure::QuestReadLimit, now);
         }
         if matches!(candidate.id.reason, Reason::Quest | Reason::CrowdControl)
             && candidate.id.action == Action::Hold
@@ -2458,10 +2483,10 @@ fn run(
             };
             if reason == super::quest_loop::WaitReason::Controlled {
                 state.last_outcome = RunnerOutcome::Refused(failure);
+                state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
             } else {
-                state.failure(failure, now);
+                state.next_eligible_micros = state.refusal_retry_at(failure, now);
             }
-            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
             state.next_eligible_micros =
                 state.next_eligible_micros.max(now.saturating_add(INTERVAL));
             state.save(ctx);

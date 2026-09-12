@@ -194,13 +194,14 @@ pub(super) fn live_creature_target(
     select_live_target(ctx, me, search, eligible_work, None, None)
 }
 
-fn retained_creature(
+fn preferred_creature(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     source: &CatalogDestination,
+    guid: u64,
 ) -> Option<crate::WorldEntity> {
     if source.kind == CatalogEntityKind::Creature {
-        ctx.db.game_world_entity().guid().find(source.guid)
+        ctx.db.game_world_entity().guid().find(guid)
     } else {
         None
     }
@@ -353,15 +354,16 @@ fn entitled_corpse(
     }
 }
 
-fn retained_creature_plan(
+fn preferred_creature_plan(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     source: &CatalogDestination,
+    preferred_guid: u64,
     quest: u32,
     loot_item: Option<u32>,
     eligible_work: &impl Fn(u64) -> bool,
 ) -> Option<QuestPlan> {
-    let preferred = retained_creature(ctx, me, source)?;
+    let preferred = preferred_creature(ctx, me, source, preferred_guid)?;
     if preferred.dead {
         let item = loot_item?;
         if crate::loot::corpse_access(ctx, me.guid, preferred.guid).is_err() {
@@ -377,7 +379,6 @@ fn retained_creature_plan(
             Search::Missing => None,
         };
     }
-    let preferred_guid = preferred.guid;
     let search = EntitySearch {
         rows: vec![preferred],
         exhausted: false,
@@ -392,6 +393,41 @@ fn retained_creature_plan(
         | LiveCreatureTarget::Deferred
         | LiveCreatureTarget::Controlled => None,
     }
+}
+
+fn creature_plan(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    source: &CatalogDestination,
+    active_fight: Option<u64>,
+    quest: u32,
+    loot_item: Option<u32>,
+    eligible_work: &impl Fn(u64) -> bool,
+) -> Option<QuestPlan> {
+    preferred_creature_plan(
+        ctx,
+        me,
+        source,
+        source.guid,
+        quest,
+        loot_item,
+        eligible_work,
+    )
+    .or_else(|| {
+        active_fight
+            .filter(|target| *target != source.guid)
+            .and_then(|target| {
+                preferred_creature_plan(
+                    ctx,
+                    me,
+                    source,
+                    target,
+                    quest,
+                    loot_item,
+                    eligible_work,
+                )
+            })
+    })
 }
 
 fn gameobject_work(
@@ -463,6 +499,7 @@ pub(super) fn plan(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     retained: &PlayerbotsQuestObjective,
+    active_fight: Option<u64>,
     eligible_fight: impl Fn(u64) -> bool,
 ) -> QuestPlan {
     let quest = retained.quest_entry;
@@ -495,7 +532,7 @@ pub(super) fn plan(
     match retained.target.executor {
         ObjectiveExecutor::Attack => {
             if let Some(plan) =
-                retained_creature_plan(ctx, me, source, quest, None, &eligible_fight)
+                creature_plan(ctx, me, source, active_fight, quest, None, &eligible_fight)
             {
                 return plan;
             }
@@ -511,10 +548,11 @@ pub(super) fn plan(
             }
         }
         ObjectiveExecutor::CreatureLoot => {
-            if let Some(plan) = retained_creature_plan(
+            if let Some(plan) = creature_plan(
                 ctx,
                 me,
                 source,
+                active_fight,
                 quest,
                 Some(retained.target.target_entry),
                 &eligible_fight,

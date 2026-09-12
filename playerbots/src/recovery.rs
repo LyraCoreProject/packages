@@ -351,6 +351,36 @@ impl Recovery {
             )
     }
 
+    pub(super) fn active_quest_creature(
+        &self,
+        ctx: &ReducerContext,
+        me: &crate::WorldEntity,
+        objective: u64,
+    ) -> Option<u64> {
+        let active = self.active?;
+        let target = match active {
+            Work::Fight(target) => target,
+            Work::Quest(QuestWork {
+                step,
+                operation: QuestOperation::LootCreature,
+            }) => step.target,
+            _ => return None,
+        };
+        let attempt = self
+            .attempts
+            .iter()
+            .find(|attempt| {
+                attempt.work == active
+                    && attempt.reason == Reason::Quest
+                    && attempt.objective == objective
+                    && attempt.deferred_until_micros.is_none()
+            })?;
+        ((attempt.destination.map_id, attempt.destination.instance_id)
+            == (me.map_id, me.instance_id)
+            && attempt.geometry == crate::nav::inputs(ctx, me.map_id))
+            .then_some(target)
+    }
+
     /// Observe the previous action before objective reconciliation or the next proposal can replace it.
     pub(super) fn observe(
         &mut self,
