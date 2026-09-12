@@ -1242,9 +1242,6 @@ fn advance_unreachable_giver_fault(
         let Some(giver) = ctx.db.game_world_entity().guid().find(row.giver_guid) else {
             return;
         };
-        let Some(attempt) = matching_giver_attempt(&runner, row.giver_guid) else {
-            return;
-        };
         let Some(deferred) = runner.deferred_destinations.iter().find(|deferred| {
             deferred.destination.map_id == giver.map_id
                 && deferred.destination.instance_id == giver.instance_id
@@ -1260,15 +1257,26 @@ fn advance_unreachable_giver_fault(
             }
             return;
         };
-        if attempt.deferred_until_micros != Some(deferred.until_micros) {
-            row.restore_error = Some("deferred destination does not match its attempt".to_string());
-            ctx.db
-                .pkg_playerbots_acceptance_unreachable_giver_fault()
-                .character_guid()
-                .update(row);
+        let deferred_micros = if let Some(attempt) = matching_giver_attempt(&runner, row.giver_guid)
+        {
+            if attempt.deferred_until_micros != Some(deferred.until_micros) {
+                row.restore_error =
+                    Some("deferred destination does not match its attempt".to_string());
+                ctx.db
+                    .pkg_playerbots_acceptance_unreachable_giver_fault()
+                    .character_guid()
+                    .update(row);
+                return;
+            }
+            attempt.last_observed_micros
+        } else if row.maximum_approach >= 2 {
+            deferred
+                .until_micros
+                .saturating_sub(super::recovery::DEFER_MICROS)
+        } else {
             return;
-        }
-        row.deferred_micros = Some(attempt.last_observed_micros);
+        };
+        row.deferred_micros = Some(deferred_micros);
         row.deferred_until_micros = Some(deferred.until_micros);
         if let Some((id, credit)) = quest_row_state(ctx, row.character_guid, row.quest_entry) {
             row.quest_id_at_deferral = Some(id);

@@ -8,7 +8,7 @@ use spacetimedb::ReducerContext;
 
 const CHANGE_APPROACH_MICROS: i64 = 10_000_000;
 const ATTEMPT_LIMIT_MICROS: i64 = 30_000_000;
-const DEFER_MICROS: i64 = 30_000_000;
+pub(super) const DEFER_MICROS: i64 = 30_000_000;
 const MEMORY_LIMIT: usize = 4;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
