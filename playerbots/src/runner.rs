@@ -2125,7 +2125,7 @@ fn run(
                 .any(|candidate| recovery.capacity_refused(*candidate))
         })
     {
-        state.failure(Failure::RecoveryCapacity, now);
+        let _ = state.refusal_retry_at(Failure::RecoveryCapacity, now);
     }
     let mut transfer_recovery_settled = arrival.is_some_and(|checkpoint| {
         !super::transfer::requires_recovery(checkpoint)
