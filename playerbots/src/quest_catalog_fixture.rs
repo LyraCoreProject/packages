@@ -2678,12 +2678,14 @@ pub fn playerbots_quest_loop_fixture_start_moving_cast(
         .next()
         .filter(|quest| !quest.rewarded && quest.counts.first() == Some(&0))
         .ok_or("moving-cast fixture requires open Quest 7 with zero credit")?;
-    ctx.db
-        .game_spell()
+    let spells = ctx.db.game_spell();
+    let mut spell = spells
         .spell_id()
         .find(133)
-        .filter(|spell| spell.range_yd == 35 && spell.cast_time_ms == 1_500)
-        .ok_or("moving-cast fixture requires the 35-yard, 1500ms Fireball")?;
+        .ok_or("moving-cast fixture requires Fireball")?;
+    spell.range_yd = 35;
+    spell.cast_time_ms = 1_500;
+    spells.spell_id().update(spell);
 
     let target_guid = creature_guid(6);
     let entities = ctx.db.game_world_entity();
