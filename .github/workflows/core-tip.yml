@@ -1097,6 +1097,13 @@ jobs:
         with:
           path: collection
           persist-credentials: false
+      - name: Check out the policy comparison Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 50e2cd10870d2cfb4a36018bbbd559f9d07c2062
+          path: comparison-collection
+          persist-credentials: false
       - name: Check out merged PB-011 Core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1145,6 +1152,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/playerbots-composition-target
           LYRACORE_WIRE_BIN: ${{ runner.temp }}/playerbots-composition-target/release/vanilla-wire
+          PLAYERBOTS_COMPANION_COMPARISON_COLLECTION: ${{ github.workspace }}/comparison-collection
           RUST_TEST_THREADS: 1
         run: |
           export COMPOSITION_CORE=$(git rev-parse HEAD)
