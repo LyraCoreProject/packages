@@ -7,6 +7,7 @@ use super::{
     cond, pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation, ROLE_DPS, ROLE_HEALER, ROLE_TANK,
 };
+use crate::{game_spell, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const MELEE_RANGE_YD: f32 = 4.0;
@@ -177,6 +178,55 @@ fn wounded_ally(
         .map(|(_, _, guid)| guid)
 }
 
+pub(super) enum CastPreparation {
+    Ready,
+    MoveForRange,
+    MoveForLineOfSight,
+    Refused,
+}
+
+/// Keep timed casts inside their nominal range so ordinary target movement can use the Core
+/// completion leeway instead of consuming it before the cast starts.
+pub(super) fn cast_preparation(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    spell_id: u32,
+    target_guid: u64,
+) -> CastPreparation {
+    match crate::actor::cast_readiness(ctx, me.guid, spell_id, target_guid) {
+        Err(refusal) if refusal.kind == crate::spell::CastRefusalKind::OutOfRange => {
+            return CastPreparation::MoveForRange;
+        }
+        Err(refusal) if refusal.kind == crate::spell::CastRefusalKind::NoLineOfSight => {
+            return CastPreparation::MoveForLineOfSight;
+        }
+        Err(_) => return CastPreparation::Refused,
+        Ok(()) => {}
+    }
+    if target_guid == me.guid {
+        return CastPreparation::Ready;
+    }
+    let Some(spell) = ctx.db.game_spell().spell_id().find(spell_id) else {
+        return CastPreparation::Ready;
+    };
+    if spell.cast_time_ms == 0 || spell.range_yd == 0 {
+        return CastPreparation::Ready;
+    }
+    let Some(target) = ctx.db.game_world_entity().guid().find(target_guid) else {
+        return CastPreparation::Ready;
+    };
+    if (target.map_id, target.instance_id) != (me.map_id, me.instance_id) {
+        return CastPreparation::Ready;
+    }
+    let distance_sq =
+        (me.x - target.x).powi(2) + (me.y - target.y).powi(2) + (me.z - target.z).powi(2);
+    if distance_sq > (spell.range_yd as f32).powi(2) {
+        CastPreparation::MoveForRange
+    } else {
+        CastPreparation::Ready
+    }
+}
+
 fn cast_node(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
@@ -192,16 +242,10 @@ fn cast_node(
     {
         return candidate;
     }
-    match crate::actor::cast_readiness(ctx, me.guid, cast.spell, cast.target) {
-        Ok(()) => {}
-        Err(refusal)
-            if matches!(
-                refusal.kind,
-                crate::spell::CastRefusalKind::OutOfRange
-                    | crate::spell::CastRefusalKind::NoLineOfSight
-            ) =>
-        {
-            let repair_reason = if refusal.kind == crate::spell::CastRefusalKind::NoLineOfSight {
+    match cast_preparation(ctx, me, cast.spell, cast.target) {
+        CastPreparation::Ready => {}
+        preparation @ (CastPreparation::MoveForRange | CastPreparation::MoveForLineOfSight) => {
+            let repair_reason = if matches!(preparation, CastPreparation::MoveForLineOfSight) {
                 Reason::CastingPosition
             } else {
                 position_reason
@@ -217,7 +261,7 @@ fn cast_node(
                 .push(node(Action::Hold, repair_reason, priority, objective));
             candidate.prerequisites.push(position);
         }
-        Err(_) => candidate.readiness = Readiness::Refused,
+        CastPreparation::Refused => candidate.readiness = Readiness::Refused,
     }
     candidate
 }

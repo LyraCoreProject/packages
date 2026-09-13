@@ -2,7 +2,8 @@
 //! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
 use super::{
-    pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_kit, PlayerbotsBot,
+    pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_kit, pkg_playerbots_runner,
+    PlayerbotsBot,
 };
 use super::{pkg_playerbots_personality, pkg_playerbots_rotation};
 use crate::nav::game_nav_chunk;
@@ -12,8 +13,8 @@ use crate::{
     game_group_member, game_quest_objective, game_quest_template,
 };
 use crate::{
-    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_effect, game_threat,
-    game_world_entity,
+    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_cooldown,
+    game_spell_effect, game_threat, game_world_entity,
 };
 use crate::{game_group_member_partition, game_group_roster_revision};
 use spacetimedb::{reducer, ReducerContext, Table, TimeDuration};
@@ -26,6 +27,7 @@ const ROLES_PRIEST_TRAINER: u32 = 5_098_200;
 const ROLES_FORTITUDE_OFFERING: u64 = 5_098_201;
 const ROLES_WARRIOR_TRAINER: u32 = 5_098_202;
 const ROLES_TAUNT_OFFERING: u64 = 5_098_203;
+const COMPLETED_QUEST_EFFECT_LIFETIME_MICROS: i64 = 120_000_000;
 
 /// Move the fixture's human stand-in onto an Account no other private party member uses before
 /// exercising the authenticated Gateway Actor Gate.
@@ -811,6 +813,7 @@ pub fn playerbots_fixture_roles_stage(
         1,
     )?;
     for guid in [warrior_guid, priest_guid, mage_guid] {
+        super::runner::playerbots_select_controller(ctx, guid, super::Controller::Frozen)?;
         super::runner::playerbots_select_controller(ctx, guid, super::Controller::Cohort)?;
         runner_park_for(ctx, guid)?;
     }
@@ -1231,6 +1234,14 @@ pub fn playerbots_fixture_roles_priest_mana(
     priest_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    set_fixture_priest_power(ctx, priest_guid, 100)
+}
+
+fn set_fixture_priest_power(
+    ctx: &ReducerContext,
+    priest_guid: u64,
+    power: u32,
+) -> Result<(), String> {
     let bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -1243,7 +1254,7 @@ pub fn playerbots_fixture_roles_priest_mana(
     }
     let mut priest = crate::helpers::live_entity(ctx, priest_guid)?;
     priest.max_power = 100;
-    priest.power = 100;
+    priest.power = power;
     ctx.db.game_world_entity().guid().update(priest);
     Ok(())
 }
@@ -1727,6 +1738,75 @@ pub fn playerbots_fixture_partial_route(ctx: &ReducerContext, guid: u64) -> Resu
     Ok(())
 }
 
+/// Add a second creature beside the blocked-quest target for defensive target selection.
+#[reducer]
+pub fn playerbots_fixture_runner_second_attacker(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    let entry = 5_090_101;
+    let first_guid = fixture_giver();
+    let second_guid = first_guid + 1;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(entry)
+        .ok_or("blocked quest creature template missing")?;
+    let mut first = crate::helpers::live_entity(ctx, first_guid)?;
+    first.health = 1_000;
+    first.max_health = 1_000;
+    ctx.db.game_world_entity().guid().update(first);
+    let spawn = crate::CreatureSpawn {
+        guid: second_guid,
+        entry,
+        map_id: me.map_id,
+        x: me.x + 3.0,
+        y: me.y + 1.0,
+        z: me.z,
+        orientation: 0.0,
+        respawn_at: ctx.timestamp,
+        despawn_at: ctx.timestamp,
+        movement_type: 0,
+        respawn_secs: 60,
+        life_seq: 1,
+    };
+    ctx.db.game_creature_spawn().guid().delete(second_guid);
+    let spawn = ctx.db.game_creature_spawn().insert(spawn);
+    crate::creatures::despawn_creature_entity(ctx, second_guid);
+    let mut second = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+    second.health = 1_000;
+    second.max_health = 1_000;
+    ctx.db.game_world_entity().insert(second);
+    Ok(())
+}
+
+/// Kill one staged creature without granting the bot quest credit.
+#[reducer]
+pub fn playerbots_fixture_runner_kill_creature(
+    ctx: &ReducerContext,
+    killer: u64,
+    target: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let health = crate::helpers::live_entity(ctx, target)?.health;
+    let (amount, _) = crate::combat::fold_incoming_damage(ctx, killer, target, health);
+    let damage = crate::combat::final_damage(ctx, target, amount);
+    let outcome = crate::combat::apply_hit(
+        ctx,
+        killer,
+        target,
+        damage,
+        crate::combat::Hit::weapon(crate::combat::HitSource::MainHand, false),
+    );
+    if !outcome.killed {
+        return Err("fixture creature survived lethal damage".to_string());
+    }
+    Ok(())
+}
+
 const QUEST: u32 = 50910;
 const COLLECT: u32 = 5_090_120;
 const GUARANTEED: u32 = 5_090_121;
@@ -2027,6 +2107,19 @@ pub fn playerbots_fixture_runner_damage(
     Ok(())
 }
 
+/// Apply one real incoming hit, then keep the bot parked for an exact post-hit observation.
+#[reducer]
+pub fn playerbots_fixture_runner_damage_and_park(
+    ctx: &ReducerContext,
+    guid: u64,
+    attacker: u64,
+    damage: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    playerbots_fixture_runner_damage(ctx, guid, attacker, damage)?;
+    runner_park_for(ctx, guid)
+}
+
 #[reducer]
 pub fn playerbots_fixture_runner_due(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
@@ -2062,6 +2155,766 @@ pub fn playerbots_fixture_runner_pass_once(ctx: &ReducerContext, guid: u64) -> R
         return Err(format!("runner pass did not process bot {guid}"));
     }
     runner_park_for(ctx, guid)
+}
+
+/// Install the exact source-derived Smite facts used by the private Runner readiness checks.
+#[reducer]
+pub fn playerbots_fixture_runner_prepare_smite(ctx: &ReducerContext) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    super::quest_catalog_fixture::stage_loopback_smite(ctx)
+}
+
+/// Injure one bot and run its next ordinary pass while the Core cast cooldown is active.
+#[reducer]
+pub fn playerbots_fixture_runner_cooldown_and_pass_once(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::actions::{self, ActionKind};
+    playerbots_fixture_companion_health(ctx, guid, 100)?;
+    set_fixture_priest_power(ctx, guid, 100)?;
+    let fortitude = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(1243)
+        .ok_or("source-derived instant spell 1243 is missing")?;
+    if fortitude.cast_time_ms != 0 || fortitude.gcd_ms == 0 {
+        return Err("source-derived spell 1243 is not an instant GCD spell".to_string());
+    }
+    crate::spell::learn_spell(ctx, guid, spacetimedb::Identity::ZERO, 1243);
+    if !matches!(
+        crate::actor::request_cast(ctx, guid, 1243, guid),
+        Ok(crate::spell::CastStart::Resolved)
+    ) {
+        return Err("fixture Priest could not resolve instant spell 1243".to_string());
+    }
+    set_fixture_priest_power(ctx, guid, 100)?;
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let cooldown = ctx
+        .db
+        .game_spell_cooldown()
+        .caster_guid()
+        .find(guid)
+        .ok_or("Core cast cooldown is missing")?;
+    if cooldown.ready_at.to_micros_since_unix_epoch() <= now {
+        return Err("Core cast cooldown is not active".to_string());
+    }
+    let expected_cooldown = cooldown.ready_at;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let (expected_foreground, expected_spline) =
+        defense_movement(ctx, guid, DefenseMovementKind::Entity)?;
+    playerbots_fixture_companion_health(ctx, guid, 25)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let body = crate::helpers::live_entity(ctx, guid)?;
+    if !defense_movement_is_retained(ctx, guid, &expected_foreground, &expected_spline)?
+        || u64::from(body.health) * 2 >= u64::from(body.max_health)
+        || ctx
+            .db
+            .game_spell_cooldown()
+            .caster_guid()
+            .find(guid)
+            .is_none_or(|cooldown| cooldown.ready_at != expected_cooldown)
+        || actions::observation(ctx, guid, ActionKind::Cast)
+            .is_some_and(|action| action.spell_id == 2050)
+    {
+        return Err(format!(
+            "cooldown pass did not retain the exact Defense movement: {}",
+            recovery_readiness_diagnostic(ctx, guid)?
+        ));
+    }
+    Ok(())
+}
+
+/// Leave a Priest below Recovery's power cost during a retained Defense approach, then run its
+/// next ordinary pass atomically.
+#[reducer]
+pub fn playerbots_fixture_runner_insufficient_recovery_power_and_pass_once(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::actions::{self, ActionKind};
+    playerbots_fixture_companion_health(ctx, guid, 100)?;
+    set_fixture_priest_power(ctx, guid, 100)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let (expected_foreground, expected_spline) =
+        defense_movement(ctx, guid, DefenseMovementKind::CastingPosition)?;
+    playerbots_fixture_companion_health(ctx, guid, 25)?;
+    set_fixture_priest_power(ctx, guid, 25)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let body = crate::helpers::live_entity(ctx, guid)?;
+    if !defense_movement_is_retained(ctx, guid, &expected_foreground, &expected_spline)?
+        || u64::from(body.health) * 2 >= u64::from(body.max_health)
+        || body.power != 25
+        || actions::observation(ctx, guid, ActionKind::Cast)
+            .is_some_and(|action| action.spell_id == 2050)
+    {
+        return Err(format!(
+            "insufficient-power pass did not retain the exact Defense casting position: {}",
+            recovery_readiness_diagnostic(ctx, guid)?
+        ));
+    }
+    Ok(())
+}
+
+/// Retain a Defense cast below Recovery's power cost, then prove a ready Recovery heal can preempt
+/// it.
+#[reducer]
+pub fn playerbots_fixture_runner_pending_defense_then_recovery(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::actions::{self, ActionKind, ActionOutcome};
+    use super::decision::{Action, CastAction, Reason};
+    use super::runner::Running;
+
+    playerbots_fixture_companion_health(ctx, guid, 100)?;
+    set_fixture_priest_power(ctx, guid, 100)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let foreground = state
+        .foreground
+        .as_ref()
+        .ok_or("Defense cast foreground missing")?;
+    let pending = crate::spell::pending_cast(ctx, guid).ok_or("pending Defense cast missing")?;
+    if foreground.candidate.id.action
+        != Action::Cast(CastAction {
+            target: pending.target_guid,
+            spell: 585,
+        })
+        || foreground.candidate.id.reason != Reason::Defense
+        || !matches!(&foreground.running, Running::Cast(handle) if handle == &pending)
+        || state.chosen != Some(foreground.candidate)
+        || ctx
+            .db
+            .game_spell_cooldown()
+            .caster_guid()
+            .find(guid)
+            .is_some_and(|cooldown| {
+                cooldown.ready_at.to_micros_since_unix_epoch()
+                    > ctx.timestamp.to_micros_since_unix_epoch()
+            })
+    {
+        return Err("pending cast is not the Runner's exact Defense Smite".to_string());
+    }
+    let action =
+        actions::observation(ctx, guid, ActionKind::Cast).ok_or("Defense cast action missing")?;
+    if action.spell_id != 585
+        || action.target_guid != pending.target_guid
+        || action.cast_id != pending.scheduled_id
+        || !matches!(action.outcome, ActionOutcome::Waiting(ref handle) if handle == &pending)
+    {
+        return Err("Defense cast action is not the exact pending Smite".to_string());
+    }
+    let expected_foreground = foreground.clone();
+
+    playerbots_fixture_companion_health(ctx, guid, 25)?;
+    set_fixture_priest_power(ctx, guid, 25)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing after insufficient-power cast pass")?;
+    let retained_foreground = retained
+        .foreground
+        .as_ref()
+        .ok_or("Defense cast foreground missing after insufficient-power pass")?;
+    let body = crate::helpers::live_entity(ctx, guid)?;
+    let action = actions::observation(ctx, guid, ActionKind::Cast)
+        .ok_or("retained Defense cast action missing")?;
+    if !same_foreground(&expected_foreground, retained_foreground)
+        || retained.chosen != Some(expected_foreground.candidate)
+        || crate::spell::pending_cast(ctx, guid).as_ref() != Some(&pending)
+        || u64::from(body.health) * 2 >= u64::from(body.max_health)
+        || body.power != 25
+        || action.spell_id != 585
+        || action.target_guid != pending.target_guid
+        || action.cast_id != pending.scheduled_id
+        || !matches!(action.outcome, ActionOutcome::Waiting(ref handle) if handle == &pending)
+    {
+        return Err(format!(
+            "insufficient-power pass did not retain the exact Defense cast: {}",
+            recovery_readiness_diagnostic(ctx, guid)?
+        ));
+    }
+    set_fixture_priest_power(ctx, guid, 100)?;
+    playerbots_fixture_runner_start_and_retain_recovery(ctx, guid)
+}
+
+/// Start the fixture's real Recovery heal and prove another ordinary pass retains it atomically.
+#[reducer]
+pub fn playerbots_fixture_runner_start_and_retain_recovery(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::actions::{self, ActionKind, ActionOutcome};
+    use super::decision::{Action, CastAction, Reason};
+    use super::runner::Running;
+
+    playerbots_fixture_companion_health(ctx, guid, 25)?;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing after Recovery pass")?;
+    let foreground = state
+        .foreground
+        .as_ref()
+        .ok_or("Recovery heal foreground missing")?;
+    let pending = crate::spell::pending_cast(ctx, guid).ok_or("pending Recovery heal missing")?;
+    let body = crate::helpers::live_entity(ctx, guid)?;
+    if foreground.candidate.id.action
+        != Action::Cast(CastAction {
+            target: guid,
+            spell: 2050,
+        })
+        || foreground.candidate.id.reason != Reason::Recovery
+        || !matches!(&foreground.running, Running::Cast(handle) if handle == &pending)
+        || state.chosen != Some(foreground.candidate)
+        || u64::from(body.health) * 2 >= u64::from(body.max_health)
+    {
+        return Err("pending cast is not the Runner's exact Recovery heal".to_string());
+    }
+    let action =
+        actions::observation(ctx, guid, ActionKind::Cast).ok_or("Recovery action missing")?;
+    if action.spell_id != 2050
+        || action.target_guid != guid
+        || action.cast_id != pending.scheduled_id
+        || !matches!(action.outcome, ActionOutcome::Waiting(ref handle) if handle == &pending)
+    {
+        return Err("Recovery action is not the exact pending heal".to_string());
+    }
+    let expected_foreground = foreground.clone();
+
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing after retained Recovery pass")?;
+    let retained_foreground = retained
+        .foreground
+        .as_ref()
+        .ok_or("Recovery heal foreground missing after retained pass")?;
+    if !same_foreground(&expected_foreground, retained_foreground)
+        || retained.chosen != Some(expected_foreground.candidate)
+        || crate::spell::pending_cast(ctx, guid).as_ref() != Some(&pending)
+    {
+        return Err("second pass did not retain the exact Recovery heal".to_string());
+    }
+    let action = actions::observation(ctx, guid, ActionKind::Cast)
+        .ok_or("retained Recovery action missing")?;
+    if action.spell_id != 2050
+        || action.target_guid != guid
+        || action.cast_id != pending.scheduled_id
+        || !matches!(action.outcome, ActionOutcome::Waiting(ref handle) if handle == &pending)
+    {
+        return Err("second pass did not retain the exact Recovery action".to_string());
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum DefenseMovementKind {
+    Entity,
+    CastingPosition,
+}
+
+fn recovery_readiness_diagnostic(ctx: &ReducerContext, guid: u64) -> Result<String, String> {
+    use super::actions::{self, ActionKind};
+
+    let state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing while recording Recovery readiness")?;
+    let body = crate::helpers::live_entity(ctx, guid)?;
+    let recovery_action =
+        actions::observation(ctx, guid, ActionKind::Cast)
+            .filter(|action| action.spell_id == 2050)
+            .map(|action| {
+                (
+                    action.spell_id,
+                    action.target_guid,
+                    action.cast_id,
+                    action.outcome,
+                )
+            });
+    Ok(format!(
+        "chosen={:?}, foreground={:?}, recovery_action={:?}, recovery_readiness={:?}, health={}, max_health={}, power={}, max_power={}",
+        state.chosen,
+        state.foreground,
+        recovery_action,
+        crate::actor::cast_readiness(ctx, guid, 2050, guid),
+        body.health,
+        body.max_health,
+        body.power,
+        body.max_power,
+    ))
+}
+
+fn defense_movement(
+    ctx: &ReducerContext,
+    guid: u64,
+    kind: DefenseMovementKind,
+) -> Result<(super::runner::Foreground, crate::CreatureSpline), String> {
+    use super::decision::{Action, MoveTarget, Reason};
+    use super::runner::Running;
+
+    let state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing")?;
+    let foreground = state
+        .foreground
+        .ok_or("Defense movement foreground missing")?;
+    let target = match (foreground.candidate.id.action, kind) {
+        (Action::Move(MoveTarget::Entity(target)), DefenseMovementKind::Entity)
+        | (
+            Action::Move(MoveTarget::CastingPosition(target)),
+            DefenseMovementKind::CastingPosition,
+        ) if foreground.candidate.id.reason == Reason::Defense
+            && matches!(foreground.running, Running::Movement(_)) =>
+        {
+            target
+        }
+        _ => return Err("Runner is not retaining the expected Defense movement".to_string()),
+    };
+    if state.chosen != Some(foreground.candidate) || crate::spell::pending_cast(ctx, guid).is_some()
+    {
+        return Err("Defense movement is not the Runner's sole active work".to_string());
+    }
+    let spline = ctx
+        .db
+        .game_creature_spline()
+        .guid()
+        .find(guid)
+        .ok_or_else(|| {
+            format!("Defense movement toward {target} is not active")
+        })?;
+    Ok((foreground, spline))
+}
+
+fn defense_movement_is_retained(
+    ctx: &ReducerContext,
+    guid: u64,
+    expected_foreground: &super::runner::Foreground,
+    expected_spline: &crate::CreatureSpline,
+) -> Result<bool, String> {
+    let state = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .ok_or("runner missing after atomic pass")?;
+    let Some(foreground) = state.foreground.as_ref() else {
+        return Ok(false);
+    };
+    let Some(spline) = ctx.db.game_creature_spline().guid().find(guid) else {
+        return Ok(false);
+    };
+    let body = crate::helpers::live_entity(ctx, guid)?;
+    let observed_current_body = matches!(
+        &foreground.running,
+        super::runner::Running::Movement(run)
+            if run.from_x == body.x && run.from_y == body.y
+    );
+    Ok(state.chosen == Some(expected_foreground.candidate)
+        && crate::spell::pending_cast(ctx, guid).is_none()
+        && same_foreground(expected_foreground, foreground)
+        && same_spline(expected_spline, &spline)
+        && observed_current_body)
+}
+
+fn same_foreground(before: &super::runner::Foreground, after: &super::runner::Foreground) -> bool {
+    use super::runner::Running;
+
+    before.candidate == after.candidate
+        && before.generation == after.generation
+        && before.map_id == after.map_id
+        && before.instance_id == after.instance_id
+        && before.started_micros == after.started_micros
+        && match (&before.running, &after.running) {
+            (Running::Cast(before), Running::Cast(after)) => before == after,
+            (Running::Movement(before), Running::Movement(after)) => {
+                before.destination == after.destination
+            }
+            _ => false,
+        }
+}
+
+fn same_spline(before: &crate::CreatureSpline, after: &crate::CreatureSpline) -> bool {
+    before.guid == after.guid
+        && before.start_micros == after.start_micros
+        && before.dur_ms == after.dur_ms
+        && before.sx == after.sx
+        && before.sy == after.sy
+        && before.sz == after.sz
+        && before.dx == after.dx
+        && before.dy == after.dy
+        && before.dz == after.dz
+        && before.map_id == after.map_id
+        && before.instance_id == after.instance_id
+        && before.grid_x == after.grid_x
+        && before.grid_y == after.grid_y
+        && before.spline_id == after.spline_id
+        && before.run == after.run
+        && before.cell == after.cell
+        && before.facing == after.facing
+        && before.facing_angle == after.facing_angle
+}
+
+/// Put an admitted Quest at its source with no live target so a test can observe its bounded wait.
+#[reducer]
+pub fn playerbots_fixture_runner_stage_completed_quest_wait(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::quest_catalog::{
+        pkg_playerbots_quest_objective, CatalogObjectiveKind, ObjectiveExecutor,
+    };
+    use super::runner::{ObjectiveKind, ObjectiveStage};
+
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(guid)
+        .ok_or("retained Quest missing")?;
+    if retained.target.kind != CatalogObjectiveKind::KillCreature
+        || retained.target.executor != ObjectiveExecutor::Attack
+    {
+        return Err("completed Quest fixture requires a creature Fight".to_string());
+    }
+    let target_entry = retained.target.target_entry;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("Quest objective missing")?;
+    if objective.kind != ObjectiveKind::Quest
+        || objective.identity != retained.runner_objective_identity
+    {
+        return Err("retained Quest does not own the Runner objective".to_string());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    objective.stage = ObjectiveStage::Completed;
+    objective.last_verified_progress_micros = Some(now);
+    objective.deadline_micros = now.saturating_add(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS);
+    let destination = objective.destination.clone();
+    state.chosen = None;
+    state.candidate_order.clear();
+    state.foreground = None;
+    state.recovery = None;
+    state.failures.clear();
+    state.retry_candidate = None;
+    state.retry_count = 0;
+    state.next_eligible_micros = now;
+    rows.character_guid().update(state);
+
+    let _ = crate::actor::stop_attack(ctx, guid);
+    ctx.db.game_creature_spline().guid().delete(guid);
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.map_id = destination.map_id;
+    me.instance_id = destination.instance_id;
+    me.x = destination.x;
+    me.y = destination.y;
+    me.z = destination.z;
+    me.orientation = 0.0;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(me.x, me.y);
+    me.grid_x = grid_x;
+    me.grid_y = grid_y;
+    me.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(me);
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    bot.home_map = destination.map_id;
+    bot.home_x = destination.x;
+    bot.home_y = destination.y;
+    bot.home_z = destination.z;
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+
+    let targets: Vec<_> = ctx
+        .db
+        .game_world_entity()
+        .by_map()
+        .filter(&destination.map_id)
+        .filter(|entity| {
+            crate::helpers::in_same_partition(entity, destination.map_id, destination.instance_id)
+                && !entity.is_player()
+                && entity.entry == target_entry
+                && !entity.dead
+        })
+        .map(|entity| entity.guid)
+        .collect();
+    if targets.is_empty() {
+        return Err("completed Quest fixture has no live target".to_string());
+    }
+    for target in targets {
+        crate::creatures::despawn_creature_entity(ctx, target);
+    }
+    runner_park_for(ctx, guid)
+}
+
+/// Advance only the fixture's completed-Quest wait clock to its normal 120-second boundary.
+#[reducer]
+pub fn playerbots_fixture_runner_expire_completed_quest_wait(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::runner::{ObjectiveKind, ObjectiveStage};
+
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("Quest objective missing")?;
+    if objective.kind != ObjectiveKind::Quest || objective.stage != ObjectiveStage::Completed {
+        return Err("Runner is not waiting at a completed Quest destination".to_string());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    objective.last_verified_progress_micros =
+        Some(now.saturating_sub(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS));
+    objective.deadline_micros = now.saturating_add(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS);
+    rows.character_guid().update(state);
+    runner_park_for(ctx, guid)
+}
+
+/// Retain a completed Quest Fight so a foreign hit can exercise Recovery's effect ownership check.
+#[reducer]
+pub fn playerbots_fixture_runner_stage_completed_quest_fight(
+    ctx: &ReducerContext,
+    guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use super::decision::{Action, Candidate, CandidateId, Reason};
+    use super::quest_catalog::{
+        pkg_playerbots_quest_objective, CatalogObjectiveKind, ObjectiveExecutor,
+    };
+    use super::recovery::{Attempt, Recovery, Work};
+    use super::runner::{Destination, ObjectiveKind, ObjectiveStage};
+
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(guid)
+        .ok_or("retained Quest missing")?;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let objective = state.objective.as_mut().ok_or("Quest objective missing")?;
+    if objective.kind != ObjectiveKind::Quest
+        || objective.identity != retained.runner_objective_identity
+        || retained.target.kind != CatalogObjectiveKind::KillCreature
+        || retained.target.executor != ObjectiveExecutor::Attack
+    {
+        return Err("retained Quest does not own a creature objective".to_string());
+    }
+    let mut target = crate::helpers::live_entity(ctx, target_guid)?;
+    if target.entry != retained.target.target_entry || target.dead {
+        return Err("Quest Fight target differs from the retained source".to_string());
+    }
+    target.health = 100;
+    target.max_health = 100;
+    let target_map = target.map_id;
+    let target_instance = target.instance_id;
+    let target_x = target.x;
+    let target_y = target.y;
+    let target_z = target.z;
+    let target_health = target.health;
+    ctx.db.game_world_entity().guid().update(target);
+    let other_targets: Vec<_> = ctx
+        .db
+        .game_world_entity()
+        .by_map()
+        .filter(&target_map)
+        .filter(|entity| {
+            crate::helpers::in_same_partition(entity, target_map, target_instance)
+                && entity.guid != target_guid
+                && entity.entry == retained.target.target_entry
+                && !entity.dead
+        })
+        .map(|entity| entity.guid)
+        .collect();
+    for other_target in other_targets {
+        crate::creatures::despawn_creature_entity(ctx, other_target);
+    }
+    let _ = crate::actor::stop_attack(ctx, guid);
+    ctx.db.game_creature_spline().guid().delete(guid);
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.map_id = target_map;
+    me.instance_id = target_instance;
+    me.x = target_x;
+    me.y = target_y;
+    me.z = target_z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(me.x, me.y);
+    me.grid_x = grid_x;
+    me.grid_y = grid_y;
+    me.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(me);
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    objective.stage = ObjectiveStage::Completed;
+    objective.last_verified_progress_micros = Some(now);
+    objective.deadline_micros = now.saturating_add(COMPLETED_QUEST_EFFECT_LIFETIME_MICROS);
+    let candidate = Candidate {
+        id: CandidateId {
+            action: Action::Attack(target_guid),
+            reason: Reason::Quest,
+            objective: objective.identity,
+        },
+        priority: 110,
+    };
+    let destination = Destination {
+        map_id: target_map,
+        instance_id: target_instance,
+        x: target_x,
+        y: target_y,
+        z: target_z,
+        geometry_revision: crate::nav::coverage_generation(ctx, target_map),
+    };
+    state.chosen = Some(candidate);
+    state.candidate_order = vec![candidate];
+    state.foreground = None;
+    state.recovery = Some(Recovery {
+        attempts: vec![Attempt {
+            work: Work::Fight(target_guid),
+            reason: Reason::Quest,
+            destination,
+            geometry: crate::nav::inputs(ctx, target_map),
+            objective: candidate.id.objective,
+            last_observed_micros: now,
+            stalled_micros: 0,
+            target_health: Some(target_health),
+            position: None,
+            route: None,
+            last_movement: None,
+            deferred_until_micros: None,
+        }],
+        active: Some(Work::Fight(target_guid)),
+        position_sequence: 0,
+    });
+    state.retry_candidate = None;
+    state.retry_count = 0;
+    state.next_eligible_micros = now;
+    rows.character_guid().update(state);
+    runner_park_for(ctx, guid)
+}
+
+/// Retain the three ordinary attempts that leave Recovery's fourth slot available for Heal.
+#[reducer]
+pub fn playerbots_fixture_runner_stage_recovery_capacity(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    if state.foreground.is_some() {
+        return Err("runner has foreground work".to_string());
+    }
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
+    let identity = state
+        .objective_sequence
+        .checked_add(1)
+        .ok_or("objective identity exhausted")?;
+    let destination = super::runner::Destination {
+        map_id: bot.home_map,
+        instance_id: 0,
+        x: bot.home_x,
+        y: bot.home_y,
+        z: bot.home_z,
+        geometry_revision: crate::nav::coverage_generation(ctx, bot.home_map),
+    };
+    state.objective_sequence = identity;
+    state.objective = Some(super::runner::Objective {
+        identity,
+        kind: super::runner::ObjectiveKind::ReturnHome,
+        destination: destination.clone(),
+        stage: super::runner::ObjectiveStage::Travelling,
+        deadline_micros: now.saturating_add(120_000_000),
+        last_verified_progress_micros: None,
+        started_micros: now,
+        catalog_revision: 1,
+    });
+    state.chosen = None;
+    state.failures.clear();
+    state.retry_count = 0;
+    state.next_eligible_micros = now;
+    state.retry_candidate = None;
+    state.recovery = Some(super::recovery::Recovery {
+        attempts: [1u64, 2, 3]
+            .into_iter()
+            .map(|target| super::recovery::Attempt {
+                work: super::recovery::Work::Fight(target),
+                reason: super::decision::Reason::Grind,
+                destination: destination.clone(),
+                geometry: crate::nav::inputs(ctx, me.map_id),
+                objective: identity,
+                last_observed_micros: now,
+                stalled_micros: 1_000_000,
+                target_health: None,
+                position: None,
+                route: None,
+                last_movement: None,
+                deferred_until_micros: None,
+            })
+            .collect(),
+        active: None,
+        position_sequence: 0,
+    });
+    rows.character_guid().update(state);
+    Ok(())
+}
+
+/// Move the oldest retained ordinary attempt to its normal 30-second expiry boundary.
+#[reducer]
+pub fn playerbots_fixture_runner_expire_recovery_capacity(
+    ctx: &ReducerContext,
+    guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut state = rows.character_guid().find(guid).ok_or("runner missing")?;
+    let attempt = state
+        .recovery
+        .as_mut()
+        .and_then(|recovery| recovery.attempts.first_mut())
+        .ok_or("recovery attempt missing")?;
+    attempt.last_observed_micros = ctx
+        .timestamp
+        .to_micros_since_unix_epoch()
+        .saturating_sub(super::recovery::DEFER_MICROS);
+    rows.character_guid().update(state);
+    Ok(())
 }
 
 /// Select controlled companion behavior without opening a scheduler gap before the fixture's first

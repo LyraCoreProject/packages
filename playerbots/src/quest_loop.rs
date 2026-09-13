@@ -191,7 +191,33 @@ pub(super) fn live_creature_target(
     eligible_work: impl Fn(u64) -> bool,
 ) -> LiveCreatureTarget {
     let search = search_entities(ctx, me, false, |target| target.entry == entry);
-    select_live_target(ctx, me, search, eligible_work, None, None)
+    select_live_target(
+        ctx,
+        me,
+        search,
+        eligible_work,
+        Some(super::goals::pick_salt(ctx, me.guid)),
+        None,
+    )
+}
+
+fn preferred_creature(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    source: &CatalogDestination,
+    guid: u64,
+) -> Option<crate::WorldEntity> {
+    if source.kind == CatalogEntityKind::Creature {
+        ctx.db.game_world_entity().guid().find(guid)
+    } else {
+        None
+    }
+    .filter(|target| {
+        target.entry == source.entry
+            && (target.map_id, target.instance_id) == (me.map_id, me.instance_id)
+            && distance_sq(me, target.x, target.y, target.z)
+                <= SEARCH_RADIUS_YD * SEARCH_RADIUS_YD
+    })
 }
 
 pub(super) fn grind_target(
@@ -228,10 +254,21 @@ fn select_live_target(
     preferred: Option<u64>,
 ) -> LiveCreatureTarget {
     let mut deferred = false;
+    let mut read_limited = false;
     let mut eligible: Vec<_> = search
         .rows
         .into_iter()
         .filter(|target| crate::combat::validate_attack_target(ctx, me, target.guid).is_ok())
+        .filter(|target| {
+            match crate::loot::tag::live_loot_tag_eligibility(ctx, target.guid, me.guid) {
+                crate::loot::tag::LiveLootTagEligibility::Available => true,
+                crate::loot::tag::LiveLootTagEligibility::Foreign => false,
+                crate::loot::tag::LiveLootTagEligibility::ReadLimit => {
+                    read_limited = true;
+                    false
+                }
+            }
+        })
         .filter(|target| {
             let eligible = eligible_work(target.guid);
             deferred |= !eligible;
@@ -275,7 +312,7 @@ fn select_live_target(
             .unwrap_or(0);
         return LiveCreatureTarget::Found(found.swap_remove(index));
     }
-    if search.exhausted {
+    if search.exhausted || read_limited {
         LiveCreatureTarget::ReadLimit
     } else if controlled {
         LiveCreatureTarget::Controlled
@@ -333,6 +370,83 @@ fn entitled_corpse(
     } else {
         Search::Missing
     }
+}
+
+fn preferred_creature_plan(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    source: &CatalogDestination,
+    preferred_guid: u64,
+    quest: u32,
+    loot_item: Option<u32>,
+    eligible_work: &impl Fn(u64) -> bool,
+) -> Option<QuestPlan> {
+    let preferred = preferred_creature(ctx, me, source, preferred_guid)?;
+    if preferred.dead {
+        let item = loot_item?;
+        if crate::loot::corpse_access(ctx, me.guid, preferred.guid).is_err() {
+            return None;
+        }
+        return match wanted_loot_slot(ctx, preferred.guid, item) {
+            Search::Found(slot) => Some(QuestPlan::LootCreature {
+                quest,
+                corpse: preferred.guid,
+                slot,
+            }),
+            Search::Limit => Some(QuestPlan::Wait(WaitReason::ReadLimit)),
+            Search::Missing => None,
+        };
+    }
+    let search = EntitySearch {
+        rows: vec![preferred],
+        exhausted: false,
+    };
+    match select_live_target(ctx, me, search, eligible_work, None, Some(preferred_guid)) {
+        LiveCreatureTarget::Found(target) => Some(QuestPlan::Attack {
+            quest,
+            target: target.guid,
+        }),
+        LiveCreatureTarget::ReadLimit => Some(QuestPlan::Wait(WaitReason::ReadLimit)),
+        LiveCreatureTarget::Missing
+        | LiveCreatureTarget::Deferred
+        | LiveCreatureTarget::Controlled => None,
+    }
+}
+
+fn creature_plan(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    source: &CatalogDestination,
+    active_fight: Option<u64>,
+    quest: u32,
+    loot_item: Option<u32>,
+    eligible_work: &impl Fn(u64) -> bool,
+) -> Option<QuestPlan> {
+    let preferred = active_fight.unwrap_or(source.guid);
+    preferred_creature_plan(
+        ctx,
+        me,
+        source,
+        preferred,
+        quest,
+        loot_item,
+        eligible_work,
+    )
+    .or_else(|| {
+        (preferred != source.guid)
+            .then(|| {
+                preferred_creature_plan(
+                    ctx,
+                    me,
+                    source,
+                    source.guid,
+                    quest,
+                    loot_item,
+                    eligible_work,
+                )
+            })
+            .flatten()
+    })
 }
 
 fn gameobject_work(
@@ -404,6 +518,7 @@ pub(super) fn plan(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
     retained: &PlayerbotsQuestObjective,
+    active_fight: Option<u64>,
     eligible_fight: impl Fn(u64) -> bool,
 ) -> QuestPlan {
     let quest = retained.quest_entry;
@@ -435,6 +550,11 @@ pub(super) fn plan(
     };
     match retained.target.executor {
         ObjectiveExecutor::Attack => {
+            if let Some(plan) =
+                creature_plan(ctx, me, source, active_fight, quest, None, &eligible_fight)
+            {
+                return plan;
+            }
             match live_creature_target(ctx, me, source.entry, &eligible_fight) {
                 LiveCreatureTarget::Found(target) => QuestPlan::Attack {
                     quest,
@@ -447,13 +567,35 @@ pub(super) fn plan(
             }
         }
         ObjectiveExecutor::CreatureLoot => {
+            if let Some(plan) = creature_plan(
+                ctx,
+                me,
+                source,
+                active_fight,
+                quest,
+                Some(retained.target.target_entry),
+                &eligible_fight,
+            ) {
+                return plan;
+            }
             match entitled_corpse(ctx, me, source.entry, retained.target.target_entry) {
                 Search::Found((corpse, slot)) => QuestPlan::LootCreature {
                     quest,
                     corpse,
                     slot,
                 },
-                Search::Limit => QuestPlan::Wait(WaitReason::ReadLimit),
+                Search::Limit => {
+                    match live_creature_target(ctx, me, source.entry, &eligible_fight) {
+                        LiveCreatureTarget::Found(target) => QuestPlan::Attack {
+                            quest,
+                            target: target.guid,
+                        },
+                        LiveCreatureTarget::ReadLimit
+                        | LiveCreatureTarget::Missing
+                        | LiveCreatureTarget::Deferred
+                        | LiveCreatureTarget::Controlled => QuestPlan::Wait(WaitReason::ReadLimit),
+                    }
+                }
                 Search::Missing => {
                     match live_creature_target(ctx, me, source.entry, &eligible_fight) {
                         LiveCreatureTarget::Found(target) => QuestPlan::Attack {
@@ -531,15 +673,10 @@ pub(super) fn combat_strategy(
         if crate::spell::pending_cast(ctx, me.guid)
             .is_none_or(|pending| pending.spell_id != spell || pending.target_guid != target)
         {
-            match crate::actor::cast_readiness(ctx, me.guid, spell, target) {
-                Ok(()) => {}
-                Err(refusal)
-                    if matches!(
-                        refusal.kind,
-                        crate::spell::CastRefusalKind::OutOfRange
-                            | crate::spell::CastRefusalKind::NoLineOfSight
-                    ) =>
-                {
+            match super::companion::cast_preparation(ctx, me, spell, target) {
+                super::companion::CastPreparation::Ready => {}
+                super::companion::CastPreparation::MoveForRange
+                | super::companion::CastPreparation::MoveForLineOfSight => {
                     selected.prerequisites.push(action_node(
                         Action::Move(MoveTarget::CastingPosition(target)),
                         reason,
@@ -547,7 +684,9 @@ pub(super) fn combat_strategy(
                         objective,
                     ));
                 }
-                Err(_) => selected.readiness = Readiness::Refused,
+                super::companion::CastPreparation::Refused => {
+                    selected.readiness = Readiness::Refused;
+                }
             }
         }
         return Ok(selected);
@@ -693,7 +832,9 @@ pub(super) fn strategy(
     if away
         && matches!(
             plan,
-            QuestPlan::Wait(WaitReason::MissingTarget | WaitReason::Respawn)
+            QuestPlan::Wait(
+                WaitReason::MissingTarget | WaitReason::ReadLimit | WaitReason::Respawn
+            )
         )
     {
         selected.prerequisites.insert(0, travel);

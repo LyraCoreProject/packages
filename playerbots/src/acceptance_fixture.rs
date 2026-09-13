@@ -1242,9 +1242,6 @@ fn advance_unreachable_giver_fault(
         let Some(giver) = ctx.db.game_world_entity().guid().find(row.giver_guid) else {
             return;
         };
-        let Some(attempt) = matching_giver_attempt(&runner, row.giver_guid) else {
-            return;
-        };
         let Some(deferred) = runner.deferred_destinations.iter().find(|deferred| {
             deferred.destination.map_id == giver.map_id
                 && deferred.destination.instance_id == giver.instance_id
@@ -1260,15 +1257,26 @@ fn advance_unreachable_giver_fault(
             }
             return;
         };
-        if attempt.deferred_until_micros != Some(deferred.until_micros) {
-            row.restore_error = Some("deferred destination does not match its attempt".to_string());
-            ctx.db
-                .pkg_playerbots_acceptance_unreachable_giver_fault()
-                .character_guid()
-                .update(row);
+        let deferred_micros = if let Some(attempt) = matching_giver_attempt(&runner, row.giver_guid)
+        {
+            if attempt.deferred_until_micros != Some(deferred.until_micros) {
+                row.restore_error =
+                    Some("deferred destination does not match its attempt".to_string());
+                ctx.db
+                    .pkg_playerbots_acceptance_unreachable_giver_fault()
+                    .character_guid()
+                    .update(row);
+                return;
+            }
+            attempt.last_observed_micros
+        } else if row.maximum_approach >= 2 {
+            deferred
+                .until_micros
+                .saturating_sub(super::recovery::DEFER_MICROS)
+        } else {
             return;
-        }
-        row.deferred_micros = Some(attempt.last_observed_micros);
+        };
+        row.deferred_micros = Some(deferred_micros);
         row.deferred_until_micros = Some(deferred.until_micros);
         if let Some((id, credit)) = quest_row_state(ctx, row.character_guid, row.quest_entry) {
             row.quest_id_at_deferral = Some(id);
@@ -1921,9 +1929,10 @@ fn stage_journey_for(
             plan.seed, plan.class, plan.role, bot.class, bot.role
         ));
     }
-    if bot.controller != Controller::Legacy {
-        return Err("acceptance journey setup requires Legacy control".to_string());
+    if bot.controller != Controller::Cohort {
+        return Err("acceptance journey setup requires new Cohort control".to_string());
     }
+    super::runner::playerbots_select_controller(ctx, character_guid, Controller::Frozen)?;
 
     playerbots_acceptance_resolve_seed_plan(ctx, plan.seed)?;
     let journeys = ctx.db.pkg_playerbots_acceptance_journey();
@@ -2087,7 +2096,7 @@ pub fn playerbots_acceptance_stage_journey(ctx: &ReducerContext, seed: u64) -> R
         return if journey.seed == seed {
             let bot = exact_bot(ctx, journey.character_guid)?;
             if (bot.class, bot.role) == (journey.class, journey.role)
-                && bot.controller == Controller::Legacy
+                && bot.controller == Controller::Frozen
                 && journey.journey_started_micros.is_none()
                 && journey.first_due_micros.is_none()
             {
@@ -2138,8 +2147,8 @@ pub fn playerbots_acceptance_begin_journey(
             Err("acceptance journey start state is inconsistent".to_string())
         };
     }
-    if bot.controller != Controller::Legacy {
-        return Err("acceptance journey must begin from Legacy control".to_string());
+    if bot.controller != Controller::Frozen {
+        return Err("acceptance journey must begin from Frozen control".to_string());
     }
 
     let started_micros = ctx.timestamp.to_micros_since_unix_epoch();
@@ -2250,6 +2259,22 @@ fn stage_level_gap_history(ctx: &ReducerContext, character_guid: u64) -> Result<
     Ok(())
 }
 
+fn stage_level_gap_graveyard(ctx: &ReducerContext, character_guid: u64) -> Result<(), String> {
+    let entity = crate::helpers::live_entity(ctx, character_guid)?;
+    let graveyards = ctx.db.game_graveyard();
+    let mut graveyard = graveyards
+        .id()
+        .find(JOURNEY_GRAVEYARD_ID)
+        .ok_or("level-gap graveyard is missing")?;
+    graveyard.map_id = entity.map_id;
+    graveyard.x = entity.x;
+    graveyard.y = entity.y;
+    graveyard.z = entity.z;
+    graveyard.name = "Acceptance level-gap graveyard".to_string();
+    graveyards.id().update(graveyard);
+    Ok(())
+}
+
 /// Stage the source-derived level-seven boundary without granting XP or changing level after start.
 #[reducer]
 pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(), String> {
@@ -2274,6 +2299,7 @@ pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(),
         (1_200.0, 1_200.0, 50.0),
         5,
     )?;
+    stage_level_gap_graveyard(ctx, character_guid)?;
     super::quest_catalog_fixture::stage_named_with_rotation(ctx, character_guid, 0)?;
     stage_level_gap_history(ctx, character_guid)?;
     let templates = ctx.db.game_quest_template();

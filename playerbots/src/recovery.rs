@@ -8,7 +8,7 @@ use spacetimedb::ReducerContext;
 
 const CHANGE_APPROACH_MICROS: i64 = 10_000_000;
 const ATTEMPT_LIMIT_MICROS: i64 = 30_000_000;
-const DEFER_MICROS: i64 = 30_000_000;
+pub(super) const DEFER_MICROS: i64 = 30_000_000;
 const MEMORY_LIMIT: usize = 4;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +351,36 @@ impl Recovery {
             )
     }
 
+    pub(super) fn active_quest_creature(
+        &self,
+        ctx: &ReducerContext,
+        me: &crate::WorldEntity,
+        objective: u64,
+    ) -> Option<u64> {
+        let active = self.active?;
+        let target = match active {
+            Work::Fight(target) => target,
+            Work::Quest(QuestWork {
+                step,
+                operation: QuestOperation::LootCreature,
+            }) => step.target,
+            _ => return None,
+        };
+        let attempt = self
+            .attempts
+            .iter()
+            .find(|attempt| {
+                attempt.work == active
+                    && attempt.reason == Reason::Quest
+                    && attempt.objective == objective
+                    && attempt.deferred_until_micros.is_none()
+            })?;
+        ((attempt.destination.map_id, attempt.destination.instance_id)
+            == (me.map_id, me.instance_id)
+            && attempt.geometry == crate::nav::inputs(ctx, me.map_id))
+            .then_some(target)
+    }
+
     /// Observe the previous action before objective reconciliation or the next proposal can replace it.
     pub(super) fn observe(
         &mut self,
@@ -360,12 +390,21 @@ impl Recovery {
         now: i64,
     ) -> Option<Deferral> {
         let geometry = crate::nav::inputs(ctx, me.map_id);
+        let quest_objective = state
+            .objective
+            .as_ref()
+            .filter(|objective| objective.kind == ObjectiveKind::Quest)
+            .map(|objective| objective.identity);
         self.attempts.retain(|attempt| {
             let retain = (attempt.destination.map_id, attempt.destination.instance_id)
                 == (me.map_id, me.instance_id)
                 && attempt.geometry == geometry
                 && match attempt.deferred_until_micros {
-                    Some(until) => until > now,
+                    Some(until) => {
+                        until > now
+                            || (attempt.reason == Reason::Quest
+                                && quest_objective == Some(attempt.objective))
+                    }
                     None => {
                         self.active == Some(attempt.work)
                             || now.saturating_sub(attempt.last_observed_micros) < DEFER_MICROS
@@ -422,15 +461,32 @@ impl Recovery {
         let positioning = state
             .chosen
             .is_some_and(|candidate| matches!(candidate.id.action, Action::Move(_)));
+        let provisioning = state
+            .chosen
+            .is_some_and(|candidate| candidate.id.reason == Reason::Provisioning);
         let health_progress = !positioning
             && match (attempt.work, attempt.target_health, health) {
                 (Work::Fight(_), Some(before), Some(after)) => after < before,
                 (Work::Heal(_), Some(before), Some(after)) => after > before,
                 _ => false,
             };
-        if health_progress || matches!((attempt.work, health), (Work::Fight(_), Some(0))) {
+        let fight_ended = matches!((attempt.work, health), (Work::Fight(_), Some(0)));
+        let quest_effect = match (attempt.reason, attempt.work, health) {
+            (Reason::Quest, Work::Fight(target), Some(0)) => {
+                let recipients = crate::loot::corpse_eligible_recipients(ctx, target);
+                crate::loot::corpse_eligible_for_access(&recipients, me.guid)
+            }
+            (Reason::Quest, Work::Fight(target), Some(_)) if health_progress => matches!(
+                crate::loot::tag::live_loot_tag_eligibility(ctx, target, me.guid),
+                crate::loot::tag::LiveLootTagEligibility::Available
+            ),
+            (Reason::Quest, Work::Fight(_), _) => false,
+            _ => true,
+        };
+        if health_progress || fight_ended {
             if let Some(objective) = &mut state.objective {
                 if objective.identity == attempt.objective
+                    && quest_effect
                     && matches!(
                         attempt.reason,
                         Reason::ReturnHome | Reason::Follow | Reason::Quest | Reason::Transfer
@@ -450,18 +506,24 @@ impl Recovery {
         }
         let advanced = movement_progress(ctx, me, state, attempt.last_movement.as_ref())
             .is_some_and(|(route, observation, advanced)| {
-                attempt.route = Some(route);
-                attempt.last_movement = Some(observation);
-                advanced
-                    && state.foreground.as_ref().is_some_and(|foreground| {
-                        !matches!(
-                            foreground.candidate.id.action,
-                            Action::Move(MoveTarget::RecoveryPosition(_))
-                        )
-                    })
+                let ordinary = state.foreground.as_ref().is_some_and(|foreground| {
+                    !matches!(
+                        foreground.candidate.id.action,
+                        Action::Move(MoveTarget::RecoveryPosition(_))
+                    )
+                });
+                if ordinary {
+                    attempt.route = Some(route);
+                    attempt.last_movement = Some(observation);
+                }
+                advanced && ordinary
             });
         if advanced {
-            attempt.stalled_micros = 0;
+            // After an approach was needed, movement can pause the stalled clock but only an
+            // authoritative work effect can erase the time already spent without progress.
+            if attempt.stalled_micros < CHANGE_APPROACH_MICROS {
+                attempt.stalled_micros = 0;
+            }
             attempt.position = None;
             if let Some(objective) = &mut state.objective {
                 if objective.identity == attempt.objective
@@ -470,7 +532,9 @@ impl Recovery {
                         Reason::ReturnHome | Reason::Follow | Reason::Quest | Reason::Transfer
                     )
                 {
-                    objective.last_verified_progress_micros = Some(now);
+                    if objective.kind != ObjectiveKind::Quest {
+                        objective.last_verified_progress_micros = Some(now);
+                    }
                     objective.deadline_micros = if objective.kind == ObjectiveKind::Companion {
                         i64::MAX
                     } else {
@@ -478,7 +542,7 @@ impl Recovery {
                     };
                 }
             }
-        } else {
+        } else if !provisioning {
             attempt.stalled_micros = attempt
                 .stalled_micros
                 .saturating_add(now.saturating_sub(attempt.last_observed_micros).max(0));
@@ -499,6 +563,43 @@ impl Recovery {
             });
         }
         None
+    }
+
+    pub(super) fn retain_quest_objective(
+        &mut self,
+        objective: u64,
+        deferred_destinations: &mut Vec<super::runner::DeferredDestination>,
+        objective_deferral: Option<&super::runner::DeferredDestination>,
+    ) {
+        let removed: Vec<_> = self
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.reason == Reason::Quest && attempt.objective != objective)
+            .map(|attempt| {
+                (
+                    attempt.work,
+                    attempt.destination.clone(),
+                    attempt.deferred_until_micros,
+                )
+            })
+            .collect();
+        self.attempts
+            .retain(|attempt| attempt.reason != Reason::Quest || attempt.objective == objective);
+        if removed
+            .iter()
+            .any(|(work, _, _)| Some(*work) == self.active)
+        {
+            self.active = None;
+        }
+        for (_, destination, until_micros) in removed {
+            deferred_destinations.retain(|deferred| {
+                objective_deferral.is_some_and(|objective| {
+                    objective.destination == deferred.destination
+                        && objective.until_micros == deferred.until_micros
+                }) || deferred.destination != destination
+                    || Some(deferred.until_micros) != until_micros
+            });
+        }
     }
 
     pub(super) fn select(

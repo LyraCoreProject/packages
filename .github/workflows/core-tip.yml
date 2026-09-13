@@ -115,7 +115,7 @@ jobs:
   playerbots-durable:
     needs: firewall
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       RUSTUP_TOOLCHAIN: 1.93.0
       SPACETIME_VERSION: 2.7.1
@@ -135,7 +135,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 2347fca0635d95b7ee661d519a27d2b6c5832548
+          ref: 27d6f5337276dc461cdb376927ada8f4e5c9017b
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -197,6 +197,13 @@ jobs:
           repository: LyraCoreProject/packages
           ref: 155c9e401afb06d5731acedf8fc35a81dbe4aaa6
           path: preceding-pb002-collection
+          persist-credentials: false
+      - name: Check out the policy comparison Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 50e2cd10870d2cfb4a36018bbbd559f9d07c2062
+          path: comparison-collection
           persist-credentials: false
       - name: Build the merged PB-002 Wasm for populated companion migration
         working-directory: preceding-pb002-core
@@ -273,6 +280,7 @@ jobs:
           echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
+          echo "PLAYERBOTS_COMPANION_COMPARISON_COLLECTION=$GITHUB_WORKSPACE/comparison-collection" >> "$GITHUB_ENV"
       - name: Check out the merged PB-006 Module source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -647,7 +655,7 @@ jobs:
                 --test playerbots_roles --test playerbots_quest_loops \
                 --test playerbots_recovery --test playerbots_recovery_failures \
                 --test playerbots_recovery_casting --test playerbots_recovery_geometry \
-                --test playerbots_orders \
+                --test playerbots_orders --test playerbots_imported_fixture \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
@@ -681,7 +689,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 2347fca0635d95b7ee661d519a27d2b6c5832548
+          ref: 27d6f5337276dc461cdb376927ada8f4e5c9017b
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -902,7 +910,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 2347fca0635d95b7ee661d519a27d2b6c5832548
+          ref: 27d6f5337276dc461cdb376927ada8f4e5c9017b
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1089,11 +1097,18 @@ jobs:
         with:
           path: collection
           persist-credentials: false
+      - name: Check out the policy comparison Package source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 50e2cd10870d2cfb4a36018bbbd559f9d07c2062
+          path: comparison-collection
+          persist-credentials: false
       - name: Check out merged PB-011 Core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 2347fca0635d95b7ee661d519a27d2b6c5832548
+          ref: 27d6f5337276dc461cdb376927ada8f4e5c9017b
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1137,6 +1152,7 @@ jobs:
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/playerbots-composition-target
           LYRACORE_WIRE_BIN: ${{ runner.temp }}/playerbots-composition-target/release/vanilla-wire
+          PLAYERBOTS_COMPANION_COMPARISON_COLLECTION: ${{ github.workspace }}/comparison-collection
           RUST_TEST_THREADS: 1
         run: |
           export COMPOSITION_CORE=$(git rev-parse HEAD)

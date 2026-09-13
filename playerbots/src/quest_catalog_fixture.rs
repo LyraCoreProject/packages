@@ -46,6 +46,7 @@ const LOOPBACK_PRIEST_MANA: u32 = 400;
 const FRIENDLY_FIXTURE_FACTION: u32 = 5_090_972;
 const HELD_CATALOG_PREFIX_BASE: u32 = 5_098_000;
 const ACTIVE_QUEST_OVERFLOW_BASE: u32 = 5_098_100;
+const DISPERSION_POPULATION: usize = 25;
 
 const CREATURES: [u32; 12] = [823, 197, 196, 9296, 952, 241, 240, 261, 6, 299, 69, 38];
 const GAMEOBJECTS: [u32; 3] = [55, 56, CHEST_ENTRY];
@@ -378,6 +379,86 @@ pub fn playerbots_recovery_fixture_exhaust_attempt(
     Ok(())
 }
 
+#[reducer]
+pub fn playerbots_recovery_fixture_keep_two_quest_targets(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let fixture = ctx
+        .db
+        .pkg_playerbots_quest_loop_fixture()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("named quest-loop fixture is absent")?;
+    if fixture.quest_entry != 7
+        || fixture.target_entry != 6
+        || fixture.target_count != 10
+        || fixture.content_revision != NAMED_LOOP_CONTENT
+    {
+        return Err("named quest-loop fixture identity differs".to_string());
+    }
+    for offset in 2..10u64 {
+        let guid = creature_guid(6).saturating_add(offset);
+        ctx.db.game_world_entity().guid().delete(guid);
+        ctx.db.game_creature_spawn().guid().delete(guid);
+    }
+    let entities = ctx.db.game_world_entity();
+    for offset in 0..2u64 {
+        let guid = creature_guid(6).saturating_add(offset);
+        let mut target = entities
+            .guid()
+            .find(guid)
+            .ok_or("Quest 7 target is absent")?;
+        target.x += 4.0;
+        target.y += 4.0;
+        entities.guid().update(target);
+    }
+    Ok(())
+}
+
+#[reducer]
+pub fn playerbots_recovery_fixture_expire_quest_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    use super::runner::pkg_playerbots_runner;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut runner = rows
+        .character_guid()
+        .find(character_guid)
+        .ok_or("runner missing")?;
+    let recovery = runner.recovery.as_mut().ok_or("recovery missing")?;
+    let attempt = recovery
+        .attempts
+        .iter_mut()
+        .find(|attempt| {
+            attempt.work == super::recovery::Work::Fight(target_guid)
+                && attempt.reason == super::decision::Reason::Quest
+        })
+        .ok_or("Quest target recovery attempt missing")?;
+    let previous_until = attempt
+        .deferred_until_micros
+        .ok_or("Quest target recovery attempt is not deferred")?;
+    let expired = ctx.timestamp.to_micros_since_unix_epoch().saturating_sub(1);
+    let destination = attempt.destination.clone();
+    attempt.deferred_until_micros = Some(expired);
+    let deferred = runner
+        .deferred_destinations
+        .iter_mut()
+        .find(|deferred| {
+            deferred.destination == destination && deferred.until_micros == previous_until
+        })
+        .ok_or("paired Quest target deferral missing")?;
+    deferred.until_micros = expired;
+    rows.character_guid().update(runner);
+    Ok(())
+}
+
 fn quest_offset(quest_entry: u32) -> u64 {
     QUESTS
         .iter()
@@ -451,7 +532,7 @@ fn insert_alternative_gameobject(ctx: &ReducerContext, entry: u32) -> Result<u64
     Ok(guid)
 }
 
-fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
+pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
     let existing = ctx.db.game_spell().spell_id().find(LOOPBACK_SMITE);
     let existing_effect = ctx
         .db
@@ -1363,6 +1444,135 @@ pub fn playerbots_quest_loop_fixture_stage_named(
     stage_named_with_rotation(ctx, character_guid, 0).map(|_| ())
 }
 
+/// Give the declared population the same Quest 7 facts and position, then park it before one
+/// common-time selection pass. The excluded Character owns the synthetic foreign Loot Tag.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_prepare_dispersion(
+    ctx: &ReducerContext,
+    excluded_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let primary = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(creature_guid(6))
+        .ok_or("primary quest target missing")?;
+    let giver = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(creature_guid(197))
+        .ok_or("Quest 7 giver missing")?;
+    let mut subjects: Vec<_> = ctx
+        .db
+        .pkg_playerbots_bot()
+        .iter()
+        .filter(|bot| bot.character_guid != excluded_guid)
+        .map(|bot| bot.character_guid)
+        .collect();
+    subjects.sort_unstable();
+    if subjects.len() != DISPERSION_POPULATION {
+        return Err("dispersion fixture requires exactly 25 subjects".to_string());
+    }
+    if crate::group::group_of(ctx, excluded_guid).is_some()
+        || subjects
+            .iter()
+            .any(|guid| crate::group::group_of(ctx, *guid).is_some())
+    {
+        return Err("dispersion fixture Characters must be ungrouped".to_string());
+    }
+    super::runner::transition_controller(ctx, excluded_guid, super::runner::Controller::Frozen)?;
+    ctx.db.game_creature_spline().guid().delete(excluded_guid);
+    use super::provisioning::pkg_playerbots_provisioning;
+    use super::runner::pkg_playerbots_runner;
+    let selection_x = primary.x - 40.0;
+    for guid in subjects {
+        super::runner::transition_controller(ctx, guid, super::runner::Controller::Frozen)?;
+        ctx.db.game_creature_spline().guid().delete(guid);
+        ctx.db.pkg_playerbots_runner().character_guid().delete(guid);
+        let mut provisioning = ctx
+            .db
+            .pkg_playerbots_provisioning()
+            .character_guid()
+            .find(guid)
+            .ok_or("dispersion fixture provisioning state missing")?;
+        provisioning.next_repair_micros = i64::MAX;
+        ctx.db
+            .pkg_playerbots_provisioning()
+            .character_guid()
+            .update(provisioning);
+        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        entity.x = giver.x;
+        entity.y = giver.y;
+        entity.z = giver.z;
+        let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+        entity.grid_x = grid_x;
+        entity.grid_y = grid_y;
+        entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+        ctx.db.game_world_entity().guid().update(entity);
+        playerbots_quest_fixture_admit_accept(ctx, guid, 7)?;
+        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        entity.x = selection_x;
+        entity.y = primary.y;
+        entity.z = primary.z;
+        let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(entity.x, entity.y);
+        entity.grid_x = grid_x;
+        entity.grid_y = grid_y;
+        entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+        ctx.db.game_world_entity().guid().update(entity);
+        let mut bot = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next()
+            .ok_or("dispersion fixture bot missing")?;
+        bot.home_map = primary.map_id;
+        bot.home_x = selection_x;
+        bot.home_y = primary.y;
+        bot.home_z = primary.z;
+        ctx.db.pkg_playerbots_bot().id().update(bot);
+        super::fixture::playerbots_fixture_runner_select_cohort(ctx, guid)?;
+    }
+    let mut excluded = crate::helpers::live_entity(ctx, excluded_guid)?;
+    excluded.x = primary.x;
+    excluded.y = primary.y;
+    excluded.z = primary.z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(excluded.x, excluded.y);
+    excluded.grid_x = grid_x;
+    excluded.grid_y = grid_y;
+    excluded.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(excluded);
+    Ok(())
+}
+
+/// Run one normal parked pass for every prepared subject at this reducer's single timestamp.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_pass_dispersion(
+    ctx: &ReducerContext,
+    excluded_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let mut subjects: Vec<_> = ctx
+        .db
+        .pkg_playerbots_bot()
+        .iter()
+        .filter(|bot| bot.character_guid != excluded_guid)
+        .map(|bot| bot.character_guid)
+        .collect();
+    subjects.sort_unstable();
+    if subjects.len() != DISPERSION_POPULATION {
+        return Err("dispersion fixture requires exactly 25 subjects".to_string());
+    }
+    for guid in subjects {
+        super::fixture::playerbots_fixture_runner_pass_once(ctx, guid)?;
+    }
+    Ok(())
+}
+
 pub(super) fn stage_named_with_rotation(
     ctx: &ReducerContext,
     character_guid: u64,
@@ -1675,6 +1885,74 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
         entities.guid().delete(guid);
         crate::creatures::insert_creature_entity(ctx, entity);
     }
+    Ok(())
+}
+
+/// Leave the corpse search inconclusive while one independently valid live source remains.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_stage_corpse_limit_with_live_alternative(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    playerbots_quest_loop_fixture_stage_corpse_limit(ctx, character_guid)?;
+    let retained = ctx
+        .db
+        .pkg_playerbots_quest_objective()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("retained quest objective is absent")?;
+    let source = retained
+        .target
+        .source
+        .ok_or("retained creature-loot source is absent")?;
+    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(source.entry)
+        .ok_or("retained creature-loot template is absent")?;
+    let source_spawn = ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(source.guid)
+        .ok_or("retained creature-loot spawn is absent")?;
+    let alternative_guid = source.guid.saturating_add(1);
+    if ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(alternative_guid)
+        .is_some()
+        || ctx
+            .db
+            .game_world_entity()
+            .guid()
+            .find(alternative_guid)
+            .is_some()
+    {
+        return Err("alternate creature-loot source is occupied".to_string());
+    }
+    crate::creatures::despawn_creature_entity(ctx, source.guid);
+    let spawn = ctx.db.game_creature_spawn().insert(crate::CreatureSpawn {
+        guid: alternative_guid,
+        entry: source.entry,
+        map_id: character.map_id,
+        x: character.x + 2.0,
+        y: character.y,
+        z: character.z,
+        orientation: source_spawn.orientation,
+        respawn_at: crate::creatures::timer_never(ctx),
+        despawn_at: crate::creatures::timer_never(ctx),
+        movement_type: source_spawn.movement_type,
+        respawn_secs: source_spawn.respawn_secs,
+        life_seq: source_spawn.life_seq,
+    });
+    crate::creatures::insert_creature_entity(
+        ctx,
+        crate::creatures::build_creature_entity(&spawn, &template, 0, 0),
+    );
     Ok(())
 }
 
@@ -2330,6 +2608,202 @@ pub fn playerbots_quest_fixture_hide_live_target(
     require_fixture(ctx)?;
     crate::creatures::despawn_creature_entity(ctx, creature_guid(creature_entry));
     Ok(())
+}
+
+/// Replace one declared Quest 7 target with a fresh life at its existing spawn point.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_respawn_target(
+    ctx: &ReducerContext,
+    character_guid: u64,
+    target_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let fixture = ctx
+        .db
+        .pkg_playerbots_quest_loop_fixture()
+        .character_guid()
+        .find(character_guid)
+        .ok_or("named quest-loop fixture is absent")?;
+    let first = creature_guid(6);
+    if fixture.quest_entry != 7
+        || fixture.target_entry != 6
+        || fixture.target_count != 10
+        || fixture.content_revision != NAMED_LOOP_CONTENT
+        || !(first..first + u64::from(fixture.target_count)).contains(&target_guid)
+    {
+        return Err("named quest-loop target identity differs".to_string());
+    }
+    let spawn = ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(target_guid)
+        .ok_or("quest target spawn is absent")?;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(spawn.entry)
+        .ok_or("quest target template is absent")?;
+    crate::creatures::despawn_creature_entity(ctx, target_guid);
+    let entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+    crate::creatures::insert_creature_entity(ctx, entity);
+    Ok(())
+}
+
+/// Move Quest 7's primary target 40 yards from its spawn so its ordinary idle pass starts a spline.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(character_guid)
+        .next()
+        .ok_or("moving-cast fixture bot missing")?;
+    if bot.class != 8 {
+        return Err("moving-cast fixture requires a Mage".to_string());
+    }
+    ctx.db
+        .game_character_quest()
+        .by_character_quest()
+        .filter((character_guid, 7u32))
+        .next()
+        .filter(|quest| !quest.rewarded && quest.counts.first() == Some(&0))
+        .ok_or("moving-cast fixture requires open Quest 7 with zero credit")?;
+    let spells = ctx.db.game_spell();
+    let mut spell = spells
+        .spell_id()
+        .find(133)
+        .ok_or("moving-cast fixture requires Fireball")?;
+    spell.range_yd = 35;
+    spell.cast_time_ms = 1_500;
+    spells.spell_id().update(spell);
+
+    let target_guid = creature_guid(6);
+    let entities = ctx.db.game_world_entity();
+    let mut target = entities
+        .guid()
+        .find(target_guid)
+        .filter(|target| !target.dead && target.health > 0)
+        .ok_or("moving-cast fixture target missing")?;
+    if (target.map_id, target.instance_id) != (0, 0) {
+        return Err("moving-cast fixture target partition differs".to_string());
+    }
+    let target_x = target.x;
+    let target_y = target.y;
+    let target_z = target.z;
+    target.x = target_x;
+    target.y = target_y;
+    target.z = target_z;
+    target.target_guid = 0;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(target.x, target.y);
+    target.grid_x = grid_x;
+    target.grid_y = grid_y;
+    target.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(target);
+    ctx.db.game_creature_spline().guid().delete(target_guid);
+
+    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    for alternative_guid in target_guid + 1..target_guid + 10 {
+        entities
+            .guid()
+            .find(alternative_guid)
+            .filter(|alternative| alternative.entry == 6 && !alternative.dead)
+            .ok_or("moving-cast fixture alternative missing")?;
+        crate::creatures::despawn_creature_entity(ctx, alternative_guid);
+    }
+    character.x = target_x - 80.0;
+    character.y = target_y;
+    character.z = target_z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(character.x, character.y);
+    character.grid_x = grid_x;
+    character.grid_y = grid_y;
+    character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    entities.guid().update(character);
+    ctx.db.game_creature_spline().guid().delete(character_guid);
+
+    let spawns = ctx.db.game_creature_spawn();
+    let mut spawn = spawns
+        .guid()
+        .find(target_guid)
+        .ok_or("moving-cast fixture target spawn missing")?;
+    spawn.x = target_x + 40.0;
+    spawn.y = target_y;
+    spawn.z = target_z;
+    spawn.movement_type = 0;
+    spawns.guid().update(spawn);
+
+    Ok(())
+}
+
+/// Put the Mage 38.5 yards behind Quest 7's already-moving target, then run one real decision.
+#[reducer]
+pub fn playerbots_quest_loop_fixture_start_moving_cast(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(character_guid)
+        .next()
+        .filter(|bot| bot.class == 8)
+        .ok_or("moving-cast fixture requires a Mage")?;
+    ctx.db
+        .game_character_quest()
+        .by_character_quest()
+        .filter((character_guid, 7u32))
+        .next()
+        .filter(|quest| !quest.rewarded && quest.counts.first() == Some(&0))
+        .ok_or("moving-cast fixture requires open Quest 7 with zero credit")?;
+    ctx.db
+        .game_spell()
+        .spell_id()
+        .find(133)
+        .filter(|spell| spell.range_yd == 35 && spell.cast_time_ms == 1_500)
+        .ok_or("moving-cast fixture requires the staged Fireball")?;
+    let target_guid = creature_guid(6);
+    let target = crate::helpers::live_entity(ctx, target_guid)?;
+    if target.dead || (target.map_id, target.instance_id) != (0, 0) {
+        return Err("moving-cast fixture target is unavailable".to_string());
+    }
+    ctx.db
+        .game_creature_spline()
+        .guid()
+        .find(target_guid)
+        .filter(|spline| spline.dx > spline.sx)
+        .ok_or("moving-cast fixture target is not moving forward")?;
+
+    let caster_x = target.x - 38.5;
+    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    character.x = caster_x;
+    character.y = target.y;
+    character.z = target.z;
+    let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(character.x, character.y);
+    character.grid_x = grid_x;
+    character.grid_y = grid_y;
+    character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    ctx.db.game_world_entity().guid().update(character);
+    ctx.db.game_creature_spline().guid().delete(character_guid);
+
+    let mut parked = bot;
+    parked.home_map = 0;
+    parked.home_x = caster_x;
+    parked.home_y = target.y;
+    parked.home_z = target.z;
+    ctx.db.pkg_playerbots_bot().id().update(parked);
+    super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)?;
+    super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)
 }
 
 #[reducer]

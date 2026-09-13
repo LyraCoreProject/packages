@@ -396,7 +396,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
         .filter(|bot| {
             bot.class == super::class::WARRIOR
                 && bot.role == super::ROLE_TANK
-                && bot.controller == super::Controller::Legacy
+                && bot.controller == super::Controller::Cohort
         })
         .ok_or("Gateway Transfer destination leader changed")?;
     ctx.db.pkg_playerbots_bot().id().delete(leader.id);
@@ -816,10 +816,16 @@ pub fn playerbots_transfer_gateway_mirror_fault(
         && partitions.iter().any(|partition| {
             partition.character_guid == companion_guid
                 && partition.membership_revision == COMPANION_MEMBER
-                && partition.map_id == 36
-                && partition.instance_id == 5_098_078
-                && partition.locator_revision == 2
-                && partition.state == crate::PartyPartitionState::Known
+                && ((partition.map_id == 36
+                    && partition.instance_id == 5_098_078
+                    && partition.locator_revision == 2
+                    && partition.state == crate::PartyPartitionState::Known)
+                    || arrivals.first().is_some_and(|arrival| {
+                        partition.map_id == arrival.source_map_id
+                            && partition.instance_id == arrival.source_instance_id
+                            && partition.locator_revision == arrival.source_locator_revision
+                            && partition.state == crate::PartyPartitionState::PendingTransfer
+                    }))
         });
     if (
         current.leader_guid,

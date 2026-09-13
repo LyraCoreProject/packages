@@ -181,10 +181,13 @@ pub fn playerbots_action_lifecycle_expire_movement(
         .guid()
         .find(character_guid)
         .ok_or("movement expiry body missing")?;
+    let current_movement = state.movement_progress.as_ref().is_some_and(|progress| {
+        progress.observed_micros == ctx.timestamp.to_micros_since_unix_epoch()
+            && (progress.x, progress.y) == (me.x, me.y)
+    });
     if me.dead
         || (me.map_id, me.instance_id) != (foreground.map_id, foreground.instance_id)
-        || objective.last_verified_progress_micros
-            != Some(ctx.timestamp.to_micros_since_unix_epoch())
+        || !current_movement
     {
         return Err("movement expiry did not observe current living-body progress".to_string());
     }

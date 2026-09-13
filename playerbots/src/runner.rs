@@ -9,6 +9,7 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
 };
+use crate::transfer::game_bot_transfer_intent;
 use crate::{
     game_character_quest, game_creature_spline, game_gameobject, game_melee_attack, game_spell,
     game_world_entity,
@@ -16,6 +17,7 @@ use crate::{
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
 pub const BATCH_LIMIT: usize = 16;
+const CONTROLLER_MIGRATION_BATCH_LIMIT: usize = 16;
 const INTERVAL: i64 = 1_000_000;
 const OBJECTIVE_LIFETIME: i64 = 120_000_000;
 const DEFER_INTERVAL: i64 = 30_000_000;
@@ -422,6 +424,20 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
     lookup
 }
 
+fn defense_target(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    target_guid: u64,
+) -> Result<Option<crate::WorldEntity>, crate::spell::ControlReadError> {
+    let Ok(target) = crate::combat::validate_attack_target(ctx, me, target_guid) else {
+        return Ok(None);
+    };
+    if crate::spell::control_status(ctx, target.guid, 64)?.is_some() {
+        return Ok(None);
+    }
+    Ok(Some(target))
+}
+
 impl PlayerbotsRunner {
     fn initial(guid: u64, now: i64) -> Self {
         Self {
@@ -474,6 +490,48 @@ impl PlayerbotsRunner {
             FAILURE_LIMIT,
         );
         self.last_outcome = RunnerOutcome::Refused(reason);
+    }
+
+    fn refusal_retry_at(&mut self, reason: Failure, now: i64) -> i64 {
+        if let Some(retry_at) = self
+            .failures
+            .iter()
+            .rev()
+            .find(|failure| failure.reason == reason)
+            .map(|failure| failure.at_micros.saturating_add(DEFER_INTERVAL))
+            .filter(|retry_at| *retry_at > now)
+        {
+            self.last_outcome = RunnerOutcome::Waiting;
+            return retry_at;
+        }
+        self.failure(reason, now);
+        now.saturating_add(DEFER_INTERVAL)
+    }
+
+    fn select_quest_read_limit(&mut self, candidate: Candidate, now: i64) {
+        let action_retry = self
+            .retry_candidate
+            .map(|_| (self.retry_count, self.next_eligible_micros));
+        self.chosen = Some(candidate);
+        let quest_retry_at = self.refusal_retry_at(Failure::QuestReadLimit, now);
+        if let Some((retry_count, next_eligible_micros)) = action_retry {
+            self.retry_count = retry_count;
+            self.next_eligible_micros = next_eligible_micros;
+        } else {
+            self.next_eligible_micros = quest_retry_at;
+        }
+    }
+
+    fn completed_quest_wait_expired(&self, now: i64) -> bool {
+        self.objective.as_ref().is_some_and(|objective| {
+            objective.kind == ObjectiveKind::Quest
+                && objective.stage == ObjectiveStage::Completed
+                && now.saturating_sub(
+                    objective
+                        .last_verified_progress_micros
+                        .unwrap_or(objective.started_micros),
+                ) >= OBJECTIVE_LIFETIME
+        })
     }
 
     pub(super) fn save(mut self, ctx: &ReducerContext) {
@@ -653,7 +711,8 @@ pub(super) fn pass(ctx: &ReducerContext) {
     }
 }
 
-/// Selection is idempotent. A changed controller cancels work before the new generation can act.
+/// Supported selection is idempotent. A changed controller cancels work before the new generation
+/// can act. Legacy remains a stored value during cutover but cannot be selected again.
 #[reducer]
 pub fn playerbots_select_controller(
     ctx: &ReducerContext,
@@ -661,6 +720,17 @@ pub fn playerbots_select_controller(
     controller: Controller,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    if controller == Controller::Legacy {
+        return Err("Legacy controller selection is retired; select Cohort instead".to_string());
+    }
+    transition_controller(ctx, guid, controller)
+}
+
+pub(super) fn transition_controller(
+    ctx: &ReducerContext,
+    guid: u64,
+    controller: Controller,
+) -> Result<(), String> {
     let mut bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -707,6 +777,64 @@ pub fn playerbots_select_controller(
         now
     };
     ctx.db.pkg_playerbots_bot().id().update(bot);
+    Ok(())
+}
+
+/// Move one explicit, bounded batch of populated Legacy rows to Cohort.
+///
+/// The caller repeats sorted batches after restart. Already migrated, missing and Transfer-owned
+/// rows are no-ops, so replay is safe and a crossing can finish before a later batch migrates its
+/// arriving row.
+#[reducer]
+pub fn playerbots_migrate_legacy_controllers(
+    ctx: &ReducerContext,
+    character_guids: Vec<u64>,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if character_guids.len() > CONTROLLER_MIGRATION_BATCH_LIMIT {
+        return Err(format!(
+            "Legacy controller migration batch exceeds {CONTROLLER_MIGRATION_BATCH_LIMIT} Characters"
+        ));
+    }
+    if character_guids.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("Legacy controller migration batch must be strictly increasing".to_string());
+    }
+
+    for guid in character_guids {
+        let Some(bot) = ctx
+            .db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next()
+        else {
+            continue;
+        };
+        if bot.controller != Controller::Legacy {
+            continue;
+        }
+        let transfer_checkpoint = ctx
+            .db
+            .pkg_playerbots_runner()
+            .character_guid()
+            .find(guid)
+            .is_some_and(|state| state.transfer_checkpoint.is_some());
+        let transfer_intent = ctx
+            .db
+            .game_bot_transfer_intent()
+            .by_bot()
+            .filter(guid)
+            .next()
+            .is_some();
+        if transfer_checkpoint
+            || transfer_intent
+            || crate::helpers::character_by_guid(ctx, guid).is_none()
+            || super::goals::legacy_transfer_pending(ctx, guid)
+        {
+            continue;
+        }
+        transition_controller(ctx, guid, Controller::Cohort)?;
+    }
     Ok(())
 }
 
@@ -855,10 +983,7 @@ fn objective(
         ) {
             super::quest_catalog::ReconcileResult::Found(admission) => Some(admission),
             super::quest_catalog::ReconcileResult::Missing => None,
-            super::quest_catalog::ReconcileResult::ReadLimit => {
-                state.failure(Failure::QuestReadLimit, now);
-                return true;
-            }
+            super::quest_catalog::ReconcileResult::ReadLimit => return true,
         }
     } else {
         None
@@ -1044,6 +1169,11 @@ fn defer(state: &mut PlayerbotsRunner, now: i64) {
     defer_until(state, now.saturating_add(DEFER_INTERVAL));
 }
 
+fn defer_quest_and_continue(state: &mut PlayerbotsRunner, now: i64) {
+    defer(state, now);
+    state.next_eligible_micros = now.saturating_add(INTERVAL);
+}
+
 fn defer_until(state: &mut PlayerbotsRunner, until_micros: i64) {
     if let Some(o) = &mut state.objective {
         o.stage = ObjectiveStage::Deferred;
@@ -1111,7 +1241,10 @@ fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut Playerbots
                     });
                     if let Some(o) = &mut state.objective {
                         if o.destination == *destination {
-                            o.last_verified_progress_micros = Some(now);
+                            // Reaching the source advances navigation, not the Quest effect clock.
+                            if o.kind != ObjectiveKind::Quest {
+                                o.last_verified_progress_micros = Some(now);
+                            }
                             state.retry_count = 0;
                             state.last_stall_check_micros = now;
                             if arrived {
@@ -1404,6 +1537,11 @@ fn run(
 
     let arrival = state.transfer_checkpoint;
     let arriving = arrival.is_some();
+    let observed_objective = state.objective_sequence;
+    let observed_quest_creature = state
+        .recovery
+        .as_ref()
+        .and_then(|recovery| recovery.active_quest_creature(ctx, &me, observed_objective));
     if owns_runner {
         let mut recovery = state.recovery.take().unwrap_or_default();
         let deferred = recovery.observe(ctx, &me, &mut state, now);
@@ -1428,6 +1566,17 @@ fn run(
         }
     }
     let prior_objective = state.objective_sequence;
+    let prior_objective_deferral = state
+        .objective
+        .as_ref()
+        .filter(|objective| objective.kind == ObjectiveKind::Quest)
+        .and_then(|objective| {
+            state
+                .deferred_destinations
+                .iter()
+                .find(|deferred| deferred.destination == objective.destination)
+        })
+        .cloned();
     let quest_read_limited = objective(
         ctx,
         bot,
@@ -1437,6 +1586,26 @@ fn run(
         &mut state,
         now,
     );
+    if owns_runner && prior_objective != state.objective_sequence {
+        let mut recovery = state.recovery.take().unwrap_or_default();
+        recovery.retain_quest_objective(
+            state.objective_sequence,
+            &mut state.deferred_destinations,
+            prior_objective_deferral.as_ref(),
+        );
+        state.recovery = Some(recovery);
+        if state.foreground.is_some() {
+            stop(ctx, me.guid, &mut state);
+        }
+    }
+    let quest_unavailable = Candidate {
+        id: decision::CandidateId {
+            action: Action::Hold,
+            reason: Reason::Quest,
+            objective: state.objective_sequence,
+        },
+        priority: 110,
+    };
     if quest_read_limited
         && state
             .transfer_checkpoint
@@ -1448,15 +1617,14 @@ fn run(
             state.save(ctx);
             return;
         }
-        state.chosen = Some(Candidate {
-            id: decision::CandidateId {
-                action: Action::Hold,
-                reason: Reason::Quest,
-                objective: state.objective_sequence,
-            },
+        let quest_transfer_unavailable = Candidate {
             priority: 1000,
-        });
-        state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            ..quest_unavailable
+        };
+        state.select_quest_read_limit(quest_transfer_unavailable, now);
+        if bot.controller == Controller::RecordOnly {
+            state.last_outcome = RunnerOutcome::Recorded;
+        }
         state.save(ctx);
         return;
     }
@@ -1486,19 +1654,8 @@ fn run(
         }
     }
     if owns_runner {
-        if prior_objective != state.objective_sequence && state.foreground.is_some() {
-            stop(ctx, me.guid, &mut state);
-        }
         observe(ctx, &me, &mut state, now);
     }
-    let quest_unavailable = Candidate {
-        id: decision::CandidateId {
-            action: Action::Hold,
-            reason: Reason::Quest,
-            objective: state.objective_sequence,
-        },
-        priority: 110,
-    };
     let Some(destination) = state.objective.as_ref().map(|o| o.destination.clone()) else {
         if quest_read_limited {
             if owns_runner {
@@ -1507,14 +1664,10 @@ fn run(
                 }
                 stop(ctx, me.guid, &mut state);
             }
-            state.chosen = Some(quest_unavailable);
-            state.retry_candidate = Some(quest_unavailable.id);
-            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
-            state.last_outcome = if bot.controller == Controller::RecordOnly {
-                RunnerOutcome::Recorded
-            } else {
-                RunnerOutcome::Refused(Failure::QuestReadLimit)
-            };
+            state.select_quest_read_limit(quest_unavailable, now);
+            if bot.controller == Controller::RecordOnly {
+                state.last_outcome = RunnerOutcome::Recorded;
+            }
             state.save(ctx);
         }
         return;
@@ -1528,14 +1681,40 @@ fn run(
         .flatten();
     if owns_runner {
         if let Some(retained) = retained_quest.as_mut() {
+            // Credit and reward changes are authoritative even when another Character dealt damage.
+            if state.quest_progress.iter().any(|progress| {
+                progress.quest == retained.quest_entry && progress.observed_micros == now
+            }) {
+                if let Some(objective) = &mut state.objective {
+                    objective.last_verified_progress_micros = Some(now);
+                }
+            }
             super::quest_loop::invalidate_safe_position(ctx, &me, retained);
         }
     }
+    let active_quest_creature = state
+        .recovery
+        .as_ref()
+        .and_then(|recovery| {
+            recovery.active_quest_creature(ctx, &me, state.objective_sequence)
+        })
+        .or_else(|| {
+            (observed_objective == state.objective_sequence)
+                .then_some(observed_quest_creature)
+                .flatten()
+                .filter(|target| {
+                    ctx.db
+                        .game_world_entity()
+                        .guid()
+                        .find(*target)
+                        .is_some_and(|target| target.dead)
+                })
+        });
     let quest_plan = retained_quest
         .as_ref()
         .filter(|_| !quest_read_limited)
         .map(|retained| {
-            super::quest_loop::plan(ctx, &me, retained, |target| {
+            super::quest_loop::plan(ctx, &me, retained, active_quest_creature, |target| {
                 state.recovery.as_ref().is_none_or(|recovery| {
                     recovery.eligible_work(super::recovery::Work::Fight(target))
                 })
@@ -1584,7 +1763,9 @@ fn run(
     } else {
         None
     };
-    if owns_runner && state.transfer_checkpoint.is_none() {
+    if (owns_runner || bot.controller == Controller::RecordOnly)
+        && state.transfer_checkpoint.is_none()
+    {
         if let Some(o) = &mut state.objective {
             if at_destination {
                 o.stage = ObjectiveStage::Completed;
@@ -1605,20 +1786,16 @@ fn run(
         .next();
     let flee_at = personality.as_ref().map_or(15, |p| p.flee_at_pct);
     let low_health = super::goals::should_flee(me.health, me.max_health, flee_at);
-    let mut threat = state
-        .defense_target
-        .and_then(|guid| ctx.db.game_world_entity().guid().find(guid))
-        .filter(|t| !t.dead && (t.map_id, t.instance_id) == (me.map_id, me.instance_id));
-    if let Some(target) = &threat {
-        match crate::spell::control_status(ctx, target.guid, 64) {
-            Ok(None) => {}
-            Ok(Some(_)) => threat = None,
+    let threat = match state.defense_target {
+        Some(guid) => match defense_target(ctx, &me, guid) {
+            Ok(target) => target,
             Err(_) => {
                 state.failure(Failure::ControlReadLimit, now);
-                threat = None;
+                None
             }
-        }
-    }
+        },
+        None => None,
+    };
     state.defense_target = threat.as_ref().map(|target| target.guid);
     let recovery_lookup = recovery_spell(ctx, bot);
     let spell = match &recovery_lookup {
@@ -1661,30 +1838,43 @@ fn run(
         Reason::Recovery,
         800,
     );
-    if matches!(recovery_lookup, RecoveryLookup::Missing) {
-        recovery.readiness = Readiness::Refused;
+    match &recovery_lookup {
+        RecoveryLookup::Pending => {}
+        RecoveryLookup::Missing => recovery.readiness = Readiness::Refused,
+        RecoveryLookup::Spell(spell) => {
+            let pending = crate::spell::pending_cast(ctx, me.guid);
+            let retains_heal = pending.is_some_and(|pending| {
+                pending.spell_id == spell.spell_id && pending.target_guid == me.guid
+            });
+            if !retains_heal
+                && crate::actor::cast_readiness(ctx, me.guid, spell.spell_id, me.guid).is_err()
+            {
+                recovery.readiness = Readiness::Refused;
+            }
+        }
     }
-    let mut defense = node(
-        threat
-            .as_ref()
-            .map_or(Action::Hold, |target| Action::Attack(target.guid)),
-        Reason::Defense,
-        DEFENSE_PRIORITY,
-    );
-    if threat.is_none() {
-        defense.readiness = Readiness::Refused;
-    }
-    if let Some(target) = &threat {
-        let mut close = node(
-            Action::Move(MoveTarget::Entity(target.guid)),
+    let mut defense = match &threat {
+        Some(target) => match super::quest_loop::combat_strategy(
+            ctx,
+            bot,
+            &me,
+            target.guid,
+            objective_sequence,
             Reason::Defense,
             DEFENSE_PRIORITY,
-        );
-        if ((target.x - me.x).powi(2) + (target.y - me.y).powi(2)).sqrt() <= 4.0 {
-            close.readiness = Readiness::Complete;
+        ) {
+            Ok(defense) => defense,
+            Err(unavailable) => {
+                state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                node(Action::Hold, Reason::Defense, DEFENSE_PRIORITY)
+            }
+        },
+        None => {
+            let mut defense = node(Action::Hold, Reason::Defense, DEFENSE_PRIORITY);
+            defense.readiness = Readiness::Refused;
+            defense
         }
-        defense.prerequisites.push(close);
-    }
+    };
     if party.is_none() {
         defense.continuers.push(travel_action.clone());
     }
@@ -1981,7 +2171,7 @@ fn run(
                 .any(|candidate| recovery.capacity_refused(*candidate))
         })
     {
-        state.failure(Failure::RecoveryCapacity, now);
+        let _ = state.refusal_retry_at(Failure::RecoveryCapacity, now);
     }
     let mut transfer_recovery_settled = arrival.is_some_and(|checkpoint| {
         !super::transfer::requires_recovery(checkpoint)
@@ -2057,6 +2247,9 @@ fn run(
         });
         state.candidate_order.insert(0, chosen.unwrap());
     }
+    if quest_read_limited && chosen == Some(quest_unavailable) {
+        state.select_quest_read_limit(quest_unavailable, now);
+    }
     if bot.controller == Controller::RecordOnly {
         state.chosen = chosen;
         state.last_outcome = RunnerOutcome::Recorded;
@@ -2096,10 +2289,6 @@ fn run(
             recovery.activate(None, now);
         }
         stop(ctx, me.guid, &mut state);
-        state.chosen = chosen;
-        state.retry_candidate = Some(quest_unavailable.id);
-        state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
-        state.last_outcome = RunnerOutcome::Refused(Failure::QuestReadLimit);
         state.save(ctx);
         return;
     }
@@ -2163,7 +2352,7 @@ fn run(
     }
     if let Some(fg) = &state.foreground {
         let incompatible = chosen.is_some_and(|c| c.id != fg.candidate.id);
-        let casting_target_invalid = match fg.candidate.id {
+        let foreground_target_invalid = match fg.candidate.id {
             decision::CandidateId {
                 action:
                     Action::Cast(CastAction { target, .. })
@@ -2187,6 +2376,14 @@ fn run(
                 reason: Reason::Quest,
                 ..
             } => true,
+            decision::CandidateId {
+                action:
+                    Action::Cast(CastAction { target, .. })
+                    | Action::Move(MoveTarget::Entity(target) | MoveTarget::CastingPosition(target)),
+                reason: Reason::Grind,
+                ..
+            } => !matches!(&grind_target,
+                Some(super::quest_loop::LiveCreatureTarget::Found(current)) if current.guid == target),
             decision::CandidateId {
                 action: Action::Move(MoveTarget::AreaTrigger(_)),
                 reason: Reason::TransferPosition,
@@ -2245,7 +2442,7 @@ fn run(
                 Reason::Survival | Reason::Resurrection
             );
         let preempts = stay_interrupts
-            || casting_target_invalid
+            || foreground_target_invalid
             || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
         if incompatible && preempts {
             stop(ctx, me.guid, &mut state);
@@ -2282,9 +2479,6 @@ fn run(
             super::provisioning::ReconcileStep::Ready
             | super::provisioning::ReconcileStep::Recorded => {}
             super::provisioning::ReconcileStep::Worked => {
-                if let Some(recovery) = &mut state.recovery {
-                    recovery.active = None;
-                }
                 let candidate = Candidate {
                     id: decision::CandidateId {
                         action: Action::Hold,
@@ -2320,6 +2514,27 @@ fn run(
     if let (Some(reason), Some(candidate)) =
         (quest_plan.and_then(super::quest_loop::wait_reason), chosen)
     {
+        if reason == super::quest_loop::WaitReason::Deferred
+            && candidate.id.action == Action::Hold
+            && candidate.id.reason == Reason::Quest
+        {
+            if let Some(recovery) = &mut state.recovery {
+                recovery.activate(None, now);
+            }
+            stop(ctx, me.guid, &mut state);
+            state.failure(Failure::NoMovement, now);
+            state.chosen = Some(candidate);
+            state.retry_candidate = None;
+            defer_quest_and_continue(&mut state, now);
+            state.save(ctx);
+            return;
+        }
+        if reason == super::quest_loop::WaitReason::ReadLimit
+            && candidate.id.action == Action::Move(MoveTarget::Home)
+            && candidate.id.reason == Reason::ReturnHome
+        {
+            let _ = state.refusal_retry_at(Failure::QuestReadLimit, now);
+        }
         if matches!(candidate.id.reason, Reason::Quest | Reason::CrowdControl)
             && candidate.id.action == Action::Hold
         {
@@ -2330,12 +2545,51 @@ fn run(
                 super::quest_loop::WaitReason::Deferred => Failure::NoMovement,
                 super::quest_loop::WaitReason::Controlled => Failure::QuestControlled,
             };
+            let preserves_action_retry = candidate.id.reason == Reason::Quest
+                && matches!(
+                    reason,
+                    super::quest_loop::WaitReason::MissingTarget
+                        | super::quest_loop::WaitReason::ReadLimit
+                );
+            let action_retry = state
+                .retry_candidate
+                .filter(|retry| preserves_action_retry && retry.reason != Reason::Quest)
+                .map(|_| (state.retry_count, state.next_eligible_micros));
             if reason == super::quest_loop::WaitReason::Controlled {
                 state.last_outcome = RunnerOutcome::Refused(failure);
+                state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
             } else {
-                state.failure(failure, now);
+                state.next_eligible_micros = state.refusal_retry_at(failure, now);
             }
-            state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            let completed_quest_wait_expired = candidate.id.reason == Reason::Quest
+                && matches!(
+                    reason,
+                    super::quest_loop::WaitReason::MissingTarget
+                        | super::quest_loop::WaitReason::ReadLimit
+                )
+                && state.completed_quest_wait_expired(now);
+            if let Some((retry_count, next_eligible_micros)) = action_retry {
+                state.retry_count = retry_count;
+                state.next_eligible_micros = next_eligible_micros;
+            }
+            if completed_quest_wait_expired {
+                if action_retry.is_none() {
+                    state.retry_candidate = None;
+                }
+                if let Some(recovery) = &mut state.recovery {
+                    recovery.activate(None, now);
+                }
+                stop(ctx, me.guid, &mut state);
+                state.chosen = Some(candidate);
+                defer_quest_and_continue(&mut state, now);
+                if let Some((retry_count, next_eligible_micros)) = action_retry {
+                    state.retry_count = retry_count;
+                    state.next_eligible_micros =
+                        next_eligible_micros.max(state.next_eligible_micros);
+                }
+                state.save(ctx);
+                return;
+            }
             state.next_eligible_micros =
                 state.next_eligible_micros.max(now.saturating_add(INTERVAL));
             state.save(ctx);
@@ -2605,7 +2859,11 @@ fn execute(
                 crate::actor::repop(ctx, me.guid)
             };
             match result {
-                Ok(()) => state.last_outcome = RunnerOutcome::Accepted,
+                Ok(()) => {
+                    state.defense_target = None;
+                    state.last_target_health = None;
+                    state.last_outcome = RunnerOutcome::Accepted;
+                }
                 Err(_) => state.failure(
                     Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
                     now,
@@ -2622,7 +2880,9 @@ fn execute(
                 state.retry_count = 0;
                 state.retry_candidate = None;
                 if let Some(objective) = &mut state.objective {
-                    objective.last_verified_progress_micros = Some(now);
+                    if objective.kind != ObjectiveKind::Quest {
+                        objective.last_verified_progress_micros = Some(now);
+                    }
                 }
             }
             super::quest_loop::StepResult::Waiting => {
@@ -2716,7 +2976,21 @@ crate::game_hook!(on_damage_taken, fn playerbots_runner_reconsider_damage(ctx, p
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let mut state = ctx.db.pkg_playerbots_runner().character_guid().find(payload.target_guid)
         .unwrap_or_else(|| PlayerbotsRunner::initial(payload.target_guid, now));
-    state.defense_target = Some(payload.attacker_guid);
+    let me = ctx.db.game_world_entity().guid().find(payload.target_guid);
+    let retain_current = match (me.as_ref(), state.defense_target) {
+        (Some(me), Some(guid)) => match defense_target(ctx, me, guid) {
+            Ok(Some(_)) => true,
+            Ok(None) => false,
+            Err(_) => {
+                state.failure(Failure::ControlReadLimit, now);
+                false
+            }
+        },
+        _ => false,
+    };
+    if !retain_current {
+        state.defense_target = Some(payload.attacker_guid);
+    }
     state.save(ctx);
     bot.next_think_micros = bot.next_think_micros.min(now);
     ctx.db.pkg_playerbots_bot().id().update(bot);

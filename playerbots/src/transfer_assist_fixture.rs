@@ -571,7 +571,7 @@ pub fn playerbots_transfer_assist_destination_stage(
         .next()
         .filter(|bot| bot.class == super::class::WARRIOR && bot.role == super::ROLE_TANK)
         .ok_or("Assist destination fixture requires the staged leader")?;
-    if leader.controller != Controller::Legacy {
+    if leader.controller != Controller::Cohort {
         return Err("Assist destination fixture requires the unclaimed human leader".to_string());
     }
     ctx.db.pkg_playerbots_bot().id().delete(leader.id);

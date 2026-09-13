@@ -957,6 +957,11 @@ pub(super) fn record_legacy_transfer(ctx: &ReducerContext, character_guid: u64, 
     record_goal(ctx, character_guid, goal::IN_TRANSIT, now);
 }
 
+/// Whether the preceding executor still owns a crossing that predates durable Transfer Intents.
+pub(super) fn legacy_transfer_pending(ctx: &ReducerContext, character_guid: u64) -> bool {
+    goal_of(ctx, character_guid).is_some_and(|row| row.kind == goal::IN_TRANSIT)
+}
+
 // ---- fighting --------------------------------------------------------------------------------
 
 /// Whether a live target is available to this Character under its resolved Loot Tag. No
