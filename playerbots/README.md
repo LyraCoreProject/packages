@@ -162,6 +162,13 @@ query surface. These two events add a return value the Package reads; they add n
 One `game_tick_pass!`, with each bot throttled to a decision a second. There is no Package-owned
 schedule row, so a republish cannot leave the bots pointing at a reducer the new wasm no longer has.
 
+Each pass executes at most 16 due bots. It examines at most the 128 oldest due roster rows and gives
+up to four slots to Cohort bots with active Companion Orders. The remaining slots go to the oldest
+other work. An unused companion slot is available to background work. This keeps an attended party
+responsive alongside the measured 100-bot background population while preserving at least 12
+background slots per full pass. Larger populations can put a companion beyond the bounded scan;
+inspect scheduler lag before claiming capacity for that workload.
+
 Each decision, in order: put a body back on if the bot has none; get back up if dead; break off if
 hurt past the personality threshold, as a Runtime Script or the personality row settled it; follow a leader who has crossed into another map or instance of
 this Shard; cross a Shard boundary when the party is not on this one at all; quest, unless a player leads the
