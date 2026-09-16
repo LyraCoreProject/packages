@@ -5,6 +5,7 @@ use super::decision::{
     self, Action, ActionNode, Candidate, CastAction, DecisionRefusal, MoveTarget, Readiness,
     Reason, Strategy, Trigger,
 };
+use super::orders::pkg_playerbots_companion_order;
 use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
@@ -17,6 +18,8 @@ use crate::{
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
 pub const BATCH_LIMIT: usize = 16;
+const DUE_SCAN_LIMIT: usize = 128;
+const COMPANION_BATCH_LIMIT: usize = 4;
 const CONTROLLER_MIGRATION_BATCH_LIMIT: usize = 16;
 const INTERVAL: i64 = 1_000_000;
 const OBJECTIVE_LIFETIME: i64 = 120_000_000;
@@ -626,11 +629,40 @@ fn legacy_pass(
     }
 }
 
+fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
+    let mut companions = Vec::with_capacity(COMPANION_BATCH_LIMIT);
+    let mut background = Vec::with_capacity(BATCH_LIMIT);
+    for bot in ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_due()
+        .filter(..=now)
+        .take(DUE_SCAN_LIMIT)
+    {
+        let companion = companions.len() < COMPANION_BATCH_LIMIT
+            && bot.controller == Controller::Cohort
+            && ctx
+                .db
+                .pkg_playerbots_companion_order()
+                .character_guid()
+                .find(bot.character_guid)
+                .is_some_and(|order| order.active);
+        if companion {
+            companions.push(bot);
+        } else if background.len() < BATCH_LIMIT {
+            background.push(bot);
+        }
+    }
+    let remaining = BATCH_LIMIT - companions.len();
+    companions.extend(background.into_iter().take(remaining));
+    companions
+}
+
 pub(super) fn pass(ctx: &ReducerContext) {
     super::ensure_defaults(ctx);
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let bots = ctx.db.pkg_playerbots_bot();
-    let due: Vec<_> = bots.by_due().filter(..=now).take(BATCH_LIMIT).collect();
+    let due = due_batch(ctx, now);
     let guids = due.iter().map(|b| b.character_guid).collect();
     let count = due.len();
     for mut bot in due {
