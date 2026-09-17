@@ -17,6 +17,8 @@ use crate::{
 };
 use spacetimedb::{reducer, table, ReducerContext, Table};
 
+mod movement;
+
 pub const BATCH_LIMIT: usize = 16;
 const DUE_SCAN_LIMIT: usize = 128;
 const COMPANION_BATCH_LIMIT: usize = 4;
@@ -224,7 +226,8 @@ pub struct Transition {
 
 /// Backfilled for at most BATCH_LIMIT due bots per pass. Legacy goals keep their stored meaning.
 /// The public row is the explanation read; ages are relative to observed_micros.
-#[table(accessor = pkg_playerbots_runner, public)]
+#[table(accessor = pkg_playerbots_runner, public,
+    index(accessor = by_movement_due, btree(columns = [movement_due_micros, character_guid])))]
 pub struct PlayerbotsRunner {
     #[primary_key]
     pub character_guid: u64,
@@ -276,6 +279,9 @@ pub struct PlayerbotsRunner {
     /// before this row is exported and rebuilt from destination facts on the first live pass.
     #[default(None::<TransferCheckpoint>)]
     pub transfer_checkpoint: Option<TransferCheckpoint>,
+    /// Movement execution has its own due queue; decision backpressure must not stop a route.
+    #[default(i64::MAX)]
+    pub movement_due_micros: i64,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -479,6 +485,7 @@ impl PlayerbotsRunner {
             companion_order_revision: 0,
 
             transfer_checkpoint: None,
+            movement_due_micros: i64::MAX,
         }
     }
 
@@ -538,6 +545,13 @@ impl PlayerbotsRunner {
     }
 
     pub(super) fn save(mut self, ctx: &ReducerContext) {
+        if !self
+            .foreground
+            .as_ref()
+            .is_some_and(|foreground| matches!(foreground.running, Running::Movement(_)))
+        {
+            self.movement_due_micros = i64::MAX;
+        }
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
             .next_eligible_micros
@@ -725,6 +739,7 @@ pub(super) fn pass(ctx: &ReducerContext) {
         bot.next_think_micros = now.saturating_add(INTERVAL);
         bots.id().update(bot);
     }
+    movement::pass(ctx, now);
     let deferred = bots.by_due().filter(..=now).next();
     let row = PlayerbotsScheduler {
         id: 0,
@@ -871,6 +886,7 @@ pub fn playerbots_migrate_legacy_controllers(
 }
 
 fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
+    state.movement_due_micros = i64::MAX;
     if let Some(foreground) = state.foreground.take() {
         if let Running::Cast(handle) = &foreground.running {
             if state.companion_heal_target_guid == Some(handle.target_guid) {
@@ -1727,9 +1743,7 @@ fn run(
     let active_quest_creature = state
         .recovery
         .as_ref()
-        .and_then(|recovery| {
-            recovery.active_quest_creature(ctx, &me, state.objective_sequence)
-        })
+        .and_then(|recovery| recovery.active_quest_creature(ctx, &me, state.objective_sequence))
         .or_else(|| {
             (observed_objective == state.objective_sequence)
                 .then_some(observed_quest_creature)
@@ -2767,18 +2781,7 @@ fn execute(
                 ctx,
                 me,
                 (dest.x, dest.y, dest.z),
-                if matches!(
-                    target,
-                    MoveTarget::RecoveryPosition(_) | MoveTarget::AreaTrigger(_)
-                ) {
-                    0.25
-                } else if target == MoveTarget::Home {
-                    2.0
-                } else if candidate.id.reason == Reason::FightPosition {
-                    25.0
-                } else {
-                    3.0
-                },
+                movement::stand_off(candidate),
                 true,
             );
             state.route_expansions =
@@ -2802,6 +2805,7 @@ fn execute(
                     from_y: me.y,
                 }),
             });
+            state.movement_due_micros = now.saturating_add(movement::INTERVAL);
             state.last_outcome = RunnerOutcome::Waiting;
         }
         Action::Cast(CastAction { target, spell }) => {
