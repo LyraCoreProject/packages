@@ -2987,6 +2987,15 @@ pub(super) fn fixture_refuse_quest_candidate(
     Ok(())
 }
 
+crate::game_hook!(on_character_relocated, fn playerbots_runner_relocated(ctx, payload) {
+    let Some(mut state) = ctx.db.pkg_playerbots_runner().character_guid().find(payload.character_guid) else { return; };
+    if !state.foreground.as_ref().is_some_and(|foreground| matches!(foreground.running, Running::Movement(_))) { return; }
+    state.foreground = None;
+    state.movement_due_micros = i64::MAX;
+    state.last_outcome = RunnerOutcome::Cancelled;
+    state.save(ctx);
+});
+
 crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payload) {
     let Some(bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.caster_guid).next() else { return; };
     if !matches!(bot.controller, Controller::Legacy | Controller::Cohort) { return; }
