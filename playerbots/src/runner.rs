@@ -2698,6 +2698,13 @@ fn execute(
             };
         }
         Action::Move(target) => {
+            if let Err(refusal) = crate::actor::sessionless_movement_gate(ctx, me.guid) {
+                stop_movement(ctx, me.guid);
+                state.foreground = None;
+                state.movement_due_micros = i64::MAX;
+                state.failure(Failure::ActionRefused(refusal.kind), now);
+                return;
+            }
             let destination = match target {
                 MoveTarget::Home => {
                     if candidate.id.reason == Reason::Survival
