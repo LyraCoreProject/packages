@@ -1,7 +1,6 @@
 //! Continue the selected movement between decision turns. Never select another Candidate here.
 
 use super::*;
-use crate::sessionless::game_sessionless_action_consent;
 
 pub(super) const INTERVAL: i64 = 500_000;
 const BATCH_LIMIT: usize = 128;
@@ -63,17 +62,7 @@ fn advance(ctx: &ReducerContext, state: &mut PlayerbotsRunner, now: i64) {
             movement.destination.instance_id,
         ) != (me.map_id, me.instance_id)
         || state.transfer_checkpoint.is_some()
-        || crate::actor::sessionless_action_gate(ctx, guid).is_err()
-        || ctx
-            .db
-            .game_sessionless_action_consent()
-            .character_guid()
-            .find(guid)
-            .is_some_and(|consent| !consent.allowed)
-        || me.dead
-        || me.health == 0
-        || crate::spell::pending_cast(ctx, guid).is_some()
-        || crate::spell::is_self_movement_suppressed(ctx, guid)
+        || crate::actor::sessionless_movement_gate(ctx, guid).is_err()
         || state.companion_order_revision != order.as_ref().map_or(0, |order| order.revision)
         || movement
             .destination
