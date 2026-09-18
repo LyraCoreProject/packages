@@ -477,6 +477,17 @@ migration default; it does not claim to publish an older Package binary before u
 
 ## Durable controller and objective
 
+Cohort movement continues on the Core movement tick while the decision queue waits. Each pass
+checks at most 128 due movements in oldest-due order, independently of the 16-decision budget.
+It retains the selected Candidate and target, renews movement through the existing navigation and
+collision Gates, and leaves the decision and objective progress clocks alone. Cancellation checks
+include controller generation, ownership, consent, casts, control, death, partition changes, and
+new Companion Orders. An arrived movement waits for the next decision to observe arrival.
+
+`pkg_playerbots_runner.movement_due_micros` is an end-appended indexed execution clock. Its migration
+default is `i64::MAX`, so existing rows start continuation only after their next selected movement.
+Frozen and inactive rows stay outside this queue. Legacy policy keeps its existing executor.
+
 `playerbots_select_controller(guid, controller)` selects one supported controller for that
 Character. The SpacetimeDB argument names remain `legacy`, `recordOnly`, `cohort`, and `frozen`
 because the enum is stored data. A new `legacy` request is refused before consent or Runner state

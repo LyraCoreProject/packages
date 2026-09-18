@@ -201,6 +201,7 @@ fn movement_progress(
     me: &crate::WorldEntity,
     state: &PlayerbotsRunner,
     previous: Option<&ObservedMovement>,
+    last_observed_micros: i64,
 ) -> Option<(crate::nav::RouteStep, ObservedMovement, bool)> {
     let foreground = state.foreground.as_ref()?;
     if foreground.generation != state.generation
@@ -210,7 +211,7 @@ fn movement_progress(
         return None;
     }
     let observation = actions::observation(ctx, me.guid, ActionKind::Move)?;
-    if observation.observed_micros != foreground.started_micros {
+    if observation.observed_micros < foreground.started_micros {
         return None;
     }
     let ActionOutcome::Movement(movement) = observation.outcome else {
@@ -221,37 +222,20 @@ fn movement_progress(
     }
     let route = movement.route;
     let previous_position = previous
-        .filter(|previous| previous.started_micros == foreground.started_micros)
+        .filter(|previous| previous.started_micros == observation.observed_micros)
         .map_or(route.from, |previous| previous.position);
-    let advanced = advanced_on_leg(&route, previous_position, (me.x, me.y).into());
+    let advanced = actions::advanced_on_leg(&route, previous_position, (me.x, me.y).into())
+        || movement.last_advance_micros.is_some_and(|advanced| {
+            advanced > last_observed_micros && advanced >= foreground.started_micros
+        });
     Some((
         route,
         ObservedMovement {
-            started_micros: foreground.started_micros,
+            started_micros: observation.observed_micros,
             position: (me.x, me.y).into(),
         },
         advanced,
     ))
-}
-
-fn advanced_on_leg(
-    route: &crate::nav::RouteStep,
-    previous: crate::nav::RoutePoint,
-    current: crate::nav::RoutePoint,
-) -> bool {
-    let dx = route.endpoint.x - route.from.x;
-    let dy = route.endpoint.y - route.from.y;
-    let length = (dx * dx + dy * dy).sqrt();
-    let moved_x = current.x - route.from.x;
-    let moved_y = current.y - route.from.y;
-    if length > 0.05 {
-        let along = (moved_x * dx + moved_y * dy) / length;
-        let before = ((previous.x - route.from.x) * dx + (previous.y - route.from.y) * dy) / length;
-        let across = (moved_x * dy - moved_y * dx).abs() / length;
-        along > before.max(0.0) + 0.05 && along <= length + 0.25 && across <= 0.25
-    } else {
-        false
-    }
 }
 
 fn quest_completed(ctx: &ReducerContext, guid: u64, work: QuestWork, after: i64) -> bool {
@@ -504,20 +488,26 @@ impl Recovery {
             self.active = None;
             return None;
         }
-        let advanced = movement_progress(ctx, me, state, attempt.last_movement.as_ref())
-            .is_some_and(|(route, observation, advanced)| {
-                let ordinary = state.foreground.as_ref().is_some_and(|foreground| {
-                    !matches!(
-                        foreground.candidate.id.action,
-                        Action::Move(MoveTarget::RecoveryPosition(_))
-                    )
-                });
-                if ordinary {
-                    attempt.route = Some(route);
-                    attempt.last_movement = Some(observation);
-                }
-                advanced && ordinary
+        let advanced = movement_progress(
+            ctx,
+            me,
+            state,
+            attempt.last_movement.as_ref(),
+            attempt.last_observed_micros,
+        )
+        .is_some_and(|(route, observation, advanced)| {
+            let ordinary = state.foreground.as_ref().is_some_and(|foreground| {
+                !matches!(
+                    foreground.candidate.id.action,
+                    Action::Move(MoveTarget::RecoveryPosition(_))
+                )
             });
+            if ordinary {
+                attempt.route = Some(route);
+                attempt.last_movement = Some(observation);
+            }
+            advanced && ordinary
+        });
         if advanced {
             // After an approach was needed, movement can pause the stalled clock but only an
             // authoritative work effect can erase the time already spent without progress.
@@ -816,22 +806,22 @@ mod tests {
             clipping: None,
             coverage: crate::nav::CoverageEvidence::Unknown,
         };
-        assert!(advanced_on_leg(
+        assert!(actions::advanced_on_leg(
             &route,
             (10.0, 0.0).into(),
             (7.0, 0.0).into()
         ));
-        assert!(!advanced_on_leg(
+        assert!(!actions::advanced_on_leg(
             &route,
             (7.0, 0.0).into(),
             (7.0, 0.0).into()
         ));
-        assert!(!advanced_on_leg(
+        assert!(!actions::advanced_on_leg(
             &route,
             (7.0, 0.0).into(),
             (8.0, 0.0).into()
         ));
-        assert!(!advanced_on_leg(
+        assert!(!actions::advanced_on_leg(
             &route,
             (7.0, 0.0).into(),
             (6.0, 3.0).into()

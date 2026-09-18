@@ -346,6 +346,26 @@ pub struct MovementObservation {
     pub last_advance_micros: Option<i64>,
 }
 
+pub(super) fn advanced_on_leg(
+    route: &crate::nav::RouteStep,
+    previous: crate::nav::RoutePoint,
+    current: crate::nav::RoutePoint,
+) -> bool {
+    let dx = route.endpoint.x - route.from.x;
+    let dy = route.endpoint.y - route.from.y;
+    let length = (dx * dx + dy * dy).sqrt();
+    let moved_x = current.x - route.from.x;
+    let moved_y = current.y - route.from.y;
+    if length > 0.05 {
+        let along = (moved_x * dx + moved_y * dy) / length;
+        let before = ((previous.x - route.from.x) * dx + (previous.y - route.from.y) * dy) / length;
+        let across = (moved_x * dy - moved_y * dx).abs() / length;
+        along > before.max(0.0) + 0.05 && along <= length + 0.25 && across <= 0.25
+    } else {
+        false
+    }
+}
+
 pub(super) fn movement(
     ctx: &ReducerContext,
     guid: u64,
@@ -363,13 +383,12 @@ pub(super) fn movement(
                 && previous.instance_id == instance_id
                 && previous.destination == destination
             {
-                let dx = route.from.x - previous.route.from.x;
-                let dy = route.from.y - previous.route.from.y;
-                last_advance_micros = if dx * dx + dy * dy > 0.05 * 0.05 {
-                    Some(now)
-                } else {
-                    previous.last_advance_micros
-                };
+                last_advance_micros =
+                    if advanced_on_leg(&previous.route, previous.route.from, route.from) {
+                        Some(now)
+                    } else {
+                        previous.last_advance_micros
+                    };
             }
         }
     }
