@@ -2255,8 +2255,8 @@ pub(crate) fn wander_offset(character_guid: u64, window: i64) -> (f32, f32) {
 // ---- movement --------------------------------------------------------------------------------
 
 /// One movement leg toward `dest`, stopping `stand_off` yards short of it, capped at what the bot
-/// can cover in one second. Cohort movement continues between decision turns. It uses the same
-/// `game_creature_spline` row and Gateway relay as other creature movement.
+/// can cover before it next thinks. Writes the same `game_creature_spline` row every creature leg
+/// writes, so the Gateway relays it through the one movement path it already has.
 pub(super) fn walk_toward(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,

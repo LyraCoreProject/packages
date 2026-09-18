@@ -210,7 +210,7 @@ fn movement_progress(
         return None;
     }
     let observation = actions::observation(ctx, me.guid, ActionKind::Move)?;
-    if observation.observed_micros != foreground.started_micros {
+    if observation.observed_micros < foreground.started_micros {
         return None;
     }
     let ActionOutcome::Movement(movement) = observation.outcome else {
@@ -221,13 +221,13 @@ fn movement_progress(
     }
     let route = movement.route;
     let previous_position = previous
-        .filter(|previous| previous.started_micros == foreground.started_micros)
+        .filter(|previous| previous.started_micros == observation.observed_micros)
         .map_or(route.from, |previous| previous.position);
     let advanced = advanced_on_leg(&route, previous_position, (me.x, me.y).into());
     Some((
         route,
         ObservedMovement {
-            started_micros: foreground.started_micros,
+            started_micros: observation.observed_micros,
             position: (me.x, me.y).into(),
         },
         advanced,

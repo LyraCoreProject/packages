@@ -2511,6 +2511,8 @@ fn run(
             {
                 state.chosen = Some(fg.candidate);
                 state.last_outcome = RunnerOutcome::Waiting;
+                // Finish this leg, then release movement to the newly selected action.
+                state.movement_due_micros = i64::MAX;
                 state.save(ctx);
                 return;
             }
