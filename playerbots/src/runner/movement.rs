@@ -4,7 +4,83 @@ use super::*;
 
 pub(super) const INTERVAL: i64 = 500_000;
 const BATCH_LIMIT: usize = 128;
-const RENEW_BEFORE_MICROS: u64 = 100_000;
+
+pub(super) fn begin(
+    ctx: &ReducerContext,
+    me: &crate::WorldEntity,
+    destination: (f32, f32, f32),
+    stand_off: f32,
+) {
+    let route = crate::nav::route_path(
+        ctx,
+        me.map_id,
+        me.instance_id,
+        (me.x, me.y, me.z),
+        destination,
+        stand_off,
+    );
+    if route.points.is_empty() {
+        stop_movement(ctx, me.guid);
+    }
+    actions::movement(
+        ctx,
+        me.guid,
+        me.map_id,
+        me.instance_id,
+        (destination.0, destination.1).into(),
+        (me.x - destination.0).hypot(me.y - destination.1) <= stand_off + 0.05,
+        route.step,
+    );
+    if let Ok(mover) = crate::helpers::live_entity(ctx, me.guid) {
+        crate::creatures::tick::emit_creature_path(ctx, mover, route.points, true);
+    }
+}
+
+pub(super) fn retained(
+    ctx: &ReducerContext,
+    state: &PlayerbotsRunner,
+    candidate: Candidate,
+    destination: &Destination,
+    now: i64,
+) -> bool {
+    let Some(foreground) = &state.foreground else {
+        return false;
+    };
+    let Running::Movement(movement) = &foreground.running else {
+        return false;
+    };
+    foreground.generation == state.generation
+        && foreground.candidate.id == candidate.id
+        && (
+            destination.map_id,
+            destination.instance_id,
+            destination.geometry_revision,
+        ) == (
+            movement.destination.map_id,
+            movement.destination.instance_id,
+            movement.destination.geometry_revision,
+        )
+        && (destination.x - movement.destination.x).hypot(destination.y - movement.destination.y)
+            <= 2.0
+        && (destination.z - movement.destination.z).abs() <= 2.0
+        && ctx
+            .db
+            .game_creature_spline()
+            .guid()
+            .find(state.character_guid)
+            .is_some_and(|spline| {
+                spline.path.is_some_and(|path| {
+                    path.navigation == crate::nav::inputs(ctx, destination.map_id)
+                }) && spline
+                    .start_micros
+                    .saturating_add(u64::from(spline.dur_ms) * 1000)
+                    > now.max(0) as u64
+                    && actions::observation(ctx, state.character_guid, actions::ActionKind::Move)
+                        .is_some_and(|observation| {
+                            spline.start_micros == observation.observed_micros as u64
+                        })
+            })
+}
 
 pub(super) fn stand_off(candidate: Candidate) -> f32 {
     match candidate.id.action {
@@ -94,9 +170,27 @@ fn advance(ctx: &ReducerContext, state: &mut PlayerbotsRunner, now: i64) {
             return;
         }
         if spline
-            .start_micros
-            .saturating_add(u64::from(spline.dur_ms) * 1000)
-            > (now.max(0) as u64).saturating_add(RENEW_BEFORE_MICROS)
+            .path
+            .as_ref()
+            .is_some_and(|path| path.navigation != crate::nav::inputs(ctx, me.map_id))
+        {
+            stop(ctx, guid, state);
+            state.last_outcome = RunnerOutcome::Cancelled;
+            return;
+        }
+        let more_path = (spline.dx - destination.x).hypot(spline.dy - destination.y)
+            > stand_off(foreground.candidate) + 0.05;
+        let renew_at =
+            (now.max(0) as u64).saturating_add(if more_path { INTERVAL as u64 } else { 0 });
+        let destination_changed = (destination.x - movement.destination.x)
+            .hypot(destination.y - movement.destination.y)
+            > 2.0
+            || (destination.z - movement.destination.z).abs() > 2.0;
+        if !destination_changed
+            && spline
+                .start_micros
+                .saturating_add(u64::from(spline.dur_ms) * 1000)
+                > renew_at
         {
             state.movement_due_micros = now.saturating_add(INTERVAL);
             return;
@@ -111,12 +205,11 @@ fn advance(ctx: &ReducerContext, state: &mut PlayerbotsRunner, now: i64) {
         // The next decision observes arrival and advances the objective's own progress clock.
         return;
     }
-    super::super::goals::walk_toward(
+    begin(
         ctx,
         &me,
         (destination.x, destination.y, destination.z),
         stand_off,
-        true,
     );
     if let Some(Foreground {
         running: Running::Movement(movement),
