@@ -479,10 +479,16 @@ migration default; it does not claim to publish an older Package binary before u
 
 Cohort movement continues on the Core movement tick while the decision queue waits. Each pass
 checks at most 128 due movements in oldest-due order, independently of the 16-decision budget.
-It retains the selected Candidate and target, renews movement through the existing navigation and
-collision Gates, and leaves the decision and objective progress clocks alone. Cancellation checks
+It retains the selected Candidate, target, and Route Path. The Core and client traverse the same
+waypoints without waiting for another decision at each turn. The planner retains at most 64 points
+and 112 yards, then fits the route to the client's quarter-yard coordinates. It plans the next
+section before the current section ends, or sooner if a moving target changes its destination by
+more than two yards. Current collision Gates still apply during travel, and changed navigation
+inputs cancel a retained path.
+The movement pass leaves the decision and objective progress clocks alone. Cancellation checks
 include controller generation, ownership, consent, casts, control, death, partition changes, and
-new Companion Orders. An arrived movement waits for the next decision to observe arrival.
+new Companion Orders. A ready cast, attack, or interaction can interrupt travel. An arrived
+movement waits for the next decision to observe arrival. Legacy movement keeps its existing legs.
 
 `pkg_playerbots_runner.movement_due_micros` is an end-appended indexed execution clock. Its migration
 default is `i64::MAX`, so existing rows start continuation only after their next selected movement.

@@ -2487,7 +2487,10 @@ fn run(
                 fg.candidate.id.reason,
                 Reason::Survival | Reason::Resurrection
             );
-        let preempts = stay_interrupts
+        let ready_action = matches!(fg.running, Running::Movement(_))
+            && chosen.is_some_and(|c| !matches!(c.id.action, Action::Move(_) | Action::Hold));
+        let preempts = ready_action
+            || stay_interrupts
             || foreground_target_invalid
             || chosen.is_some_and(|c| c.priority > fg.candidate.priority);
         if incompatible && preempts {
@@ -2786,12 +2789,18 @@ fn execute(
             if candidate.id.reason == Reason::Survival {
                 let _ = crate::actor::stop_attack(ctx, me.guid);
             }
-            super::goals::walk_toward(
+            if movement::retained(ctx, state, candidate, &dest, now) {
+                state.last_outcome = RunnerOutcome::Waiting;
+                state.movement_due_micros = state
+                    .movement_due_micros
+                    .min(now.saturating_add(movement::INTERVAL));
+                return;
+            }
+            movement::begin(
                 ctx,
                 me,
                 (dest.x, dest.y, dest.z),
                 movement::stand_off(candidate),
-                true,
             );
             state.route_expansions =
                 super::actions::observation(ctx, me.guid, super::actions::ActionKind::Move)

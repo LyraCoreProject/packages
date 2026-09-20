@@ -3,7 +3,7 @@
 use super::actions::{self, ActionKind, ActionOutcome};
 use super::decision::{Action, Candidate, CastAction, MoveTarget, QuestInteraction, Reason};
 use super::runner::{Destination, ObjectiveKind, PlayerbotsRunner, Running};
-use crate::{game_aura, game_gameobject, game_world_entity};
+use crate::{game_aura, game_creature_spline, game_gameobject, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const CHANGE_APPROACH_MICROS: i64 = 10_000_000;
@@ -224,10 +224,35 @@ fn movement_progress(
     let previous_position = previous
         .filter(|previous| previous.started_micros == observation.observed_micros)
         .map_or(route.from, |previous| previous.position);
-    let advanced = actions::advanced_on_leg(&route, previous_position, (me.x, me.y).into())
-        || movement.last_advance_micros.is_some_and(|advanced| {
-            advanced > last_observed_micros && advanced >= foreground.started_micros
+    let path_advance = ctx
+        .db
+        .game_creature_spline()
+        .guid()
+        .find(me.guid)
+        .filter(|spline| spline.start_micros == observation.observed_micros as u64)
+        .and_then(|spline| {
+            let points: Vec<_> = spline
+                .path
+                .as_ref()?
+                .points
+                .iter()
+                .map(|p| (p.x, p.y, p.z))
+                .collect();
+            let start = (spline.sx, spline.sy, spline.sz);
+            let before = lyracore_shared::movement_path::progress_2d(
+                start,
+                &points,
+                (previous_position.x, previous_position.y),
+            )?;
+            let current =
+                lyracore_shared::movement_path::progress_2d(start, &points, (me.x, me.y))?;
+            Some(current > before + 0.05)
         });
+    let advanced = path_advance.unwrap_or_else(|| {
+        actions::advanced_on_leg(&route, previous_position, (me.x, me.y).into())
+    }) || movement.last_advance_micros.is_some_and(|advanced| {
+        advanced > last_observed_micros && advanced >= foreground.started_micros
+    });
     Some((
         route,
         ObservedMovement {
