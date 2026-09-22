@@ -3832,6 +3832,15 @@ pub fn playerbots_fixture_provision_trainer_catalog(
     if bot.class != super::class::WARRIOR {
         return Err("trainer catalogue fixture requires a Warrior".to_string());
     }
+    // This scenario supplies its own ten spell rows within the bounded profile.
+    let kits = ctx.db.pkg_playerbots_kit();
+    for row in kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .collect::<Vec<_>>()
+    {
+        kits.id().delete(row.id);
+    }
     for spell in [355, 2050, 139, 133] {
         if ctx.db.game_spell().spell_id().find(spell).is_none() {
             return Err(format!("seed spell {spell} missing"));

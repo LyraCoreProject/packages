@@ -218,6 +218,18 @@ fn playerbots_default_upgrade_preserves_operator_rotations() {
     assert!(node
         .query_rows("SELECT spell_id FROM pkg_playerbots_kit WHERE spell_id = 78")
         .is_empty());
+    for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
+        node.assert_sql(&format!("DELETE FROM {table}"));
+    }
+    node.assert_call(
+        "playerbots_spawn_class_role",
+        &["0", "1200", "1200", "50", "1", "0"],
+    );
+    for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
+        assert!(node
+            .query_rows(&format!("SELECT * FROM {table}"))
+            .is_empty());
+    }
 }
 
 #[test]
@@ -271,4 +283,63 @@ fn playerbots_priest_completes_self_healing_solo_and_in_a_party() {
             "Lesser Heal did not restore health, grouped={grouped}"
         );
     }
+}
+
+#[test]
+#[ignore = "requires the pinned Standalone and Module Wasm"]
+fn playerbots_priest_heals_at_the_quest_safe_position_before_resuming_travel() {
+    let mut node = Standalone::start("playerbots-priest-quest-recovery");
+    node.publish_module();
+    node.assert_call("claim_operator", &[]);
+    node.assert_call("install_guid_range", &["1000000"]);
+    node.assert_call(
+        "playerbots_spawn_class_role",
+        &["1", "1200", "1200", "50", "5", "1"],
+    );
+    let guid = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot")[0]
+        ["character_guid"]
+        .clone();
+    node.assert_sql("DELETE FROM game_import_meta WHERE family = 'weather_seed'");
+    node.assert_call("playerbots_quest_loop_fixture_stage_named", &[&guid]);
+    node.assert_call("playerbots_quest_fixture_admit_accept", &[&guid, "7"]);
+    node.assert_call("playerbots_fixture_position", &[&guid, "1340"]);
+    node.assert_call("playerbots_fixture_runner_select_cohort", &[&guid]);
+    pass(&node, &guid);
+    let retained = node.query_rows(&format!(
+        "SELECT safe_position FROM pkg_playerbots_quest_objective WHERE character_guid = {guid}"
+    ));
+    assert_eq!(retained.len(), 1, "{retained:?}");
+    assert!(
+        retained[0]["safe_position"].contains("x = 1340"),
+        "{retained:?}"
+    );
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_personality SET flee_at_pct = 30, heal_at_pct = 50 WHERE character_guid = {guid}"
+    ));
+    node.assert_call("playerbots_fixture_companion_health", &[&guid, "10"]);
+    node.assert_sql(&format!(
+        "DELETE FROM game_spell_cooldown WHERE caster_guid = {guid}"
+    ));
+    let health_query = format!("SELECT health FROM game_world_entity WHERE guid = {guid}");
+    let before = node.query_rows(&health_query)[0]["health"]
+        .parse::<u32>()
+        .unwrap();
+    pass(&node, &guid);
+    let runner = node.query_rows(&format!(
+        "SELECT chosen, objective FROM pkg_playerbots_runner WHERE character_guid = {guid}"
+    ));
+    assert!(runner[0]["objective"].contains("quest"), "{runner:?}");
+    assert!(runner[0]["chosen"].contains("recovery"), "{runner:?}");
+    assert!(node
+        .query_rows(&format!(
+            "SELECT spell_id, target_guid FROM game_pending_cast WHERE caster_guid = {guid}"
+        ))
+        .iter()
+        .any(|cast| cast["spell_id"] == "2050" && cast["target_guid"] == guid));
+    assert!(support::poll_until(Duration::from_secs(8), || {
+        node.query_rows(&health_query)[0]["health"]
+            .parse::<u32>()
+            .unwrap()
+            > before
+    }));
 }

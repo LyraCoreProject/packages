@@ -444,12 +444,12 @@ pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
         crate::package_config::ensure_package_config_default(ctx, PACKAGE, key, value);
     }
     quest_catalog::ensure_catalog(ctx);
-    if ctx.db.pkg_playerbots_kit().count() > 0 || ctx.db.pkg_playerbots_rotation().count() > 0 {
-        if config_value(ctx, "class_defaults_revision").is_none() {
+    if config_value(ctx, "class_defaults_revision").is_none() {
+        if ctx.db.pkg_playerbots_kit().count() > 0 || ctx.db.pkg_playerbots_rotation().count() > 0 {
             upgrade_starter_role_defaults(ctx);
+        } else {
+            seed_class_role_data(ctx);
         }
-    } else {
-        seed_class_role_data(ctx);
     }
     crate::package_config::ensure_package_config_default(
         ctx,

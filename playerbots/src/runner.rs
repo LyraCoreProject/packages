@@ -1950,7 +1950,12 @@ fn run(
     } else {
         node(Action::Hold, Reason::Survival, 900)
     };
-    if (!quest_objective && at_destination) || (quest_objective && at_safe_destination) {
+    let at_recovery_destination = if quest_objective {
+        at_safe_destination
+    } else {
+        at_destination
+    };
+    if at_recovery_destination {
         survival.readiness = Readiness::Complete;
     }
     if let Some(deferred) = state
@@ -2043,7 +2048,7 @@ fn run(
                 &me,
                 party,
                 follow_member_guid,
-                !low_health || at_destination,
+                !low_health || at_recovery_destination,
                 state.objective_sequence,
                 state.companion_heal_target_guid,
                 state.companion_fight_target_guid,
@@ -2091,7 +2096,7 @@ fn run(
                 super::class_behavior::SupportContext {
                     party: None,
                     in_combat: threat.is_some() || me.combat_until_ms > (now / 1000) as u64,
-                    permits_healing: !low_health || at_destination,
+                    permits_healing: !low_health || at_recovery_destination,
                     heal_target: state.companion_heal_target_guid,
                     buff_target: state.companion_buff_target_guid,
                 },

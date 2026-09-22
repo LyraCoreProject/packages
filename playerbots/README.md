@@ -536,7 +536,7 @@ Warrior tanks through accepted melee when Taunt or Sunder Armor 7386 is not lear
 spell definition, and uses learned Heroic Strike when rage permits. A queued strike keeps its swing
 timer and reserves its rage until the swing fires. The Priest heals a wounded member before it uses
 Smite. The Mage uses Fireball from casting range and never receives a melee fallback from its
-damage role.
+companion damage role.
 
 A leader's selected target affects a companion only after current melee, casting, or active threat
 shows that the party is already fighting it. The selected engaged target wins over retained and
