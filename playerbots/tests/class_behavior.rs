@@ -201,10 +201,12 @@ fn playerbots_default_upgrade_preserves_operator_rotations() {
             .len(),
         1
     );
+    // Mark the Operator edit first so a background tick cannot upgrade an intermediate
+    // exact shipped catalogue between the two SQL deletions.
+    node.assert_sql("DELETE FROM pkg_playerbots_rotation WHERE spell_id = 355");
     for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
         node.assert_sql(&format!("DELETE FROM {table} WHERE spell_id = 78"));
     }
-    node.assert_sql("DELETE FROM pkg_playerbots_rotation WHERE spell_id = 355");
     let mut before = node.query_rows("SELECT * FROM pkg_playerbots_rotation");
     before.sort();
     node.assert_call(
