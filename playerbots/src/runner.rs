@@ -1900,11 +1900,16 @@ fn run(
         }
     }
     let mut defense = match &threat {
-        Some(target) => match super::quest_loop::combat_strategy(
+        Some(target) => match super::class_behavior::combat(
             ctx,
             bot,
             &me,
-            target.guid,
+            super::class_behavior::Fight {
+                target: target.guid,
+                protecting_ally: false,
+                tank_engaged: false,
+                fallback: super::class_behavior::FightFallback::Melee,
+            },
             objective_sequence,
             Reason::Defense,
             DEFENSE_PRIORITY,
@@ -1945,7 +1950,12 @@ fn run(
     } else {
         node(Action::Hold, Reason::Survival, 900)
     };
-    if (!quest_objective && at_destination) || (quest_objective && at_safe_destination) {
+    let at_recovery_destination = if quest_objective {
+        at_safe_destination
+    } else {
+        at_destination
+    };
+    if at_recovery_destination {
         survival.readiness = Readiness::Complete;
     }
     if let Some(deferred) = state
@@ -1986,8 +1996,8 @@ fn run(
         ));
     } else {
         strategies.push(strategy(Trigger::LowHealth, survival));
-        if party.is_none() || bot.role != super::ROLE_HEALER {
-            strategies.push(strategy(Trigger::Wounded, recovery));
+        if bot.role != super::ROLE_HEALER {
+            strategies.push(strategy(Trigger::Wounded, recovery.clone()));
         }
         strategies.push(strategy(Trigger::Attacked, defense));
         let transfer_partition = party
@@ -2038,7 +2048,7 @@ fn run(
                 &me,
                 party,
                 follow_member_guid,
-                !low_health || at_destination,
+                !low_health || at_recovery_destination,
                 state.objective_sequence,
                 state.companion_heal_target_guid,
                 state.companion_fight_target_guid,
@@ -2079,6 +2089,38 @@ fn run(
             companion_heal_target = None;
             companion_fight_target = None;
             companion_buff_target = None;
+            match super::class_behavior::support(
+                ctx,
+                bot,
+                &me,
+                super::class_behavior::SupportContext {
+                    party: None,
+                    in_combat: threat.is_some() || me.combat_until_ms > (now / 1000) as u64,
+                    permits_healing: !low_health || at_recovery_destination,
+                    heal_target: state.companion_heal_target_guid,
+                    buff_target: state.companion_buff_target_guid,
+                },
+                state.objective_sequence,
+                &travel_action,
+            ) {
+                Ok(support) => {
+                    companion_heal_target = support.heal_target;
+                    companion_buff_target = support.buff_target;
+                    if let Some(unavailable) = support.read_failure {
+                        state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                    }
+                    strategies.push(Strategy {
+                        trigger: Trigger::Always,
+                        candidates: support.candidates,
+                        defaults: vec![],
+                        priority_adjustment: 0,
+                    });
+                }
+                Err(unavailable) => {
+                    state.failure(Failure::RoleFactsUnavailable(unavailable), now);
+                    strategies.push(strategy(Trigger::Wounded, recovery.clone()));
+                }
+            }
             if let Some(plan) = quest_plan {
                 let unavailable = node(Action::Hold, Reason::Quest, 110);
                 if state.retry_candidate == Some(unavailable.candidate.id)
@@ -2128,11 +2170,16 @@ fn run(
             } else {
                 match &grind_target {
                     Some(super::quest_loop::LiveCreatureTarget::Found(target)) => {
-                        match super::quest_loop::combat_strategy(
+                        match super::class_behavior::combat(
                             ctx,
                             bot,
                             &me,
-                            target.guid,
+                            super::class_behavior::Fight {
+                                target: target.guid,
+                                protecting_ally: false,
+                                tank_engaged: false,
+                                fallback: super::class_behavior::FightFallback::Melee,
+                            },
                             state.objective_sequence,
                             Reason::Grind,
                             105,
@@ -2828,7 +2875,15 @@ fn execute(
         }
         Action::Cast(CastAction { target, spell }) => {
             stop_movement(ctx, me.guid);
-            let _ = crate::actor::stop_attack(ctx, me.guid);
+            let queued_swing = super::class_behavior::queues_swing(ctx, spell);
+            if queued_swing {
+                if let Err(refusal) = actions::attack(ctx, me.guid, target) {
+                    state.failure(Failure::ActionRefused(refusal.kind), now);
+                    return;
+                }
+            } else if target != me.guid || !super::class_behavior::combat_buff(ctx, spell) {
+                let _ = crate::actor::stop_attack(ctx, me.guid);
+            }
             match super::actions::cast(ctx, me.guid, spell, target) {
                 Ok(
                     crate::spell::CastStart::Started(handle)

@@ -533,8 +533,10 @@ Priest Smite 585 and Lesser Heal 2050, and the Mage Fireball 133 and Frost Armor
 Renew 139 remain unavailable until levels 10 and 8. At level 10, seed-only demo provisioning admits
 both and the role cases exercise them. Imported Shards still require real trainer offerings. The
 Warrior tanks through accepted melee when Taunt or Sunder Armor 7386 is not learned or lacks a usable
-spell definition. The Priest heals a wounded member before it uses Smite. The Mage uses Fireball
-from casting range and never receives a melee fallback from its damage role.
+spell definition, and uses learned Heroic Strike when rage permits. A queued strike keeps its swing
+timer and reserves its rage until the swing fires. The Priest heals a wounded member before it uses
+Smite. The Mage uses Fireball from casting range and never receives a melee fallback from its
+companion damage role.
 
 A leader's selected target affects a companion only after current melee, casting, or active threat
 shows that the party is already fighting it. The selected engaged target wins over retained and
@@ -549,12 +551,22 @@ issued both commands, even before that member attacks. The exact target must sti
 hostile, uncontrolled, and in the companion's partition. A Refusal for that target does not select
 another fight.
 
-Between fights, rotation rows can name a self or party buff. The same core cast Gate checks the
+Solo questing, grinding, self-defense, and companion combat share class spell selection, healing,
+and buff checks. Party orders supply fight targets and movement constraints. Solo bots include themselves
+when a rotation names an ally heal or buff. Instant rage self-buffs, including Battle Shout, are
+considered during combat before ordinary attacks, without spending rage reserved for a queued strike.
+Other maintenance buffs wait until combat ends.
+
+Rotation rows can name a self or party buff. The same core cast Gate checks the
 spellbook, level, resource, range, and line of sight before the action runs. Missing range or line of
 sight retains the buff target while the bot repairs its position. Active exact auras and equally
 strong or stronger members of an exclusive buff family satisfy the row, so the bot does not refresh
 them. Oversized or ambiguous aura, family, threat, enemy, pending-cast, and rotation reads hold and
 record their typed Party or role read failure instead of choosing from a partial scan.
+The shipped rotation and kit gain Heroic Strike only when both still match a preceding shipped
+catalogue. Any Operator customization preserves both tables.
+The `class_defaults_revision` Config row records that check once. Later Operator deletions remain
+in place even when they happen to recreate a preceding catalogue.
 An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
 control. A membership whose parent Group is unavailable holds the existing objective and records the
 typed failure. The transitional Legacy executor remains only for populated rows that have not yet
@@ -680,3 +692,12 @@ Routes can pass either end of the wall inside the staged terrain. Navigation mus
 bot toward a home point 700 yards away. No fixture operation drives decisions during measurement.
 This measures the declared movement workload. Imported-world and companion capacity need their own
 observations.
+
+### Class behavior verification
+
+Run `.github/check-playerbots-class-behavior.sh /path/to/LyraCore` from this collection.
+The script stages `playerbots/tests/class_behavior.rs` beside Core's existing Standalone support,
+refuses to replace an existing test, and removes its staged file on exit. It links the collection
+through `check-core-tip.sh` and runs against private Standalone Shards with the pinned toolchain.
+The checks cover solo and grouped starter casts, healing, buff retention, queued rage, swing firing,
+and preservation of Operator rotation edits. They do not establish attended client acceptance.

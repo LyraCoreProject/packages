@@ -29,6 +29,198 @@ const ROLES_WARRIOR_TRAINER: u32 = 5_098_202;
 const ROLES_TAUNT_OFFERING: u64 = 5_098_203;
 const COMPLETED_QUEST_EFFECT_LIFETIME_MICROS: i64 = 120_000_000;
 
+/// Stage starter class decisions on a private Shard, retaining the shipped rotations.
+#[reducer]
+pub fn playerbots_fixture_class_stage(
+    ctx: &ReducerContext,
+    guid: u64,
+    leader_guid: u64,
+    grouped: bool,
+    fighting: bool,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content
+    // Family is the primary key, so at most one row can be the built-in weather seed.
+    if ctx
+        .db
+        .game_import_meta()
+        .iter()
+        .take(2)
+        .any(|row| row.family != "weather_seed")
+    {
+        return Err("class fixture requires a private, unimported Shard".into());
+    }
+    playerbots_fixture_prepare(ctx)?;
+    playerbots_fixture_runner_stage(ctx, guid, false)?;
+    let mut strike = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(355)
+        .ok_or("seed Taunt missing")?;
+    strike.spell_id = 78;
+    strike.name = "Heroic Strike".into();
+    strike.spell_level = 1;
+    strike.range_yd = 5;
+    strike.cost = 150;
+    strike.stances = 0;
+    ctx.db.game_spell().spell_id().delete(78);
+    ctx.db.game_spell().insert(strike);
+    let mut effect = ctx
+        .db
+        .game_spell_effect()
+        .by_spell()
+        .filter(355u32)
+        .next()
+        .ok_or("seed Taunt effect missing")?;
+    effect.id = 78u64 << 2;
+    effect.spell_id = 78;
+    effect.effect_index = 0;
+    effect.kind = crate::spell::E_NEXT_SWING;
+    effect.base_points = 11;
+    effect.target = crate::spell::T_TARGET_ENEMY;
+    ctx.db.game_spell_effect().id().delete(effect.id);
+    ctx.db.game_spell_effect().insert(effect);
+    let mut shout = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(6673)
+        .ok_or("seed Shout missing")?;
+    shout.cost = 100;
+    shout.duration_ms = 120_000;
+    ctx.db.game_spell().spell_id().update(shout);
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.level = 1;
+    me.health = me.max_health;
+    me.max_power = 1000;
+    me.power = 400;
+    ctx.db.game_world_entity().guid().update(me);
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("bot missing")?;
+    if bot.class == super::class::PRIEST {
+        super::quest_catalog_fixture::stage_loopback_smite(ctx)?;
+    }
+    for spell in match bot.class {
+        super::class::WARRIOR => vec![78, 6673],
+        super::class::PRIEST => vec![2050, 585, 1243],
+        super::class::MAGE => vec![133, 168],
+        _ => return Err("unsupported fixture class".into()),
+    } {
+        crate::spell::learn_spell(ctx, guid, spacetimedb::Identity::ZERO, spell);
+    }
+    let leader = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(leader_guid)
+        .next()
+        .ok_or("leader bot missing")?;
+    ctx.db.pkg_playerbots_bot().id().delete(leader.id);
+    crate::actor::set_sessionless_action_consent(ctx, leader_guid, true);
+    companion_unit(ctx, leader_guid, 1201.0, 1200.0, 100)?;
+    if grouped {
+        let members = vec![leader_guid, guid];
+        let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;
+        crate::group::sync_group_mirror(
+            ctx,
+            ROLES_GROUP,
+            leader_guid,
+            0,
+            2,
+            0,
+            members,
+            crate::SessionActor {
+                guid: leader_guid,
+                ownership: None,
+            },
+            partitions,
+            1,
+        )?;
+    }
+    let enemy = companion_creature(ctx, 5_098_090, 1203.0, 1200.0, 50.0, None)?;
+    let mut target = crate::helpers::live_entity(ctx, enemy)?;
+    target.level = 1;
+    target.health = 10_000;
+    target.max_health = 10_000;
+    ctx.db.game_world_entity().guid().update(target);
+    playerbots_fixture_runner_select_cohort(ctx, guid)?;
+    // Keep equipment and supply work out of the explicitly staged decision window.
+    use super::pkg_playerbots_provisioning;
+    if let Some(mut profile) = ctx
+        .db
+        .pkg_playerbots_provisioning()
+        .character_guid()
+        .find(guid)
+    {
+        profile.armed_level = 1;
+        profile.next_repair_micros = i64::MAX;
+        ctx.db
+            .pkg_playerbots_provisioning()
+            .character_guid()
+            .update(profile);
+    }
+    if fighting {
+        crate::combat::enter_combat(ctx, guid);
+        playerbots_fixture_runner_damage_and_park(ctx, guid, enemy, 1)?;
+        if grouped {
+            playerbots_fixture_roles_select(ctx, leader_guid, enemy)?;
+        }
+    }
+    Ok(())
+}
+
+/// Hold a queued strike until the next explicit decision has been inspected.
+#[reducer]
+pub fn playerbots_fixture_class_hold_queue(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let enemy = (0xF130u64 << 48) | (5_098_090u64 << 24) | 1;
+    crate::actor::request_attack(ctx, guid, enemy).map_err(|refusal| format!("{refusal:?}"))?;
+    crate::combat::enter_combat(ctx, guid);
+    let mut me = crate::helpers::live_entity(ctx, guid)?;
+    me.next_swing_spell = 78;
+    me.power = 200;
+    me.base_attack_time_ms = 60_000;
+    ctx.db.game_world_entity().guid().update(me);
+    let mut attack = ctx
+        .db
+        .game_melee_attack()
+        .attacker_guid()
+        .find(guid)
+        .ok_or("attack missing")?;
+    attack.last_swing_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
+    ctx.db.game_melee_attack().attacker_guid().update(attack);
+    Ok(())
+}
+
+/// Observe the buff's cost inside its transaction, before regeneration or incoming hits can run.
+#[reducer]
+pub fn playerbots_fixture_class_shout_pass(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let before = crate::helpers::live_entity(ctx, guid)?.power;
+    playerbots_fixture_runner_pass_once(ctx, guid)?;
+    let after = crate::helpers::live_entity(ctx, guid)?.power;
+    if before.checked_sub(100) != Some(after)
+        || !ctx
+            .db
+            .game_aura()
+            .by_target()
+            .filter(guid)
+            .take(65)
+            .any(|aura| aura.spell_id == 6673)
+    {
+        return Err(format!(
+            "Battle Shout did not apply with its 10-rage cost: {before} -> {after}"
+        ));
+    }
+    Ok(())
+}
+
 /// Move the fixture's human stand-in onto an Account no other private party member uses before
 /// exercising the authenticated Gateway Actor Gate.
 #[reducer]
@@ -1794,6 +1986,7 @@ pub fn playerbots_fixture_runner_kill_creature(
     let health = crate::helpers::live_entity(ctx, target)?.health;
     let (amount, _) = crate::combat::fold_incoming_damage(ctx, killer, target, health);
     let damage = crate::combat::final_damage(ctx, target, amount);
+    crate::loot::tag::clear(ctx, target);
     let outcome = crate::combat::apply_hit(
         ctx,
         killer,
@@ -3424,8 +3617,8 @@ pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), 
 }
 
 /// Give the completion scenario an explicit no-import profile whose every spell has a seeded
-/// `game_spell` header. The default Warrior tank profile still names Sunder Armor (7386); its
-/// missing-resource behavior is exercised separately.
+/// `game_spell` header. Sunder Armor and Heroic Strike have no no-import seed header; missing
+/// profile resources are exercised separately.
 #[reducer]
 pub fn playerbots_fixture_provision_complete_profile(
     ctx: &ReducerContext,
@@ -3450,7 +3643,10 @@ pub fn playerbots_fixture_provision_complete_profile(
     for row in kits
         .by_class_role()
         .filter((bot.class, bot.role))
-        .filter(|row| row.spell_id == 7386)
+        .filter(|row| {
+            row.spell_id == 7386
+                || (row.spell_id == 78 && ctx.db.game_spell().spell_id().find(78).is_none())
+        })
         .collect::<Vec<_>>()
     {
         kits.id().delete(row.id);
@@ -3636,6 +3832,15 @@ pub fn playerbots_fixture_provision_trainer_catalog(
         .ok_or("bot missing")?;
     if bot.class != super::class::WARRIOR {
         return Err("trainer catalogue fixture requires a Warrior".to_string());
+    }
+    // This scenario supplies its own ten spell rows within the bounded profile.
+    let kits = ctx.db.pkg_playerbots_kit();
+    for row in kits
+        .by_class_role()
+        .filter((bot.class, bot.role))
+        .collect::<Vec<_>>()
+    {
+        kits.id().delete(row.id);
     }
     for spell in [355, 2050, 139, 133] {
         if ctx.db.game_spell().spell_id().find(spell).is_none() {
