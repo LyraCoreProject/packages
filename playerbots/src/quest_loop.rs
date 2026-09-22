@@ -1,8 +1,6 @@
 //! Autonomous execution for one retained supported quest.
 
-use super::decision::{
-    Action, ActionNode, CastAction, MoveTarget, QuestInteraction, QuestLoot, Readiness, Reason,
-};
+use super::decision::{Action, ActionNode, MoveTarget, QuestInteraction, QuestLoot, Reason};
 use super::quest_catalog::{
     pkg_playerbots_quest_objective, CatalogDestination, CatalogEntityKind, ObjectiveExecutor,
     PlayerbotsQuestObjective, RetainedPosition,
@@ -13,7 +11,6 @@ use spacetimedb::ReducerContext;
 
 const SEARCH_RADIUS_YD: f32 = 100.0;
 const INTERACTION_RANGE_YD: f32 = 9.0;
-const MELEE_RANGE_YD: f32 = 4.0;
 const RAW_ENTITY_LIMIT: usize = 96;
 const CORPSE_LIMIT: usize = 8;
 const CONTROL_TARGET_LIMIT: usize = 12;
@@ -656,61 +653,6 @@ fn action_node(action: Action, reason: Reason, priority: i32, objective: u64) ->
     node
 }
 
-pub(super) fn combat_strategy(
-    ctx: &ReducerContext,
-    bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
-    target: u64,
-    objective: u64,
-    reason: Reason,
-    priority: i32,
-) -> Result<ActionNode, super::companion::RoleReadError> {
-    if let Some(spell) =
-        super::companion::combat_spell(ctx, bot, me.guid, target, &[super::cond::ALWAYS])?
-    {
-        let cast = CastAction { target, spell };
-        let mut selected = action_node(Action::Cast(cast), reason, priority, objective);
-        if crate::spell::pending_cast(ctx, me.guid)
-            .is_none_or(|pending| pending.spell_id != spell || pending.target_guid != target)
-        {
-            match super::companion::cast_preparation(ctx, me, spell, target) {
-                super::companion::CastPreparation::Ready => {}
-                super::companion::CastPreparation::MoveForRange
-                | super::companion::CastPreparation::MoveForLineOfSight => {
-                    selected.prerequisites.push(action_node(
-                        Action::Move(MoveTarget::CastingPosition(target)),
-                        reason,
-                        priority,
-                        objective,
-                    ));
-                }
-                super::companion::CastPreparation::Refused => {
-                    selected.readiness = Readiness::Refused;
-                }
-            }
-        }
-        return Ok(selected);
-    }
-    let mut selected = action_node(Action::Attack(target), reason, priority, objective);
-    if ctx
-        .db
-        .game_world_entity()
-        .guid()
-        .find(target)
-        .is_some_and(|target| {
-            distance_sq(me, target.x, target.y, target.z) > MELEE_RANGE_YD * MELEE_RANGE_YD
-        })
-    {
-        selected.prerequisites.push(action_node(
-            Action::Move(MoveTarget::Entity(target)),
-            reason,
-            priority,
-            objective,
-        ));
-    }
-    Ok(selected)
-}
-
 pub(super) fn strategy(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
@@ -721,9 +663,20 @@ pub(super) fn strategy(
     travel: ActionNode,
 ) -> Result<ActionNode, super::companion::RoleReadError> {
     let mut selected = match plan {
-        QuestPlan::Attack { target, .. } => {
-            combat_strategy(ctx, bot, me, target, objective, Reason::Quest, 110)?
-        }
+        QuestPlan::Attack { target, .. } => super::class_behavior::combat(
+            ctx,
+            bot,
+            me,
+            super::class_behavior::Fight {
+                target,
+                protecting_ally: false,
+                tank_engaged: false,
+                fallback: super::class_behavior::FightFallback::Melee,
+            },
+            objective,
+            Reason::Quest,
+            110,
+        )?,
         QuestPlan::Accept { quest, giver } => node(
             Action::AcceptQuest(QuestInteraction {
                 quest,

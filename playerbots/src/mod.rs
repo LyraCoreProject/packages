@@ -19,6 +19,7 @@
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
 mod actions;
+mod class_behavior;
 mod companion;
 mod decision;
 mod goals;
@@ -486,19 +487,13 @@ fn kit_for(rotations: impl IntoIterator<Item = RotationSeed>) -> Vec<(u8, u8, u3
     kit
 }
 
-/// Add PB-004 rows only when both Operator-tunable tables still equal the preceding shipped
-/// catalogue. Any customization makes the snapshot unequal and remains authoritative.
+/// Advance only exact shipped catalogues. Operator edits to either table remain authoritative.
 fn upgrade_starter_role_defaults(ctx: &ReducerContext) {
-    let mut expected_rotations: Vec<_> = DEFAULT_ROTATIONS
-        .iter()
-        .copied()
-        .filter(|row| !is_starter_role_rotation(row))
-        .collect();
-    let mut stored_rotations: Vec<_> = ctx
+    let stored_rotations: Vec<_> = ctx
         .db
         .pkg_playerbots_rotation()
         .iter()
-        .take(expected_rotations.len() + 1)
+        .take(DEFAULT_ROTATIONS.len() + 1)
         .map(|row| {
             (
                 row.class,
@@ -510,31 +505,16 @@ fn upgrade_starter_role_defaults(ctx: &ReducerContext) {
             )
         })
         .collect();
-    if stored_rotations.len() != expected_rotations.len() {
-        return;
-    }
-    let mut expected_kit = kit_for(expected_rotations.iter().copied());
-    let mut stored_kit: Vec<_> = ctx
+    let stored_kit: Vec<_> = ctx
         .db
         .pkg_playerbots_kit()
         .iter()
-        .take(expected_kit.len() + 1)
+        .take(DEFAULT_ROTATIONS.len() + 1)
         .map(|row| (row.class, row.role, row.spell_id))
         .collect();
-    if stored_kit.len() != expected_kit.len() {
-        return;
-    }
-    expected_rotations.sort_unstable();
-    stored_rotations.sort_unstable();
-    expected_kit.sort_unstable();
-    stored_kit.sort_unstable();
-    if stored_rotations != expected_rotations || stored_kit != expected_kit {
-        return;
-    }
-    let rotations = ctx.db.pkg_playerbots_rotation();
-    let kits = ctx.db.pkg_playerbots_kit();
-    for &(class, role, priority, spell_id, condition, threshold_pct) in STARTER_ROLE_ROTATIONS {
-        rotations.insert(PlayerbotsRotation {
+    let additions = default_additions(&stored_rotations, &stored_kit);
+    for (class, role, priority, spell_id, condition, threshold_pct) in additions {
+        ctx.db.pkg_playerbots_rotation().insert(PlayerbotsRotation {
             id: 0,
             class,
             role,
@@ -543,13 +523,38 @@ fn upgrade_starter_role_defaults(ctx: &ReducerContext) {
             condition,
             threshold_pct,
         });
-        kits.insert(PlayerbotsKit {
+        ctx.db.pkg_playerbots_kit().insert(PlayerbotsKit {
             id: 0,
             class,
             role,
             spell_id,
         });
     }
+}
+
+fn default_additions(rotations: &[RotationSeed], kit: &[(u8, u8, u32)]) -> Vec<RotationSeed> {
+    let mut stored = rotations.to_vec();
+    let mut stored_kit = kit.to_vec();
+    stored.sort_unstable();
+    stored_kit.sort_unstable();
+    for before_starter_roles in [false, true] {
+        let mut preceding: Vec<_> = DEFAULT_ROTATIONS
+            .iter()
+            .copied()
+            .filter(|row| row.3 != 78 && (!before_starter_roles || !is_starter_role_rotation(row)))
+            .collect();
+        let mut preceding_kit = kit_for(preceding.iter().copied());
+        preceding.sort_unstable();
+        preceding_kit.sort_unstable();
+        if stored == preceding && stored_kit == preceding_kit {
+            return DEFAULT_ROTATIONS
+                .iter()
+                .copied()
+                .filter(|row| !preceding.contains(row))
+                .collect();
+        }
+    }
+    vec![]
 }
 
 /// The shipped `(class, role)` rotations, and the kit each one implies.
@@ -560,6 +565,7 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
     // Warrior tank: taunt what is hitting somebody else, otherwise build threat.
     (class::WARRIOR, ROLE_TANK, 0, 355, cond::ENEMY_ON_ALLY, 0),
     (class::WARRIOR, ROLE_TANK, 1, 7386, cond::ALWAYS, 0),
+    (class::WARRIOR, ROLE_TANK, 10, 78, cond::ALWAYS, 0),
     (
         class::WARRIOR,
         ROLE_TANK,
