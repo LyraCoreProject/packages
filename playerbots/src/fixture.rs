@@ -1986,6 +1986,7 @@ pub fn playerbots_fixture_runner_kill_creature(
     let health = crate::helpers::live_entity(ctx, target)?.health;
     let (amount, _) = crate::combat::fold_incoming_damage(ctx, killer, target, health);
     let damage = crate::combat::final_damage(ctx, target, amount);
+    crate::loot::tag::clear(ctx, target);
     let outcome = crate::combat::apply_hit(
         ctx,
         killer,
