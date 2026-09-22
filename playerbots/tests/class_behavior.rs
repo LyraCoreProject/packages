@@ -221,10 +221,7 @@ fn playerbots_default_upgrade_preserves_operator_rotations() {
     for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
         node.assert_sql(&format!("DELETE FROM {table}"));
     }
-    node.assert_call(
-        "playerbots_spawn_class_role",
-        &["0", "1200", "1200", "50", "1", "0"],
-    );
+    node.assert_call("playerbots_spawn", &["0", "1200", "1200", "50"]);
     for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
         assert!(node
             .query_rows(&format!("SELECT * FROM {table}"))
