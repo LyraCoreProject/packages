@@ -277,7 +277,7 @@ fn maintenance(
             },
             Reason::Buff,
             Reason::BuffPosition,
-            if combat_buff { 720 } else { 300 },
+            if in_combat && combat_buff { 720 } else { 300 },
             objective,
         );
         cast.alternatives.push(fallback.clone());
@@ -315,7 +315,7 @@ fn healing(
                 retained_target,
             ),
             None => (me.max_health > 0
-                && u64::from(me.health) * 100 <= u64::from(me.max_health) * u64::from(heal_at_pct))
+                && u64::from(me.health) * 100 < u64::from(me.max_health) * u64::from(heal_at_pct))
             .then_some(me.guid),
         };
         let Some(target) = target else {

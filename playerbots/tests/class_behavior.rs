@@ -187,6 +187,7 @@ fn playerbots_default_upgrade_preserves_operator_rotations() {
     for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
         node.assert_sql(&format!("DELETE FROM {table} WHERE spell_id = 78"));
     }
+    node.assert_sql("DELETE FROM game_package_config WHERE package_name = 'playerbots' AND key = 'class_defaults_revision'");
     node.assert_call(
         "playerbots_spawn_class_role",
         &["0", "1200", "1200", "50", "1", "0"],
@@ -201,9 +202,7 @@ fn playerbots_default_upgrade_preserves_operator_rotations() {
             .len(),
         1
     );
-    // Mark the Operator edit first so a background tick cannot upgrade an intermediate
-    // exact shipped catalogue between the two SQL deletions.
-    node.assert_sql("DELETE FROM pkg_playerbots_rotation WHERE spell_id = 355");
+    // An Operator may remove only Heroic Strike after the catalogue has been upgraded.
     for table in ["pkg_playerbots_rotation", "pkg_playerbots_kit"] {
         node.assert_sql(&format!("DELETE FROM {table} WHERE spell_id = 78"));
     }

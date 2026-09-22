@@ -436,7 +436,8 @@ fn config_parsed<T: std::str::FromStr>(ctx: &ReducerContext, key: &str, fallback
 ///
 /// Idempotent twice over. The Config seeding helper only inserts when the row is absent, so an
 /// Operator's edited value survives a republish. Existing class/role rows change only when both
-/// tables exactly match the preceding shipped catalogue; any Operator edit keeps the tables intact.
+/// tables exactly match the preceding shipped catalogue. Record that check once so later Operator
+/// deletions cannot be mistaken for an old catalogue.
 pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
     crate::actor::reconcile_starter_role_spell_levels(ctx);
     for (key, value) in CONFIG_DEFAULTS {
@@ -444,10 +445,18 @@ pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
     }
     quest_catalog::ensure_catalog(ctx);
     if ctx.db.pkg_playerbots_kit().count() > 0 || ctx.db.pkg_playerbots_rotation().count() > 0 {
-        upgrade_starter_role_defaults(ctx);
-        return;
+        if config_value(ctx, "class_defaults_revision").is_none() {
+            upgrade_starter_role_defaults(ctx);
+        }
+    } else {
+        seed_class_role_data(ctx);
     }
-    seed_class_role_data(ctx);
+    crate::package_config::ensure_package_config_default(
+        ctx,
+        PACKAGE,
+        "class_defaults_revision",
+        "1",
+    );
 }
 
 type RotationSeed = (u8, u8, u8, u32, u8, u8);

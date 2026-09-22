@@ -40,6 +40,7 @@ pub fn playerbots_fixture_class_stage(
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
     use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content
+    // Family is the primary key, so at most one row can be the built-in weather seed.
     if ctx
         .db
         .game_import_meta()
@@ -3615,8 +3616,8 @@ pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), 
 }
 
 /// Give the completion scenario an explicit no-import profile whose every spell has a seeded
-/// `game_spell` header. The default Warrior tank profile still names Sunder Armor (7386); its
-/// missing-resource behavior is exercised separately.
+/// `game_spell` header. Sunder Armor and Heroic Strike have no no-import seed header; missing
+/// profile resources are exercised separately.
 #[reducer]
 pub fn playerbots_fixture_provision_complete_profile(
     ctx: &ReducerContext,
@@ -3641,7 +3642,10 @@ pub fn playerbots_fixture_provision_complete_profile(
     for row in kits
         .by_class_role()
         .filter((bot.class, bot.role))
-        .filter(|row| row.spell_id == 7386)
+        .filter(|row| {
+            row.spell_id == 7386
+                || (row.spell_id == 78 && ctx.db.game_spell().spell_id().find(78).is_none())
+        })
         .collect::<Vec<_>>()
     {
         kits.id().delete(row.id);
