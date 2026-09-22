@@ -565,6 +565,8 @@ them. Oversized or ambiguous aura, family, threat, enemy, pending-cast, and rota
 record their typed Party or role read failure instead of choosing from a partial scan.
 The shipped rotation and kit gain Heroic Strike only when both still match a preceding shipped
 catalogue. Any Operator customization preserves both tables.
+The `class_defaults_revision` Config row records that check once. Later Operator deletions remain
+in place even when they happen to recreate a preceding catalogue.
 An ungrouped Cohort returns to its roster home point. A bot-led party does not activate companion
 control. A membership whose parent Group is unavailable holds the existing objective and records the
 typed failure. The transitional Legacy executor remains only for populated rows that have not yet
