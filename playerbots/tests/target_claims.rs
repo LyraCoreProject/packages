@@ -77,7 +77,7 @@ fn additive_claim_index_preserves_existing_runner_state() {
     for bot in &bots[1..17] {
         node.assert_call(
             "playerbots_select_controller",
-            &[&bot["character_guid"], "Frozen"],
+            &[&bot["character_guid"], r#"{"frozen":[]}"#],
         );
     }
     node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
