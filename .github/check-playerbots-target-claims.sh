@@ -16,6 +16,8 @@ cd "$core_root"
 "$collection_root/.github/check-core-tip.sh" "$core_root" \
     cargo test --locked -p lyracore-module --test playerbots_target_claims \
     -- --ignored --nocapture --test-threads=1
+rm -- "$test_path"
+trap - EXIT
 
 "$collection_root/.github/check-core-tip.sh" "$core_root" \
     cargo test --locked -p lyracore-module --test playerbots_quest_loops \
