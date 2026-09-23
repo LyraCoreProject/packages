@@ -250,9 +250,6 @@ fn select_live_target(
     salt: Option<u64>,
     preferred: Option<u64>,
 ) -> LiveCreatureTarget {
-    let Ok(claimed) = super::target_claims::nearby(ctx, me, SEARCH_RADIUS_YD) else {
-        return LiveCreatureTarget::ReadLimit;
-    };
     let mut deferred = false;
     let mut read_limited = false;
     let mut eligible: Vec<_> = search
@@ -270,7 +267,18 @@ fn select_live_target(
             }
         })
         .filter(|target| {
-            let eligible = !claimed.contains(&target.guid) && eligible_work(target.guid);
+            match super::target_claims::availability(ctx, me, target.guid) {
+                super::target_claims::Availability::Available => {}
+                super::target_claims::Availability::Claimed => {
+                    deferred = true;
+                    return false;
+                }
+                super::target_claims::Availability::ReadLimit => {
+                    read_limited = true;
+                    return false;
+                }
+            }
+            let eligible = eligible_work(target.guid);
             deferred |= !eligible;
             eligible
         })

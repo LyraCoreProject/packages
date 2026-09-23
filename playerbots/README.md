@@ -102,9 +102,11 @@ available, they defer that work. Claims expire after thirty seconds without prog
 applying when the owner abandons the fight, dies, joins a party, freezes, or leaves the partition.
 Party assistance and self-defense keep their existing target rules.
 
-Claim reads cover the current map and instance within twice the 100-yard target search radius,
-with limits of 256 spatial rows and 32 bots. An incomplete read defers target selection. Claims
-use existing Runner state and add no tables or columns.
+The Runner indexes its retained solo creature in `solo_target_guid`. Selection reads only matching
+owners, checks their current state, and never scans the nearby bot population. Each candidate
+allows at most 16 matching owner reads; a larger stale set defers that candidate. An existing
+valid claim keeps its target independently of that limit. The field is end-appended with a zero
+default. Old rows acquire their index value on their next ordinary Runner save.
 
 ## Personality as a script
 

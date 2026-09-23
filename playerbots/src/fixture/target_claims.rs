@@ -99,7 +99,21 @@ pub fn playerbots_fixture_solo_target_claim(
     }
 
     match case.as_str() {
-        "split" => {
+        "split" | "crowd" => {
+            if case == "crowd" {
+                super::super::playerbots_spawn_class_role(ctx, 34, 1200.0, 1200.0, 50.0, 1, 0)?;
+                let guids: Vec<_> = ctx
+                    .db
+                    .pkg_playerbots_bot()
+                    .iter()
+                    .filter(|bot| bot.character_guid != owner && bot.character_guid != other)
+                    .map(|bot| bot.character_guid)
+                    .collect();
+                for guid in guids {
+                    super::super::runner::transition_controller(ctx, guid, Controller::Frozen)?;
+                    runner_park_for(ctx, guid)?;
+                }
+            }
             let second = target + 1;
             let mut spawn = ctx
                 .db
@@ -145,6 +159,9 @@ pub fn playerbots_fixture_solo_target_claim(
             playerbots_fixture_runner_pass_once(ctx, other)?;
             if fight(ctx, other) != Some(target) {
                 return Err("solo claim prevented self-defense".into());
+            }
+            if !available(ctx, owner, target)? {
+                return Err("self-defense displaced the original claimant".into());
             }
             return Ok(());
         }

@@ -40,3 +40,45 @@ case!(stalled_claim_expires_despite_recent_decisions, "stalled");
 case!(progress_keeps_an_old_approach_claimed, "progress");
 case!(abandoning_fight_work_releases_its_claim, "abandoned");
 case!(failed_path_releases_its_claim, "refused");
+case!(
+    crowded_camp_does_not_block_new_or_retained_solo_targets,
+    "crowd"
+);
+
+#[test]
+#[ignore = "requires the pinned Standalone and both Module revisions"]
+fn additive_claim_index_preserves_existing_runner_state() {
+    let baseline_path = std::env::var("PLAYERBOTS_CLAIM_BASELINE_WASM")
+        .expect("the claim migration check requires its baseline Wasm");
+    let baseline = std::fs::read(baseline_path).expect("baseline Wasm missing");
+    let mut node = Standalone::start("playerbots-claim-migration");
+    node.publish_module_bytes(&baseline);
+    node.assert_call("claim_operator", &[]);
+    node.assert_call("install_guid_range", &["1000000"]);
+    node.assert_call(
+        "playerbots_spawn_class_role",
+        &["2", "1200", "1200", "50", "1", "0"],
+    );
+    let bots = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot");
+    let guid = &bots[0]["character_guid"];
+    node.assert_call(
+        "playerbots_fixture_class_stage",
+        &[guid, &bots[1]["character_guid"], "false", "false"],
+    );
+    node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
+    let retained = format!("SELECT character_guid, generation, objective, chosen, recovery FROM pkg_playerbots_runner WHERE character_guid = {guid}");
+    let before = node.query_rows(&retained);
+    assert_eq!(before.len(), 1);
+    node.publish_module();
+    assert_eq!(
+        node.query_rows(&retained),
+        before,
+        "additive publish changed retained bot work"
+    );
+    assert_eq!(
+        node.query_rows(&format!(
+            "SELECT solo_target_guid FROM pkg_playerbots_runner WHERE character_guid = {guid}"
+        ))[0]["solo_target_guid"],
+        "0"
+    );
+}

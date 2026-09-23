@@ -111,6 +111,7 @@ pub(super) fn normalize(
     state.deferred_destinations.clear();
     state.next_eligible_micros = now;
     state.recovery = None;
+    state.solo_target_guid = 0;
     state.transfer_checkpoint = Some(TransferCheckpoint {
         intent_id,
         controller_generation: generation,

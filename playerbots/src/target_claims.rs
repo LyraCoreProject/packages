@@ -1,4 +1,4 @@
-//! Solo Target Claims are reads of retained fight work, so cancellation needs no second write.
+//! Solo Target Claims index retained fight work; Recovery owns their lifetime.
 
 use super::decision::Reason;
 use super::pkg_playerbots_bot;
@@ -6,11 +6,15 @@ use super::recovery::Work;
 use super::runner::{pkg_playerbots_runner, Controller, PlayerbotsRunner, RunnerOutcome};
 use crate::{game_group_member, game_world_entity};
 use spacetimedb::ReducerContext;
-use std::collections::BTreeSet;
 
-const ENTITY_LIMIT: usize = 256;
-const BOT_LIMIT: usize = 32;
+const OWNER_LIMIT: usize = 16;
 const CLAIM_LIFETIME_MICROS: i64 = 30_000_000;
+
+pub(super) enum Availability {
+    Available,
+    Claimed,
+    ReadLimit,
+}
 
 fn grouped(ctx: &ReducerContext, guid: u64) -> bool {
     ctx.db
@@ -21,7 +25,9 @@ fn grouped(ctx: &ReducerContext, guid: u64) -> bool {
         .is_some()
 }
 
-fn retained_target(state: &PlayerbotsRunner, now: i64) -> Option<u64> {
+/// Derive the indexed target from current authority and retained work. Stale index values never
+/// grant a claim: selection calls this again before treating a matching row as an owner.
+pub(super) fn selected(ctx: &ReducerContext, state: &PlayerbotsRunner) -> Option<u64> {
     if state.transfer_checkpoint.is_some()
         || !matches!(
             state.last_outcome,
@@ -40,92 +46,62 @@ fn retained_target(state: &PlayerbotsRunner, now: i64) -> Option<u64> {
     let attempt = recovery.attempts.iter().find(|attempt| {
         attempt.work == Work::Fight(target)
             && attempt.objective == state.objective_sequence
-            && matches!(
-                attempt.reason,
-                Reason::Quest | Reason::Grind | Reason::Defense
-            )
+            && matches!(attempt.reason, Reason::Quest | Reason::Grind)
             && attempt.deferred_until_micros.is_none()
     })?;
+    let now = ctx.timestamp.to_micros_since_unix_epoch();
     let elapsed = now.saturating_sub(attempt.last_observed_micros).max(0);
-    (attempt.stalled_micros.saturating_add(elapsed) < CLAIM_LIFETIME_MICROS).then_some(target)
+    if attempt.stalled_micros.saturating_add(elapsed) >= CLAIM_LIFETIME_MICROS {
+        return None;
+    }
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(state.character_guid)
+        .next()?;
+    if bot.controller != Controller::Cohort || grouped(ctx, state.character_guid) {
+        return None;
+    }
+    let owner = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(state.character_guid)?;
+    let creature = ctx.db.game_world_entity().guid().find(target)?;
+    (!owner.dead
+        && owner.health > 0
+        && !creature.dead
+        && creature.health > 0
+        && (owner.map_id, owner.instance_id) == (creature.map_id, creature.instance_id)
+        && (attempt.destination.map_id, attempt.destination.instance_id)
+            == (owner.map_id, owner.instance_id)
+        && attempt.geometry == crate::nav::inputs(ctx, owner.map_id))
+    .then_some(target)
 }
 
-/// Read competing solo fights in this partition. Two bots selecting within `search_radius` of
-/// themselves can approach the same creature from twice that distance apart. An incomplete scan
-/// refuses selection; it must not report unobserved claims as available targets.
-pub(super) fn nearby(
+pub(super) fn availability(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
-    search_radius: f32,
-) -> Result<BTreeSet<u64>, ()> {
-    let mut targets = BTreeSet::new();
+    target: u64,
+) -> Availability {
     if grouped(ctx, me.guid) {
-        return Ok(targets);
+        return Availability::Available;
     }
-    let radius = search_radius * 2.0;
-    let (gx0, gx1, gy0, gy1) = lyracore_shared::spatial::covering_cell_box(me.x, me.y, radius);
-    let entities = ctx.db.game_world_entity();
-    let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let mut scanned = 0;
-    let mut bots = 0;
-    for gx in gx0..=gx1 {
-        for gy in gy0..=gy1 {
-            let cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
-            for owner in entities.by_cell().filter((me.map_id, me.instance_id, cell)) {
-                if scanned == ENTITY_LIMIT {
-                    return Err(());
-                }
-                scanned += 1;
-                if owner.guid == me.guid
-                    || owner.type_mask & 0x10 == 0
-                    || owner.dead
-                    || owner.health == 0
-                    || (owner.x - me.x).powi(2) + (owner.y - me.y).powi(2) > radius * radius
-                {
-                    continue;
-                }
-                let Some(bot) = ctx
-                    .db
-                    .pkg_playerbots_bot()
-                    .by_character()
-                    .filter(owner.guid)
-                    .next()
-                else {
-                    continue;
-                };
-                if bots == BOT_LIMIT {
-                    return Err(());
-                }
-                bots += 1;
-                if bot.controller != Controller::Cohort || grouped(ctx, owner.guid) {
-                    continue;
-                }
-                let Some(state) = ctx
-                    .db
-                    .pkg_playerbots_runner()
-                    .character_guid()
-                    .find(owner.guid)
-                else {
-                    continue;
-                };
-                let Some(target) = retained_target(&state, now) else {
-                    continue;
-                };
-                let Some(target) = entities.guid().find(target) else {
-                    continue;
-                };
-                if !target.dead
-                    && target.health > 0
-                    && (target.map_id, target.instance_id) == (me.map_id, me.instance_id)
-                    && (owner.x - target.x).powi(2)
-                        + (owner.y - target.y).powi(2)
-                        + (owner.z - target.z).powi(2)
-                        <= search_radius * search_radius
-                {
-                    targets.insert(target.guid);
-                }
-            }
+    let rows = ctx.db.pkg_playerbots_runner();
+    // A retained approach does not yield to a later defensive engagement or stale competing row.
+    if rows.character_guid().find(me.guid).is_some_and(|state| {
+        state.solo_target_guid == target && selected(ctx, &state) == Some(target)
+    }) {
+        return Availability::Available;
+    }
+    for (index, state) in rows.by_solo_target().filter(target).enumerate() {
+        if index == OWNER_LIMIT {
+            return Availability::ReadLimit;
+        }
+        if state.character_guid != me.guid && selected(ctx, &state) == Some(target) {
+            return Availability::Claimed;
         }
     }
-    Ok(targets)
+    Availability::Available
 }

@@ -31,6 +31,12 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          repository: LyraCoreProject/packages
+          ref: 7d9dc017adbe22a8120b1409f33a74ae91b81c7d
+          path: baseline
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
           repository: LyraCoreProject/LyraCore
           ref: eba3a6e1303ed2c83c699e58ea236ba102725408
           path: lyracore
@@ -51,6 +57,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
+      - name: Build the published Package baseline for additive migration
+        run: |
+          ./baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
+            --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
+          cp lyracore/target/wasm32-unknown-unknown/release/lyracore_module.wasm "$RUNNER_TEMP/claim-baseline.wasm"
+          echo "PLAYERBOTS_CLAIM_BASELINE_WASM=$RUNNER_TEMP/claim-baseline.wasm" >> "$GITHUB_ENV"
       - name: Verify solo target claims through the Runner
         run: ./collection/.github/check-playerbots-target-claims.sh "$GITHUB_WORKSPACE/lyracore"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
