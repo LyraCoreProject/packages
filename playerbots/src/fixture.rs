@@ -205,6 +205,7 @@ fn orders_party(
         .into_iter()
         .map(|(_, guid)| guid)
         .collect();
+    let raid_slots = vec![0; effective_members.len()];
     crate::group::sync_group_mirror(
         ctx,
         ROLES_GROUP,
@@ -216,6 +217,8 @@ fn orders_party(
         request_actor,
         partitions,
         roster_revision,
+        0,
+        raid_slots,
     )
 }
 
@@ -705,6 +708,7 @@ pub fn playerbots_fixture_companion_stage(
     ctx.db.pkg_playerbots_personality().id().update(personality);
     let members = vec![leader_guid, companion_guid, ally_guid];
     let partitions = fixture_group_partitions(ctx, COMPANION_GROUP, &members)?;
+    let raid_slots = vec![0; members.len()];
     crate::group::sync_group_mirror(
         ctx,
         COMPANION_GROUP,
@@ -719,6 +723,8 @@ pub fn playerbots_fixture_companion_stage(
         },
         partitions,
         1,
+        0,
+        raid_slots,
     )?;
     Ok(())
 }
@@ -797,6 +803,7 @@ pub fn playerbots_fixture_roles_stage(
     }
     let members = vec![leader_guid, warrior_guid, priest_guid, mage_guid];
     let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;
+    let raid_slots = vec![0; members.len()];
     crate::group::sync_group_mirror(
         ctx,
         ROLES_GROUP,
@@ -811,6 +818,8 @@ pub fn playerbots_fixture_roles_stage(
         },
         partitions,
         1,
+        0,
+        raid_slots,
     )?;
     for guid in [warrior_guid, priest_guid, mage_guid] {
         super::runner::playerbots_select_controller(ctx, guid, super::Controller::Frozen)?;

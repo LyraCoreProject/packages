@@ -679,6 +679,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
         loot_threshold: 2,
         rr_cursor: 0,
         master_looter_guid: 0,
+        group_type: 0,
     });
     let members = ctx.db.game_group_member();
     let partitions = ctx.db.game_group_member_partition();
@@ -690,6 +691,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
             group_id: GROUP,
             character_guid: guid,
             owner_identity: Identity::ZERO,
+            raid_slot: 0,
         });
         partitions.insert(realm_partition(guid, membership_revision));
         locators.insert(realm_locator(guid, now));
