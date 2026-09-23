@@ -66,14 +66,20 @@ fn additive_claim_index_preserves_existing_runner_state() {
     node.assert_sql("DELETE FROM game_creature_move_schedule");
     node.assert_call(
         "playerbots_spawn_class_role",
-        &["2", "1200", "1200", "50", "1", "0"],
+        &["18", "1200", "1200", "50", "1", "0"],
     );
     let bots = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot");
     let guid = &bots[0]["character_guid"];
     node.assert_call(
         "playerbots_fixture_class_stage",
-        &[guid, &bots[1]["character_guid"], "false", "false"],
+        &[guid, &bots[17]["character_guid"], "false", "false"],
     );
+    for bot in &bots[1..17] {
+        node.assert_call(
+            "playerbots_select_controller",
+            &[&bot["character_guid"], "Frozen"],
+        );
+    }
     node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
     let retained = format!("SELECT character_guid, generation, objective, chosen, recovery FROM pkg_playerbots_runner WHERE character_guid = {guid}");
     let before = node.query_rows(&retained);
@@ -84,13 +90,22 @@ fn additive_claim_index_preserves_existing_runner_state() {
         before,
         "additive publish changed retained bot work"
     );
+    let pending = format!(
+        "SELECT character_guid FROM pkg_playerbots_runner WHERE solo_target_guid = {}",
+        u64::MAX
+    );
+    assert_eq!(node.query_rows(&pending).len(), 17);
+    node.assert_call("playerbots_fixture_runner_pass", &[]);
     assert_eq!(
-        node.query_rows(&format!(
-            "SELECT solo_target_guid FROM pkg_playerbots_runner WHERE character_guid = {guid}"
-        ))[0]["solo_target_guid"],
-        u64::MAX.to_string()
+        node.query_rows(&pending).len(),
+        1,
+        "one pass exceeded the 16-row backfill budget"
     );
     node.assert_call("playerbots_fixture_runner_pass", &[]);
+    assert!(
+        node.query_rows(&pending).is_empty(),
+        "second backfill pass did not finish"
+    );
     assert_eq!(
         node.query_rows(&retained),
         before,
