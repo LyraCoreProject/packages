@@ -1104,7 +1104,7 @@ jobs:
           ref: 50e2cd10870d2cfb4a36018bbbd559f9d07c2062
           path: comparison-collection
           persist-credentials: false
-      - name: Check out Core with the movement Gate
+      - name: Check out Core with recorded recovery deadlines
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
