@@ -26,6 +26,10 @@ case!(
     "split"
 );
 case!(solo_bot_defers_when_the_only_creature_is_claimed, "wait");
+case!(
+    solo_population_claims_every_target_before_the_remaining_bots_hold,
+    "exhaustion"
+);
 case!(self_defense_ignores_another_solo_bots_claim, "defense");
 case!(party_members_can_select_the_same_creature, "party");
 case!(

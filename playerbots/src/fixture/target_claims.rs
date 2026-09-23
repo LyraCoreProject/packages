@@ -4,6 +4,7 @@ use super::super::recovery::Work;
 use super::super::runner::{Controller, RunnerOutcome};
 use super::*;
 use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content
+use std::collections::BTreeSet;
 
 const ENTRY: u32 = 5_098_095;
 
@@ -23,6 +24,30 @@ fn available(ctx: &ReducerContext, guid: u64, target: u64) -> Result<bool, Strin
     ))
 }
 
+fn add_target(ctx: &ReducerContext, source: u64, guid: u64, x: f32) -> Result<(), String> {
+    let mut spawn = ctx
+        .db
+        .game_creature_spawn()
+        .guid()
+        .find(source)
+        .ok_or("spawn missing")?;
+    spawn.guid = guid;
+    spawn.x = x;
+    let template = ctx
+        .db
+        .game_creature_template()
+        .entry()
+        .find(ENTRY)
+        .ok_or("template missing")?;
+    let spawn = ctx.db.game_creature_spawn().insert(spawn);
+    let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+    entity.level = 1;
+    entity.health = 1000;
+    entity.max_health = 1000;
+    crate::creatures::insert_creature_entity(ctx, entity);
+    Ok(())
+}
+
 #[reducer]
 pub fn playerbots_fixture_solo_target_claim(
     ctx: &ReducerContext,
@@ -39,9 +64,15 @@ pub fn playerbots_fixture_solo_target_claim(
     {
         return Err("target claim fixture requires a fresh, private Shard".into());
     }
-    super::super::playerbots_spawn_class_role(ctx, 2, 1200.0, 1200.0, 50.0, 1, 0)?;
+    let population = if case == "exhaustion" { 25 } else { 2 };
+    super::super::playerbots_spawn_class_role(ctx, population, 1200.0, 1200.0, 50.0, 1, 0)?;
     playerbots_fixture_prepare(ctx)?;
-    let bots: Vec<_> = ctx.db.pkg_playerbots_bot().iter().take(2).collect();
+    let bots: Vec<_> = ctx
+        .db
+        .pkg_playerbots_bot()
+        .iter()
+        .take(population as usize)
+        .collect();
     let (owner, other) = (bots[0].character_guid, bots[1].character_guid);
     for bot in &bots {
         playerbots_fixture_runner_stage(ctx, bot.character_guid, false)?;
@@ -99,6 +130,47 @@ pub fn playerbots_fixture_solo_target_claim(
     }
 
     match case.as_str() {
+        "exhaustion" => {
+            let targets: BTreeSet<_> = (0..9).map(|offset| target + offset).collect();
+            for offset in 1..9 {
+                add_target(ctx, target, target + offset, 1240.0 + offset as f32 * 0.4)?;
+            }
+            let mut selected = BTreeSet::from([target]);
+            let mut waiting = 0;
+            for bot in bots.iter().skip(1) {
+                playerbots_fixture_runner_pass_once(ctx, bot.character_guid)?;
+                if let Some(chosen) = fight(ctx, bot.character_guid) {
+                    if !targets.contains(&chosen) || !selected.insert(chosen) {
+                        return Err(
+                            "population selected a foreign or already claimed target".into()
+                        );
+                    }
+                } else {
+                    let state = ctx
+                        .db
+                        .pkg_playerbots_runner()
+                        .character_guid()
+                        .find(bot.character_guid)
+                        .ok_or("runner missing")?;
+                    if selected != targets
+                        || state.foreground.is_some()
+                        || !matches!(
+                            state.chosen.as_ref().map(|candidate| &candidate.id.action),
+                            Some(super::super::decision::Action::Hold)
+                        )
+                    {
+                        return Err(
+                            "population did not hold after all nine targets were claimed".into(),
+                        );
+                    }
+                    waiting += 1;
+                }
+            }
+            if selected != targets || waiting != 16 {
+                return Err("population did not claim nine targets and hold sixteen bots".into());
+            }
+            return Ok(());
+        }
         "backfill" => {
             let rows = ctx.db.pkg_playerbots_runner();
             let mut state = rows.character_guid().find(owner).ok_or("runner missing")?;
@@ -145,26 +217,7 @@ pub fn playerbots_fixture_solo_target_claim(
                 }
             }
             let second = target + 1;
-            let mut spawn = ctx
-                .db
-                .game_creature_spawn()
-                .guid()
-                .find(target)
-                .ok_or("spawn missing")?;
-            spawn.guid = second;
-            spawn.x = 1245.0;
-            let template = ctx
-                .db
-                .game_creature_template()
-                .entry()
-                .find(ENTRY)
-                .ok_or("template missing")?;
-            let spawn = ctx.db.game_creature_spawn().insert(spawn);
-            let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
-            entity.level = 1;
-            entity.health = 1000;
-            entity.max_health = 1000;
-            crate::creatures::insert_creature_entity(ctx, entity);
+            add_target(ctx, target, second, 1245.0)?;
             playerbots_fixture_runner_pass_once(ctx, other)?;
             if fight(ctx, other) != Some(second) || fight(ctx, owner) != Some(target) {
                 return Err(
