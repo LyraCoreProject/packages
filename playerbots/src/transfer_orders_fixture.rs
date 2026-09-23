@@ -117,6 +117,7 @@ pub fn playerbots_transfer_orders_stage(
         .revision
         .checked_add(1)
         .ok_or("fixture roster revision exhausted")?;
+    let raid_slots = vec![0; partitions.len()];
     crate::group::sync_group_mirror(
         ctx,
         GROUP,
@@ -131,6 +132,8 @@ pub fn playerbots_transfer_orders_stage(
         },
         partitions,
         revision,
+        0,
+        raid_slots,
     )?;
     super::runner::playerbots_select_controller(
         ctx,
@@ -282,6 +285,7 @@ pub fn playerbots_transfer_orders_remote(
         .find(GROUP)
         .ok_or("fixture roster revision missing")?
         .revision;
+    let raid_slots = vec![0; partitions.len()];
     crate::group::sync_group_mirror(
         ctx,
         GROUP,
@@ -293,5 +297,7 @@ pub fn playerbots_transfer_orders_remote(
         request_actor,
         partitions,
         revision,
+        0,
+        raid_slots,
     )
 }

@@ -255,6 +255,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
         loot_threshold: 2,
         rr_cursor: 0,
         master_looter_guid: 0,
+        group_type: 0,
     });
     let members = ctx.db.game_group_member();
     members.insert(crate::GroupMember {
@@ -262,24 +263,28 @@ pub fn playerbots_transfer_gateway_realm_stage(
         group_id: GROUP,
         character_guid: leader_guid,
         owner_identity: Identity::ZERO,
+        raid_slot: 0,
     });
     members.insert(crate::GroupMember {
         id: PRIEST_MEMBER,
         group_id: GROUP,
         character_guid: priest_guid,
         owner_identity: Identity::ZERO,
+        raid_slot: 0,
     });
     members.insert(crate::GroupMember {
         id: MAGE_MEMBER,
         group_id: GROUP,
         character_guid: mage_guid,
         owner_identity: Identity::ZERO,
+        raid_slot: 0,
     });
     members.insert(crate::GroupMember {
         id: COMPANION_MEMBER,
         group_id: GROUP,
         character_guid: companion_guid,
         owner_identity: Identity::ZERO,
+        raid_slot: 0,
     });
     ctx.db.game_group_member_partition().insert(partition(
         leader_guid,
@@ -457,6 +462,8 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
             partition(mage_guid, MAGE_MEMBER, source_map, source_instance),
         ],
         1,
+        0,
+        vec![0; 4],
     )?;
     Ok(())
 }
@@ -623,6 +630,7 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     leader_partition.map_id = 0;
     leader_partition.instance_id = 0;
     leader_partition.locator_revision = 3;
+    let party_size = party.member_guids.len();
     crate::group::sync_group_mirror(
         ctx,
         GROUP,
@@ -634,6 +642,8 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
         request_actor,
         party.partitions,
         party.roster_revision,
+        0,
+        vec![0; party_size],
     )?;
     Ok(())
 }
