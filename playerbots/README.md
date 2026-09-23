@@ -94,6 +94,18 @@ off, and where a healer places a heal. Two bots on one rotation at the same heal
 alone. The row is the floor. The retained Legacy executor can ask a Runtime Script instead. Newly
 spawned Cohort bots use the rows directly.
 
+## Solo target selection
+
+Solo adventurers reserve their selected creature through the retained Recovery Attempt before
+combat creates a Loot Tag. Other solo bots look for an unclaimed eligible creature. If none is
+available, they defer that work. Claims expire after thirty seconds without progress and stop
+applying when the owner abandons the fight, dies, joins a party, freezes, or leaves the partition.
+Party assistance and self-defense keep their existing target rules.
+
+Claim reads cover the current map and instance within twice the 100-yard target search radius,
+with limits of 256 spatial rows and 32 bots. An incomplete read defers target selection. Claims
+use existing Runner state and add no tables or columns.
+
 ## Personality as a script
 
 A row is one number. A script is a decision. The retained Legacy executor exposes both personality
