@@ -250,6 +250,7 @@ fn select_live_target(
     salt: Option<u64>,
     preferred: Option<u64>,
 ) -> LiveCreatureTarget {
+    let claims = super::target_claims::TargetClaims::read(ctx, me.guid);
     let mut deferred = false;
     let mut read_limited = false;
     let mut eligible: Vec<_> = search
@@ -265,7 +266,7 @@ fn select_live_target(
                     return false;
                 }
             }
-            match super::target_claims::availability(ctx, me, target.guid) {
+            match claims.availability(ctx, target.guid) {
                 super::target_claims::Availability::Available => {}
                 super::target_claims::Availability::Claimed => {
                     deferred = true;

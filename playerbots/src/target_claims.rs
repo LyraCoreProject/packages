@@ -98,33 +98,55 @@ pub(super) fn selected(ctx: &ReducerContext, state: &PlayerbotsRunner) -> Option
     .then_some(target)
 }
 
-pub(super) fn availability(
-    ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    target: u64,
-) -> Availability {
-    if grouped(ctx, me.guid) {
-        return Availability::Available;
+/// Facts shared by all candidates in one target selection, within the current reducer transaction.
+pub(super) struct TargetClaims {
+    character_guid: u64,
+    grouped: bool,
+    own_target: Option<u64>,
+    backfill_pending: bool,
+}
+
+impl TargetClaims {
+    pub(super) fn read(ctx: &ReducerContext, character_guid: u64) -> Self {
+        let grouped = grouped(ctx, character_guid);
+        let rows = ctx.db.pkg_playerbots_runner();
+        Self {
+            character_guid,
+            grouped,
+            own_target: if grouped {
+                None
+            } else {
+                rows.character_guid()
+                    .find(character_guid)
+                    .and_then(|state| selected(ctx, &state))
+            },
+            backfill_pending: !grouped && rows.by_solo_target().filter(UNINDEXED).next().is_some(),
+        }
     }
-    let rows = ctx.db.pkg_playerbots_runner();
-    // A retained approach does not yield to a later defensive engagement or stale competing row.
-    if rows
-        .character_guid()
-        .find(me.guid)
-        .is_some_and(|state| selected(ctx, &state) == Some(target))
-    {
-        return Availability::Available;
-    }
-    if rows.by_solo_target().filter(UNINDEXED).next().is_some() {
-        return Availability::ReadLimit;
-    }
-    for (index, state) in rows.by_solo_target().filter(target).enumerate() {
-        if index == OWNER_LIMIT {
+
+    pub(super) fn availability(&self, ctx: &ReducerContext, target: u64) -> Availability {
+        // A retained approach does not yield to a later defensive engagement or stale competing row.
+        if self.grouped || self.own_target == Some(target) {
+            return Availability::Available;
+        }
+        if self.backfill_pending {
             return Availability::ReadLimit;
         }
-        if state.character_guid != me.guid && selected(ctx, &state) == Some(target) {
-            return Availability::Claimed;
+        for (index, state) in ctx
+            .db
+            .pkg_playerbots_runner()
+            .by_solo_target()
+            .filter(target)
+            .enumerate()
+        {
+            if index == OWNER_LIMIT {
+                return Availability::ReadLimit;
+            }
+            if state.character_guid != self.character_guid && selected(ctx, &state) == Some(target)
+            {
+                return Availability::Claimed;
+            }
         }
+        Availability::Available
     }
-    Availability::Available
 }

@@ -106,7 +106,8 @@ pub fn playerbots_fixture_solo_target_claim(
             rows.character_guid().update(state);
             let me = crate::helpers::live_entity(ctx, other)?;
             if !matches!(
-                super::super::target_claims::availability(ctx, &me, target),
+                super::super::target_claims::TargetClaims::read(ctx, me.guid)
+                    .availability(ctx, target),
                 super::super::target_claims::Availability::ReadLimit
             ) {
                 return Err("new claims were allowed before backfill".into());
