@@ -165,6 +165,14 @@ pub fn playerbots_fixture_solo_target_claim(
             }
             return Ok(());
         }
+        "owner_defense" => {
+            playerbots_fixture_runner_damage_and_park(ctx, owner, target, 1)?;
+            playerbots_fixture_runner_pass_once(ctx, owner)?;
+            if fight(ctx, owner) != Some(target) || available(ctx, other, target)? {
+                return Err("the original claim disappeared when its owner defended itself".into());
+            }
+            return Ok(());
+        }
         "party" | "party_owner" => {
             let members = vec![owner, other];
             let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;

@@ -41,6 +41,10 @@ case!(progress_keeps_an_old_approach_claimed, "progress");
 case!(abandoning_fight_work_releases_its_claim, "abandoned");
 case!(failed_path_releases_its_claim, "refused");
 case!(
+    original_owner_keeps_its_claim_when_defending_itself,
+    "owner_defense"
+);
+case!(
     crowded_camp_does_not_block_new_or_retained_solo_targets,
     "crowd"
 );

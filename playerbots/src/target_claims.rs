@@ -46,7 +46,8 @@ pub(super) fn selected(ctx: &ReducerContext, state: &PlayerbotsRunner) -> Option
     let attempt = recovery.attempts.iter().find(|attempt| {
         attempt.work == Work::Fight(target)
             && attempt.objective == state.objective_sequence
-            && matches!(attempt.reason, Reason::Quest | Reason::Grind)
+            && (matches!(attempt.reason, Reason::Quest | Reason::Grind)
+                || (attempt.reason == Reason::Defense && state.solo_target_guid == target))
             && attempt.deferred_until_micros.is_none()
     })?;
     let now = ctx.timestamp.to_micros_since_unix_epoch();
