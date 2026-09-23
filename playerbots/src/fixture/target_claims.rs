@@ -99,6 +99,35 @@ pub fn playerbots_fixture_solo_target_claim(
     }
 
     match case.as_str() {
+        "backfill" => {
+            let rows = ctx.db.pkg_playerbots_runner();
+            let mut state = rows.character_guid().find(owner).ok_or("runner missing")?;
+            state.solo_target_guid = u64::MAX;
+            rows.character_guid().update(state);
+            let me = crate::helpers::live_entity(ctx, other)?;
+            if !matches!(
+                super::super::target_claims::availability(ctx, &me, target),
+                super::super::target_claims::Availability::ReadLimit
+            ) {
+                return Err("new claims were allowed before backfill".into());
+            }
+            if !available(ctx, owner, target)? {
+                return Err("backfill interrupted an existing approach".into());
+            }
+            // The claimant remains parked; the other bot is due first after publishing.
+            playerbots_fixture_runner_pass_once(ctx, other)?;
+            if fight(ctx, other).is_some()
+                || rows
+                    .character_guid()
+                    .find(owner)
+                    .ok_or("runner missing")?
+                    .solo_target_guid
+                    != target
+            {
+                return Err("another bot acquired the pre-publish owner's creature".into());
+            }
+            return Ok(());
+        }
         "split" | "crowd" => {
             if case == "crowd" {
                 super::super::playerbots_spawn_class_role(ctx, 34, 1200.0, 1200.0, 50.0, 1, 0)?;

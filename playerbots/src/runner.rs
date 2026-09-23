@@ -283,8 +283,8 @@ pub struct PlayerbotsRunner {
     /// Movement execution has its own due queue; decision backpressure must not stop a route.
     #[default(i64::MAX)]
     pub movement_due_micros: i64,
-    /// Index of retained solo fight work. Zero means no Solo Target Claim.
-    #[default(0u64)]
+    /// Zero means no claim; MAX marks a pre-publish row awaiting the bounded index backfill.
+    #[default(u64::MAX)]
     pub solo_target_guid: u64,
 }
 
@@ -680,6 +680,7 @@ fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
 
 pub(super) fn pass(ctx: &ReducerContext) {
     super::ensure_defaults(ctx);
+    super::target_claims::backfill(ctx);
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let bots = ctx.db.pkg_playerbots_bot();
     let due = due_batch(ctx, now);

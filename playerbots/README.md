@@ -105,8 +105,10 @@ Party assistance and self-defense keep their existing target rules.
 The Runner indexes its retained solo creature in `solo_target_guid`. Selection reads only matching
 owners, checks their current state, and never scans the nearby bot population. Each candidate
 allows at most 16 matching owner reads; a larger stale set defers that candidate. An existing
-valid claim keeps its target independently of that limit. The field is end-appended with a zero
-default. Old rows acquire their index value on their next ordinary Runner save.
+valid claim keeps its target independently of that limit. The field is end-appended with
+`u64::MAX` marking existing rows for backfill. Each Runner pass indexes at most 16 such rows before
+decisions run. New claims wait until backfill finishes; existing approaches, party assistance and
+self-defense remain available. Zero means no claim after backfill.
 
 ## Personality as a script
 

@@ -48,6 +48,10 @@ case!(
     crowded_camp_does_not_block_new_or_retained_solo_targets,
     "crowd"
 );
+case!(
+    existing_approach_is_indexed_before_another_bot_can_claim_it,
+    "backfill"
+);
 
 #[test]
 #[ignore = "requires the pinned Standalone and both Module revisions"]
@@ -59,6 +63,7 @@ fn additive_claim_index_preserves_existing_runner_state() {
     node.publish_module_bytes(&baseline);
     node.assert_call("claim_operator", &[]);
     node.assert_call("install_guid_range", &["1000000"]);
+    node.assert_sql("DELETE FROM game_creature_move_schedule");
     node.assert_call(
         "playerbots_spawn_class_role",
         &["2", "1200", "1200", "50", "1", "0"],
@@ -78,6 +83,18 @@ fn additive_claim_index_preserves_existing_runner_state() {
         node.query_rows(&retained),
         before,
         "additive publish changed retained bot work"
+    );
+    assert_eq!(
+        node.query_rows(&format!(
+            "SELECT solo_target_guid FROM pkg_playerbots_runner WHERE character_guid = {guid}"
+        ))[0]["solo_target_guid"],
+        u64::MAX.to_string()
+    );
+    node.assert_call("playerbots_fixture_runner_pass", &[]);
+    assert_eq!(
+        node.query_rows(&retained),
+        before,
+        "backfill changed retained bot work"
     );
     assert_eq!(
         node.query_rows(&format!(

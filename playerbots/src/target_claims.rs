@@ -8,12 +8,29 @@ use crate::{game_group_member, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const OWNER_LIMIT: usize = 16;
+const BACKFILL_LIMIT: usize = 16;
+const UNINDEXED: u64 = u64::MAX;
 const CLAIM_LIFETIME_MICROS: i64 = 30_000_000;
 
 pub(super) enum Availability {
     Available,
     Claimed,
     ReadLimit,
+}
+
+/// Populate pre-publish rows before allowing new claims. The sentinel is indexed, so each pass
+/// visits only unfinished rows and never resets their progress or action clocks.
+pub(super) fn backfill(ctx: &ReducerContext) {
+    let rows = ctx.db.pkg_playerbots_runner();
+    let pending: Vec<_> = rows
+        .by_solo_target()
+        .filter(UNINDEXED)
+        .take(BACKFILL_LIMIT)
+        .collect();
+    for mut state in pending {
+        state.solo_target_guid = selected(ctx, &state).unwrap_or(0);
+        rows.character_guid().update(state);
+    }
 }
 
 fn grouped(ctx: &ReducerContext, guid: u64) -> bool {
@@ -91,10 +108,15 @@ pub(super) fn availability(
     }
     let rows = ctx.db.pkg_playerbots_runner();
     // A retained approach does not yield to a later defensive engagement or stale competing row.
-    if rows.character_guid().find(me.guid).is_some_and(|state| {
-        state.solo_target_guid == target && selected(ctx, &state) == Some(target)
-    }) {
+    if rows
+        .character_guid()
+        .find(me.guid)
+        .is_some_and(|state| selected(ctx, &state) == Some(target))
+    {
         return Availability::Available;
+    }
+    if rows.by_solo_target().filter(UNINDEXED).next().is_some() {
+        return Availability::ReadLimit;
     }
     for (index, state) in rows.by_solo_target().filter(target).enumerate() {
         if index == OWNER_LIMIT {
