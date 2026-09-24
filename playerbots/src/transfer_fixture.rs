@@ -369,6 +369,7 @@ fn stage_transfer_fixture(
         .into_iter()
         .map(|(_, character_guid)| character_guid)
         .collect();
+    let raid_slots = vec![0; accepted_members.len()];
     crate::group::sync_group_mirror(
         ctx,
         GROUP,
@@ -380,6 +381,8 @@ fn stage_transfer_fixture(
         request_actor,
         partitions,
         roster_revision,
+        0,
+        raid_slots,
     )?;
     Ok(())
 }
