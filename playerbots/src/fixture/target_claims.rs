@@ -2,6 +2,7 @@
 
 use super::super::recovery::Work;
 use super::super::runner::{Controller, RunnerOutcome};
+use super::super::target_claims::{Availability, TargetClaims};
 use super::*;
 use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content
 use std::collections::BTreeSet;
@@ -178,9 +179,8 @@ pub fn playerbots_fixture_solo_target_claim(
             rows.character_guid().update(state);
             let me = crate::helpers::live_entity(ctx, other)?;
             if !matches!(
-                super::super::target_claims::TargetClaims::read(ctx, me.guid)
-                    .availability(ctx, target),
-                super::super::target_claims::Availability::ReadLimit
+                TargetClaims::read(ctx, me.guid).availability(ctx, target),
+                Availability::ReadLimit
             ) {
                 return Err("new claims were allowed before backfill".into());
             }
@@ -211,9 +211,32 @@ pub fn playerbots_fixture_solo_target_claim(
                     .filter(|bot| bot.character_guid != owner && bot.character_guid != other)
                     .map(|bot| bot.character_guid)
                     .collect();
-                for guid in guids {
-                    super::super::runner::transition_controller(ctx, guid, Controller::Frozen)?;
-                    runner_park_for(ctx, guid)?;
+                for guid in &guids {
+                    super::super::runner::transition_controller(ctx, *guid, Controller::Frozen)?;
+                    runner_park_for(ctx, *guid)?;
+                }
+                // Frozen rows never hold a claim, so a stale index on them costs reads but grants
+                // nothing. At the seventeenth matching row the reader stops and reports the
+                // creature as unavailable instead of reading further.
+                let crowded = target + 2;
+                add_target(ctx, target, crowded, 1242.0)?;
+                let rows = ctx.db.pkg_playerbots_runner();
+                for (index, guid) in guids.iter().take(17).enumerate() {
+                    let mut state = rows.character_guid().find(*guid).ok_or("runner missing")?;
+                    state.solo_target_guid = crowded;
+                    rows.character_guid().update(state);
+                    let rows_on_target = index + 1;
+                    match (
+                        TargetClaims::read(ctx, other).availability(ctx, crowded),
+                        rows_on_target,
+                    ) {
+                        (Availability::Available, 1..=16) | (Availability::ReadLimit, 17) => {}
+                        _ => {
+                            return Err(format!(
+                                "{rows_on_target} stale claim rows did not stop at the read limit"
+                            ))
+                        }
+                    }
                 }
             }
             let second = target + 1;
@@ -259,6 +282,7 @@ pub fn playerbots_fixture_solo_target_claim(
         "party" | "party_owner" => {
             let members = vec![owner, other];
             let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;
+            let raid_slots = vec![0; members.len()];
             crate::group::sync_group_mirror(
                 ctx,
                 ROLES_GROUP,
@@ -273,6 +297,8 @@ pub fn playerbots_fixture_solo_target_claim(
                 },
                 partitions,
                 1,
+                0,
+                raid_slots,
             )?;
             if case == "party_owner" {
                 // The observer leaves; the existing owner's grouped state must release its claim.

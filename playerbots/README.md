@@ -96,11 +96,13 @@ spawned Cohort bots use the rows directly.
 
 ## Solo target selection
 
-Solo adventurers reserve their selected creature through the retained Recovery Attempt before
-combat creates a Loot Tag. Other solo bots look for an unclaimed eligible creature. If none is
-available, they defer that work. Claims expire after thirty seconds without progress and stop
-applying when the owner abandons the fight, dies, joins a party, freezes, or leaves the partition.
-Party assistance and self-defense keep their existing target rules.
+An ungrouped Cohort bot reserves its selected creature through the retained Recovery Attempt
+before combat creates a Loot Tag. Other ungrouped Cohort bots look for an unclaimed eligible
+creature. If none is available, they defer that work. Claims expire after thirty seconds without
+progress. They stop applying when the owner abandons the fight, fails its movement, dies, joins a
+Party, leaves Cohort control, or leaves the partition. Party assistance and self-defense keep their
+existing target rules, and an owner that defends itself against its claimed creature keeps the
+claim.
 
 The Runner indexes its retained solo creature in `solo_target_guid`. Selection reads only matching
 owners, checks their current state, and never scans the nearby bot population. Each candidate
