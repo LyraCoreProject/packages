@@ -1,6 +1,8 @@
 //! Deterministic staging for private, per-test durable databases.
 //! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
+mod target_claims;
+
 use super::{
     pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_kit, pkg_playerbots_runner,
     PlayerbotsBot,

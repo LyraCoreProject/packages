@@ -250,6 +250,7 @@ fn select_live_target(
     salt: Option<u64>,
     preferred: Option<u64>,
 ) -> LiveCreatureTarget {
+    let claims = super::target_claims::TargetClaims::read(ctx, me.guid);
     let mut deferred = false;
     let mut read_limited = false;
     let mut eligible: Vec<_> = search
@@ -258,15 +259,24 @@ fn select_live_target(
         .filter(|target| crate::combat::validate_attack_target(ctx, me, target.guid).is_ok())
         .filter(|target| {
             match crate::loot::tag::live_loot_tag_eligibility(ctx, target.guid, me.guid) {
-                crate::loot::tag::LiveLootTagEligibility::Available => true,
-                crate::loot::tag::LiveLootTagEligibility::Foreign => false,
+                crate::loot::tag::LiveLootTagEligibility::Available => {}
+                crate::loot::tag::LiveLootTagEligibility::Foreign => return false,
                 crate::loot::tag::LiveLootTagEligibility::ReadLimit => {
                     read_limited = true;
-                    false
+                    return false;
                 }
             }
-        })
-        .filter(|target| {
+            match claims.availability(ctx, target.guid) {
+                super::target_claims::Availability::Available => {}
+                super::target_claims::Availability::Claimed => {
+                    deferred = true;
+                    return false;
+                }
+                super::target_claims::Availability::ReadLimit => {
+                    read_limited = true;
+                    return false;
+                }
+            }
             let eligible = eligible_work(target.guid);
             deferred |= !eligible;
             eligible

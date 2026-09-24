@@ -94,6 +94,24 @@ off, and where a healer places a heal. Two bots on one rotation at the same heal
 alone. The row is the floor. The retained Legacy executor can ask a Runtime Script instead. Newly
 spawned Cohort bots use the rows directly.
 
+## Solo target selection
+
+An ungrouped Cohort bot reserves its selected creature through the retained Recovery Attempt
+before combat creates a Loot Tag. Other ungrouped Cohort bots look for an unclaimed eligible
+creature. If none is available, they defer that work. Claims expire after thirty seconds without
+progress. They stop applying when the owner abandons the fight, fails its movement, dies, joins a
+Party, leaves Cohort control, or leaves the partition. Party assistance and self-defense keep their
+existing target rules, and an owner that defends itself against its claimed creature keeps the
+claim.
+
+The Runner indexes its retained solo creature in `solo_target_guid`. Selection reads only matching
+owners, checks their current state, and never scans the nearby bot population. Each candidate
+allows at most 16 matching owner reads; a larger stale set defers that candidate. An existing
+valid claim keeps its target independently of that limit. The field is end-appended with
+`u64::MAX` marking existing rows for backfill. Each Runner pass indexes at most 16 such rows before
+decisions run. New claims wait until backfill finishes; existing approaches, party assistance and
+self-defense remain available. Zero means no claim after backfill.
+
 ## Personality as a script
 
 A row is one number. A script is a decision. The retained Legacy executor exposes both personality

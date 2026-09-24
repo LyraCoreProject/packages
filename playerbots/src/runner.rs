@@ -227,7 +227,8 @@ pub struct Transition {
 /// Backfilled for at most BATCH_LIMIT due bots per pass. Legacy goals keep their stored meaning.
 /// The public row is the explanation read; ages are relative to observed_micros.
 #[table(accessor = pkg_playerbots_runner, public,
-    index(accessor = by_movement_due, btree(columns = [movement_due_micros, character_guid])))]
+    index(accessor = by_movement_due, btree(columns = [movement_due_micros, character_guid])),
+    index(accessor = by_solo_target, btree(columns = [solo_target_guid])))]
 pub struct PlayerbotsRunner {
     #[primary_key]
     pub character_guid: u64,
@@ -282,6 +283,9 @@ pub struct PlayerbotsRunner {
     /// Movement execution has its own due queue; decision backpressure must not stop a route.
     #[default(i64::MAX)]
     pub movement_due_micros: i64,
+    /// Zero means no claim; MAX marks a pre-publish row awaiting the bounded index backfill.
+    #[default(u64::MAX)]
+    pub solo_target_guid: u64,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -486,6 +490,7 @@ impl PlayerbotsRunner {
 
             transfer_checkpoint: None,
             movement_due_micros: i64::MAX,
+            solo_target_guid: 0,
         }
     }
 
@@ -545,6 +550,7 @@ impl PlayerbotsRunner {
     }
 
     pub(super) fn save(mut self, ctx: &ReducerContext) {
+        self.solo_target_guid = super::target_claims::selected(ctx, &self).unwrap_or(0);
         if !self
             .foreground
             .as_ref()
@@ -674,6 +680,7 @@ fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
 
 pub(super) fn pass(ctx: &ReducerContext) {
     super::ensure_defaults(ctx);
+    super::target_claims::backfill(ctx);
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let bots = ctx.db.pkg_playerbots_bot();
     let due = due_batch(ctx, now);

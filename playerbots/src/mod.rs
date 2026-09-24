@@ -29,6 +29,7 @@ mod quest_catalog;
 mod quest_loop;
 mod recovery;
 mod runner;
+mod target_claims;
 mod transfer;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;
