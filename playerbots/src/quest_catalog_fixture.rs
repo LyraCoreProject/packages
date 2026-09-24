@@ -749,6 +749,7 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
         next_quest_id: 0,
         limit_time: 0,
         reward_money_max_level: 0,
+        quest_type: 0,
     });
     for (id, role) in [
         (SEEDED_USE_RELATION_START, crate::quest::quest_role::START),
@@ -1198,6 +1199,7 @@ fn insert_quest(
         next_quest_id: if entry == 783 { 7 } else { 0 },
         limit_time: 0,
         reward_money_max_level: 0,
+        quest_type: 0,
     });
     let start_kind = if matches!(start, 55 | 56) {
         CatalogEntityKind::GameObject

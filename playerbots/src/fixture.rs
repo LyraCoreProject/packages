@@ -1618,6 +1618,7 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
         next_quest_id: 0,
         limit_time: 0,
         reward_money_max_level: 0,
+        quest_type: 0,
     });
     ctx.db.game_quest_objective().id().delete(5_090_101);
     ctx.db.game_quest_objective().insert(crate::QuestObjective {
