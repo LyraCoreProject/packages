@@ -80,6 +80,7 @@ fn quest_template(entry: u32, prerequisite: u32) -> crate::QuestTemplate {
         next_quest_id: 0,
         limit_time: 0,
         reward_money_max_level: 0,
+        quest_type: 0,
     }
 }
 
