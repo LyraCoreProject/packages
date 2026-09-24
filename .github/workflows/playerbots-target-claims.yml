@@ -59,11 +59,15 @@ jobs:
           workspaces: lyracore
       - name: Build the published Package baseline for additive migration
         working-directory: lyracore
+        # A separate target directory keeps Cargo from reusing baseline artifacts for the current
+        # build, which differs only in where the Package symlinks point.
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/claim-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
-          cp target/wasm32-unknown-unknown/release/lyracore_module.wasm "$RUNNER_TEMP/claim-baseline.wasm"
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/claim-baseline.wasm"
           echo "PLAYERBOTS_CLAIM_BASELINE_WASM=$RUNNER_TEMP/claim-baseline.wasm" >> "$GITHUB_ENV"
       - name: Verify solo target claims through the Runner
         run: ./collection/.github/check-playerbots-target-claims.sh "$GITHUB_WORKSPACE/lyracore"
