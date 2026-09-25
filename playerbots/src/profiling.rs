@@ -1,5 +1,3 @@
-#![cfg(feature = "debug_reducers")]
-
 use spacetimedb::{log_stopwatch::LogStopwatch, ReducerContext};
 
 /// Optional phase timings. Each span carries the same identity as the decision timing.
