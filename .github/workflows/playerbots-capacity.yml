@@ -1,4 +1,4 @@
-name: Playerbots solo target claims
+name: Playerbots capacity and movement ownership
 
 on:
   pull_request:
@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: playerbots-target-claims-${{ github.ref }}
+  group: playerbots-capacity-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/packages
-          ref: 244ecfd63ee5d99f3cf855201479b9006654d5e8
+          ref: e134b135099a7d358a0f0fab58654c200602b9b1
           path: baseline
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -62,18 +62,30 @@ jobs:
         # A separate target directory keeps Cargo from reusing baseline artifacts for the current
         # build, which differs only in where the Package symlinks point.
         env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/claim-baseline-target
+          CARGO_TARGET_DIR: ${{ runner.temp }}/capacity-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
-          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/claim-baseline.wasm"
-          echo "PLAYERBOTS_CLAIM_BASELINE_WASM=$RUNNER_TEMP/claim-baseline.wasm" >> "$GITHUB_ENV"
-      - name: Verify solo target claims through the Runner
-        run: ./collection/.github/check-playerbots-target-claims.sh "$GITHUB_WORKSPACE/lyracore"
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/capacity-baseline.wasm"
+          echo "PLAYERBOTS_CAPACITY_PRECEDING_WASM=$RUNNER_TEMP/capacity-baseline.wasm" >> "$GITHUB_ENV"
+      - name: Verify bounded planning, movement ownership, starting areas and additive migration
+        env:
+          PLAYERBOTS_CAPACITY_COUNT: 100
+          PLAYERBOTS_CAPACITY_WORLDS: 1
+        run: |
+          ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
+            bash -eu -o pipefail -c '
+              cd "$GITHUB_WORKSPACE/lyracore"
+              cargo test --locked -p lyracore-module --test playerbots_capacity \
+                -- --ignored --test-threads=1 --nocapture \
+                --skip playerbots_capacity_profile_imported_navigation
+              cargo test --locked -p lyracore-module --test playerbots_transfer \
+                playerbots_legacy_crossing_ -- --ignored --test-threads=1 --nocapture
+            '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
-          name: playerbots-target-claims-evidence
+          name: playerbots-capacity-evidence
           path: /tmp/lyracore-standalone-logs/
           if-no-files-found: error

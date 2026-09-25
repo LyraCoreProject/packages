@@ -1,4 +1,4 @@
-name: Core tip compatibility
+name: Core compatibility
 
 on:
   push:
@@ -40,18 +40,18 @@ jobs:
           path: collection
           persist-credentials: false
 
-      - name: Check out LyraCore main
+      - name: Check out the required Core revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: main
+          ref: fcaad07ddce74a98067bcf0f9e455cfd9d0160af
           path: lyracore
           persist-credentials: false
 
       - name: Install Rust 1.93.0
         run: rustup toolchain install 1.93.0 --profile minimal
 
-      - name: Compile every Package against core tip
+      - name: Compile every Package against the required Core revision
         run: ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore"
 
   datascripts:
@@ -66,11 +66,11 @@ jobs:
           path: collection
           persist-credentials: false
 
-      - name: Check out LyraCore main
+      - name: Check out the required Core revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: main
+          ref: fcaad07ddce74a98067bcf0f9e455cfd9d0160af
           path: lyracore
           persist-credentials: false
 
@@ -107,7 +107,7 @@ jobs:
       - name: Install the pinned lyracore CLI
         run: (cd lyracore && ./lyracore --help >/dev/null)
 
-      - name: Verify committed Script Artifacts against core tip
+      - name: Verify committed Script Artifacts against the required Core revision
         run: |
           ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             "$GITHUB_WORKSPACE/collection/.github/check-datascripts.sh" "$GITHUB_WORKSPACE/lyracore"
@@ -131,11 +131,11 @@ jobs:
         with:
           path: collection
           persist-credentials: false
-      - name: Check out Core with claim-aware population checks
+      - name: Check out Core with bounded population checks
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 27d7190a9b544f08e2348591958dfe5554f083fb
+          ref: fcaad07ddce74a98067bcf0f9e455cfd9d0160af
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -689,7 +689,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 27d7190a9b544f08e2348591958dfe5554f083fb
+          ref: fcaad07ddce74a98067bcf0f9e455cfd9d0160af
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -910,7 +910,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 27d7190a9b544f08e2348591958dfe5554f083fb
+          ref: fcaad07ddce74a98067bcf0f9e455cfd9d0160af
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1108,7 +1108,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 27d7190a9b544f08e2348591958dfe5554f083fb
+          ref: fcaad07ddce74a98067bcf0f9e455cfd9d0160af
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
