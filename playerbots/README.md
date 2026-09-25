@@ -19,6 +19,7 @@ Every verb is Operator-gated. Call them with `spacetime call <database> -- <verb
 | `playerbots_spawn N x y z` | Spawn `N` bots at a point, cycling the roles so the batch forms a party. |
 | `playerbots_spawn_role N x y z role` | Spawn `N` bots of one role, using this Package's default class for it. |
 | `playerbots_spawn_class_role N x y z class role` | Spawn `N` bots of one class and role. Refuses a pairing this Package has no kit for. |
+| `playerbots_spawn_starting_area area N controller` | Spawn 1 through 50 level-one bots at imported race/class starts. Accepts Cohort or Frozen control; missing walkable ground refuses the entire batch. |
 | `playerbots_populate` | Top the population up to `population_count`. Idempotent. |
 | `playerbots_despawn_all` | Delete every bot Character and everything it owns. |
 | `playerbots_migrate_legacy_controllers [guids]` | Move one sorted batch of at most 16 eligible populated Legacy bots to Cohort. Transfer-owned rows wait for a later batch. |
@@ -26,6 +27,11 @@ Every verb is Operator-gated. Call them with `spacetime call <database> -- <verb
 Roles are `0` tank, `1` healer, `2` damage.
 
 Nothing populates on its own. A realm gets bots when its Operator asks for them.
+
+Starting areas are `northshire`, `coldridge`, `deathknell`, `shadowglen`, `valley-of-trials`, and
+`red-cloud-mesa`. Use the World Shard containing that area's imported map. The first three use map 0;
+the rest use map 1. The population uses supported Warrior, Priest and Mage kits with valid races.
+Shadowglen has no Mages. Red Cloud Mesa currently has only Warriors.
 
 ## Package Config
 
@@ -41,6 +47,11 @@ the runner's fact reads, action Gates and state writes. It excludes the schedule
 Sessionless Action Consent check. The duration includes stopwatch overhead and stays separate from
 whole-tick CPU metrics. Setting the value to `false` stops these logs. Non-debug builds do not read
 this option or start a stopwatch.
+
+`decision_profile` also defaults to false. In debug builds it records decision phases, path-search
+elapsed time and expansions per pass. Path work runs separately from decision admission, so its
+duration is not part of `decision_timing`. Enable profiling only for bounded measurements because
+it emits several log entries per decision.
 
 | key | default | meaning |
 | --- | --- | --- |
@@ -719,3 +730,7 @@ refuses to replace an existing test, and removes its staged file on exit. It lin
 through `check-core-tip.sh` and runs against private Standalone Shards with the pinned toolchain.
 The checks cover solo and grouped starter casts, healing, buff retention, queued rage, swing firing,
 and preservation of Operator rotation edits. They do not establish attended client acceptance.
+
+Capacity scheduling requires Core `9863e59d2b8cfc91fa9f731be8380a09a1d273af` or a descendant. It adds the
+partition and creature-entry index used by crowded target searches. CI pins that integration
+revision and retains the earlier revisions used by migration tests.
