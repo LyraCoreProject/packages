@@ -1,7 +1,7 @@
 {
   "fixture": "playerbots-quest-catalog-v1",
-  "catalog": "northshire-elwynn-supported-v1",
-  "catalog_revision": 1,
+  "catalog": "starting-areas-supported-v2",
+  "catalog_revision": 2,
   "blueprint_revision": "classicdb:d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
   "reference_source_revision": "unknown",
   "observed_content_revision": "computed from staged quest, relation, objective, loot, item, and spawn rows",
@@ -10,7 +10,7 @@
     { "class": 5, "name": "priest", "seed": 783005 },
     { "class": 8, "name": "mage", "seed": 783008 }
   ],
-  "quest_order": [783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45],
+  "quest_order": [783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45, 179, 233, 363, 364, 456, 457, 458, 747, 752, 788],
   "caught_refusals": [
     "inventory-full take preserves carried inventory and GameObject loot"
   ],
