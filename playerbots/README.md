@@ -731,6 +731,6 @@ through `check-core-tip.sh` and runs against private Standalone Shards with the 
 The checks cover solo and grouped starter casts, healing, buff retention, queued rage, swing firing,
 and preservation of Operator rotation edits. They do not establish attended client acceptance.
 
-Capacity scheduling requires Core `fcaad07ddce74a98067bcf0f9e455cfd9d0160af` or a descendant. It adds the
+Capacity scheduling requires Core `9863e59d2b8cfc91fa9f731be8380a09a1d273af` or a descendant. It adds the
 partition and creature-entry index used by crowded target searches. CI pins that integration
 revision and retains the earlier revisions used by migration tests.
