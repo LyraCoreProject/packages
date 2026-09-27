@@ -2,7 +2,7 @@ use crate::nav::game_nav_chunk;
 use crate::terrain::game_terrain_chunk;
 use spacetimedb::{reducer, table, ReducerContext, SpacetimeType, Table};
 
-use super::{pkg_playerbots_bot, Controller};
+use super::{pkg_playerbots_bot, pkg_playerbots_runner, Controller};
 
 const ORIGIN: (f32, f32, f32) = (1200.0, 1200.0, 50.0);
 const TRAVEL_YARDS: f32 = 700.0;
@@ -105,8 +105,11 @@ fn route_geometry(ctx: &ReducerContext) -> Result<(Vec<u64>, Vec<LoadBlockedCell
 #[reducer]
 pub fn playerbots_load_stage(ctx: &ReducerContext, count: u32, seed: u32) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if !matches!(count, 10 | 25 | 100) || !(1..=30).contains(&seed) {
-        return Err("load fixture needs 10, 25 or 100 bots and seed 1 through 30".to_string());
+    if !matches!(count, 10 | 25 | 100 | 250 | 500 | 1_000) || !(1..=30).contains(&seed) {
+        return Err(
+            "load fixture needs 10, 25, 100, 250, 500 or 1000 bots and seed 1 through 30"
+                .to_string(),
+        );
     }
     if ctx.db.pkg_playerbots_bot().count() != 0
         || ctx.db.pkg_playerbots_load_fixture().id().find(0).is_some()
@@ -122,11 +125,13 @@ pub fn playerbots_load_stage(ctx: &ReducerContext, count: u32, seed: u32) -> Res
             1 => (super::class::PRIEST, super::ROLE_HEALER),
             _ => (super::class::MAGE, super::ROLE_DPS),
         };
-        let x = ORIGIN.0 + (index % 10) as f32 * 1.5;
-        let y = ORIGIN.1 + (index / 10) as f32 * 1.5 + seed as f32 * 0.01;
+        // Repeat the same routes as density rises, keeping geometry and travel distance fixed.
+        let position = index % 100;
+        let x = ORIGIN.0 + (position % 10) as f32 * 1.5;
+        let y = ORIGIN.1 + (position / 10) as f32 * 1.5 + seed as f32 * 0.01;
         let guid = super::spawn_one(
             ctx,
-            class,
+            (super::BOT_RACE, class),
             role,
             super::role_name_stem(role),
             0,
@@ -196,5 +201,60 @@ pub fn playerbots_load_begin(ctx: &ReducerContext) -> Result<(), String> {
     }
     fixture.started_micros = Some(now);
     ctx.db.pkg_playerbots_load_fixture().id().update(fixture);
+    Ok(())
+}
+
+/// Replace selected load movement, then park decisions so the fixture can inspect its cancellation.
+#[reducer]
+pub fn playerbots_load_foreign_motion(
+    ctx: &ReducerContext,
+    guid: u64,
+    duration_ms: u32,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    let staged = ctx
+        .db
+        .pkg_playerbots_load_fixture()
+        .id()
+        .find(0)
+        .is_some_and(|fixture| fixture.bots.iter().any(|bot| bot.character_guid == guid));
+    let selected = ctx
+        .db
+        .pkg_playerbots_runner()
+        .character_guid()
+        .find(guid)
+        .is_some_and(|state| {
+            state.foreground.as_ref().is_some_and(|foreground| {
+                matches!(foreground.running, super::runner::Running::Movement(_))
+            })
+        });
+    if !staged || !selected || duration_ms > 30_000 {
+        return Err(
+            "foreign motion fixture requires selected load movement and at most 30 seconds"
+                .to_string(),
+        );
+    }
+    let mut bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()
+        .ok_or("selected load bot is absent")?;
+    bot.next_think_micros = i64::MAX;
+    ctx.db.pkg_playerbots_bot().id().update(bot);
+    let me = crate::helpers::live_entity(ctx, guid)?;
+    crate::creatures::tick::emit_move_spline(
+        ctx,
+        guid,
+        (me.x, me.y, me.z),
+        (me.x + 20.0, me.y, me.z),
+        duration_ms,
+        true,
+        (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32,
+        me.map_id,
+        me.instance_id,
+        (me.grid_x, me.grid_y),
+    );
     Ok(())
 }

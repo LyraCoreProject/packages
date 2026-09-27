@@ -19,9 +19,10 @@ use spacetimedb::{reducer, table, ReducerContext, Table};
 
 mod movement;
 
-pub const BATCH_LIMIT: usize = 16;
-const DUE_SCAN_LIMIT: usize = 128;
-const COMPANION_BATCH_LIMIT: usize = 4;
+pub const BATCH_LIMIT: usize = 256;
+const DUE_SCAN_LIMIT: usize = 1_024;
+const COMPANION_BATCH_LIMIT: usize = 16;
+const COMBAT_BATCH_LIMIT: usize = 64;
 const CONTROLLER_MIGRATION_BATCH_LIMIT: usize = 16;
 const INTERVAL: i64 = 1_000_000;
 const OBJECTIVE_LIFETIME: i64 = 120_000_000;
@@ -228,7 +229,8 @@ pub struct Transition {
 /// The public row is the explanation read; ages are relative to observed_micros.
 #[table(accessor = pkg_playerbots_runner, public,
     index(accessor = by_movement_due, btree(columns = [movement_due_micros, character_guid])),
-    index(accessor = by_solo_target, btree(columns = [solo_target_guid])))]
+    index(accessor = by_solo_target, btree(columns = [solo_target_guid])),
+    index(accessor = by_path_due, btree(columns = [path_pending, movement_due_micros, character_guid])))]
 pub struct PlayerbotsRunner {
     #[primary_key]
     pub character_guid: u64,
@@ -286,6 +288,9 @@ pub struct PlayerbotsRunner {
     /// Zero means no claim; MAX marks a pre-publish row awaiting the bounded index backfill.
     #[default(u64::MAX)]
     pub solo_target_guid: u64,
+    /// Pending searches keep their own due order while existing paths continue.
+    #[default(false)]
+    pub path_pending: bool,
 }
 
 crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_runner(ctx, character_guid) {
@@ -491,6 +496,7 @@ impl PlayerbotsRunner {
             transfer_checkpoint: None,
             movement_due_micros: i64::MAX,
             solo_target_guid: 0,
+            path_pending: false,
         }
     }
 
@@ -557,6 +563,7 @@ impl PlayerbotsRunner {
             .is_some_and(|foreground| matches!(foreground.running, Running::Movement(_)))
         {
             self.movement_due_micros = i64::MAX;
+            self.path_pending = false;
         }
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
@@ -651,6 +658,7 @@ fn legacy_pass(
 
 fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
     let mut companions = Vec::with_capacity(COMPANION_BATCH_LIMIT);
+    let mut combat = Vec::with_capacity(COMBAT_BATCH_LIMIT);
     let mut background = Vec::with_capacity(BATCH_LIMIT);
     for bot in ctx
         .db
@@ -669,11 +677,24 @@ fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
                 .is_some_and(|order| order.active);
         if companion {
             companions.push(bot);
+        } else if combat.len() < COMBAT_BATCH_LIMIT
+            && bot.controller == Controller::Cohort
+            && ctx
+                .db
+                .game_world_entity()
+                .guid()
+                .find(bot.character_guid)
+                .is_some_and(|me| {
+                    me.unit_flags & lyracore_shared::constants::unit_flags::IN_COMBAT != 0
+                })
+        {
+            combat.push(bot);
         } else if background.len() < BATCH_LIMIT {
             background.push(bot);
         }
     }
-    let remaining = BATCH_LIMIT - companions.len();
+    let remaining = BATCH_LIMIT - companions.len() - combat.len();
+    companions.extend(combat);
     companions.extend(background.into_iter().take(remaining));
     companions
 }
@@ -711,6 +732,9 @@ pub(super) fn pass(ctx: &ReducerContext) {
             match bot.controller {
                 Controller::Legacy => match legacy_pass(ctx, &bot, &state, now) {
                     LegacyPass::Goals => {
+                        if state.foreground.is_some() {
+                            stop(ctx, bot.character_guid, &mut state);
+                        }
                         state.save(ctx);
                         super::goals::think(ctx, &bot, now);
                     }
@@ -743,7 +767,11 @@ pub(super) fn pass(ctx: &ReducerContext) {
             }
         }
         bot.scheduler_lag_micros = now.saturating_sub(bot.next_think_micros).max(0);
-        bot.next_think_micros = now.saturating_add(INTERVAL);
+        bot.next_think_micros = if bot.controller == Controller::Frozen {
+            i64::MAX
+        } else {
+            now.saturating_add(INTERVAL)
+        };
         bots.id().update(bot);
     }
     movement::pass(ctx, now);
@@ -894,6 +922,7 @@ pub fn playerbots_migrate_legacy_controllers(
 
 fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
     state.movement_due_micros = i64::MAX;
+    state.path_pending = false;
     if let Some(foreground) = state.foreground.take() {
         if let Running::Cast(handle) = &foreground.running {
             if state.companion_heal_target_guid == Some(handle.target_guid) {
@@ -1416,6 +1445,9 @@ fn run(
             bot.character_guid, state.generation
         ))
     });
+    #[cfg(feature = "debug_reducers")]
+    let mut profile =
+        super::profiling::Decision::start(ctx, bot.character_guid, state.generation, now);
     let owns_runner = matches!(bot.controller, Controller::Legacy | Controller::Cohort);
     let Some(me) = ctx.db.game_world_entity().guid().find(bot.character_guid) else {
         state.chosen = Some(Candidate {
@@ -1590,6 +1622,8 @@ fn run(
         }
     }
 
+    #[cfg(feature = "debug_reducers")]
+    profile.phase("recovery_observation");
     let arrival = state.transfer_checkpoint;
     let arriving = arrival.is_some();
     let observed_objective = state.objective_sequence;
@@ -1620,6 +1654,8 @@ fn run(
             );
         }
     }
+    #[cfg(feature = "debug_reducers")]
+    profile.phase("objective");
     let prior_objective = state.objective_sequence;
     let prior_objective_deferral = state
         .objective
@@ -1727,6 +1763,8 @@ fn run(
         }
         return;
     };
+    #[cfg(feature = "debug_reducers")]
+    profile.phase("targets");
     let quest_objective = state
         .objective
         .as_ref()
@@ -1831,6 +1869,8 @@ fn run(
             }
         }
     }
+    #[cfg(feature = "debug_reducers")]
+    profile.phase("combat_facts");
     let personality = ctx
         .db
         .pkg_playerbots_personality()
@@ -2226,6 +2266,8 @@ fn run(
     state.companion_heal_target_guid = companion_heal_target;
     state.companion_fight_target_guid = companion_fight_target;
     state.companion_buff_target_guid = companion_buff_target;
+    #[cfg(feature = "debug_reducers")]
+    profile.phase("selection");
     let decision = decision::choose(&facts, &strategies, decision::LIMITS, |purpose| {
         state
             .recovery
@@ -2273,6 +2315,8 @@ fn run(
     {
         let _ = state.refusal_retry_at(Failure::RecoveryCapacity, now);
     }
+    #[cfg(feature = "debug_reducers")]
+    profile.phase("recovery_selection");
     let mut transfer_recovery_settled = arrival.is_some_and(|checkpoint| {
         !super::transfer::requires_recovery(checkpoint)
             || super::transfer::companion_recovery_complete(
@@ -2570,6 +2614,7 @@ fn run(
                 state.last_outcome = RunnerOutcome::Waiting;
                 // Finish this leg, then release movement to the newly selected action.
                 state.movement_due_micros = i64::MAX;
+                state.path_pending = false;
                 state.save(ctx);
                 return;
             }
@@ -2580,6 +2625,8 @@ fn run(
         && state.foreground.is_none()
         && chosen.is_none_or(|candidate| candidate.priority < DEFENSE_PRIORITY)
     {
+        #[cfg(feature = "debug_reducers")]
+        profile.phase("provisioning");
         match super::provisioning::reconcile_due(ctx, bot, now) {
             super::provisioning::ReconcileStep::Ready
             | super::provisioning::ReconcileStep::Recorded => {}
@@ -2708,6 +2755,8 @@ fn run(
             state.save(ctx);
             return;
         }
+        #[cfg(feature = "debug_reducers")]
+        profile.phase("execute");
         execute(ctx, &me, &destination, candidate, &mut state, now);
     } else if let Some(reason) = decision.refusals.first() {
         state.failure(Failure::Decision(*reason), now);
@@ -2761,6 +2810,7 @@ fn execute(
                 stop_movement(ctx, me.guid);
                 state.foreground = None;
                 state.movement_due_micros = i64::MAX;
+                state.path_pending = false;
                 state.failure(Failure::ActionRefused(refusal.kind), now);
                 return;
             }
@@ -2850,21 +2900,13 @@ fn execute(
                     .min(now.saturating_add(movement::INTERVAL));
                 return;
             }
-            movement::begin(
-                ctx,
-                me,
-                (dest.x, dest.y, dest.z),
-                movement::stand_off(candidate),
-            );
-            state.route_expansions =
-                super::actions::observation(ctx, me.guid, super::actions::ActionKind::Move)
-                    .and_then(|row| match row.outcome {
-                        super::actions::ActionOutcome::Movement(observation) => {
-                            Some(observation.route.expansions)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(0);
+            let due = if state.path_pending {
+                state.movement_due_micros.min(now)
+            } else {
+                now
+            };
+            state.path_pending = true;
+            state.route_expansions = 0;
             state.foreground = Some(Foreground {
                 candidate,
                 generation: state.generation,
@@ -2877,7 +2919,7 @@ fn execute(
                     from_y: me.y,
                 }),
             });
-            state.movement_due_micros = now.saturating_add(movement::INTERVAL);
+            state.movement_due_micros = due;
             state.last_outcome = RunnerOutcome::Waiting;
         }
         Action::Cast(CastAction { target, spell }) => {
@@ -3065,6 +3107,7 @@ crate::game_hook!(on_character_relocated, fn playerbots_runner_relocated(ctx, pa
     if !state.foreground.as_ref().is_some_and(|foreground| matches!(foreground.running, Running::Movement(_))) { return; }
     state.foreground = None;
     state.movement_due_micros = i64::MAX;
+    state.path_pending = false;
     state.last_outcome = RunnerOutcome::Cancelled;
     state.save(ctx);
 });

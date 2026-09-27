@@ -65,7 +65,11 @@ pub fn playerbots_fixture_solo_target_claim(
     {
         return Err("target claim fixture requires a fresh, private Shard".into());
     }
-    let population = if case == "exhaustion" { 25 } else { 2 };
+    let population = match case.as_str() {
+        "crowded" => 100,
+        "exhaustion" => 25,
+        _ => 2,
+    };
     super::super::playerbots_spawn_class_role(ctx, population, 1200.0, 1200.0, 50.0, 1, 0)?;
     playerbots_fixture_prepare(ctx)?;
     let bots: Vec<_> = ctx
@@ -131,6 +135,7 @@ pub fn playerbots_fixture_solo_target_claim(
     }
 
     match case.as_str() {
+        "crowded" => return Ok(()),
         "exhaustion" => {
             let targets: BTreeSet<_> = (0..9).map(|offset| target + offset).collect();
             for offset in 1..9 {

@@ -24,6 +24,9 @@ mod companion;
 mod decision;
 mod goals;
 mod orders;
+mod population;
+#[cfg(feature = "debug_reducers")]
+mod profiling;
 mod provisioning;
 mod quest_catalog;
 mod quest_loop;
@@ -817,11 +820,11 @@ pub(crate) fn role_personality_defaults(role: u8) -> (u8, u8) {
     }
 }
 
-/// Create one bot Character of `(class, role)`, place it at `at` on `map_id`, and register it on the
+/// Create one bot Character of `(race, class)` and `role`, place it at `at` on `map_id`, and register it on the
 /// roster. Provisioning is armed here; the first admitted Cohort runner pass teaches its kit.
 fn spawn_one(
     ctx: &ReducerContext,
-    class: u8,
+    (race, class): (u8, u8),
     role: u8,
     name_stem: &str,
     map_id: u32,
@@ -836,7 +839,7 @@ fn spawn_one(
         ctx,
         account_id,
         name.clone(),
-        BOT_RACE,
+        race,
         class,
         0,
         0,
@@ -931,9 +934,8 @@ fn default_class_for_role(role: u8) -> Option<u8> {
         .map(|(_, class)| *class)
 }
 
-/// The map the Operator's coordinates belong to. Every spawn verb takes a point and no map,
-/// because a Package reducer runs on one Shard and the Shard's own world map is the only map those
-/// coordinates can mean.
+/// The coordinate-based spawn verbs retain their original Eastern Kingdoms default.
+/// Starting-area spawns obtain their map from the imported race and class start position.
 const SPAWN_MAP_ID: u32 = 0;
 
 fn spawn_batch(
@@ -951,7 +953,15 @@ fn spawn_batch(
     let roster = ctx.db.pkg_playerbots_bot().count() as usize;
     for index in 0..count as usize {
         let spot = spawn_spot(ctx, at, roster + index);
-        spawn_one(ctx, class, role, name_stem, SPAWN_MAP_ID, spot, level)?;
+        spawn_one(
+            ctx,
+            (BOT_RACE, class),
+            role,
+            name_stem,
+            SPAWN_MAP_ID,
+            spot,
+            level,
+        )?;
     }
     Ok(())
 }
@@ -961,7 +971,11 @@ fn spawn_batch(
 fn spawn_spot(ctx: &ReducerContext, at: (f32, f32, f32), index: usize) -> (f32, f32, f32) {
     let (dx, dy) = scatter_offset(index);
     let (x, y) = (at.0 + dx, at.1 + dy);
-    (x, y, crate::terrain::snap_z(ctx, SPAWN_MAP_ID, 0, x, y, at.2))
+    (
+        x,
+        y,
+        crate::terrain::snap_z(ctx, SPAWN_MAP_ID, 0, x, y, at.2),
+    )
 }
 
 /// The furthest a scattered bot stands from the named point.
@@ -1009,7 +1023,7 @@ pub fn playerbots_spawn(
         }
         let stem = stems[(roster + index) % stems.len()];
         let at = spawn_spot(ctx, (x, y, z), roster + index);
-        spawn_one(ctx, class, role, stem, SPAWN_MAP_ID, at, level)?;
+        spawn_one(ctx, (BOT_RACE, class), role, stem, SPAWN_MAP_ID, at, level)?;
     }
     Ok(())
 }

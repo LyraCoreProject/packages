@@ -145,7 +145,7 @@ pub fn playerbots_imported_stage(
         };
         let guid = super::spawn_one(
             ctx,
-            class,
+            (super::BOT_RACE, class),
             role,
             super::role_name_stem(role),
             start.map_id,

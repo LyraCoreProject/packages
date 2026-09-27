@@ -7,14 +7,15 @@ use crate::{
 };
 use spacetimedb::{table, ReducerContext, Table};
 
-pub const CATALOG_NAME: &str = "northshire-elwynn-supported-v1";
-pub const CATALOG_REVISION: u64 = 1;
+pub const CATALOG_NAME: &str = "starting-areas-supported-v2";
+pub const CATALOG_REVISION: u64 = 2;
 pub const CATALOG_BLUEPRINT_REVISION: &str =
     "classicdb:d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6";
 const DESTINATION_LIMIT: usize = 128;
+const AVAILABLE_QUEST_RADIUS_YD: f32 = 1_500.0;
 const WAIT_MICROS: i64 = 30_000_000;
 const REFRESH_INTERVAL_MICROS: i64 = 30_000_000;
-pub(super) const CATALOG_WALK_LIMIT: usize = 16;
+pub(super) const CATALOG_WALK_LIMIT: usize = 32;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CatalogEntityKind {
@@ -250,6 +251,7 @@ struct ObjectiveDefinition {
 
 #[derive(Clone, Copy)]
 struct QuestDefinition {
+    map_id: u32,
     entry: u32,
     min_level: u32,
     required_races: u32,
@@ -329,8 +331,117 @@ const Q3905: &[ObjectiveDefinition] = &[ObjectiveDefinition {
     source_entries: &[],
 }];
 
+const Q179: &[ObjectiveDefinition] = &[ObjectiveDefinition {
+    index: 0,
+    kind: CatalogObjectiveKind::CollectItem,
+    target_entry: 750,
+    required_count: 8,
+    executor: ObjectiveExecutor::CreatureLoot,
+    source_kind: Some(CatalogEntityKind::Creature),
+    source_entries: &[705, 704],
+}];
+const Q233: &[ObjectiveDefinition] = &[ObjectiveDefinition {
+    index: 0,
+    kind: CatalogObjectiveKind::CollectItem,
+    target_entry: 2187,
+    required_count: 1,
+    executor: ObjectiveExecutor::ProvidedItem,
+    source_kind: None,
+    source_entries: &[],
+}];
+const Q364: &[ObjectiveDefinition] = &[
+    ObjectiveDefinition {
+        index: 0,
+        kind: CatalogObjectiveKind::KillCreature,
+        target_entry: 1501,
+        required_count: 8,
+        executor: ObjectiveExecutor::Attack,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[1501],
+    },
+    ObjectiveDefinition {
+        index: 1,
+        kind: CatalogObjectiveKind::KillCreature,
+        target_entry: 1502,
+        required_count: 8,
+        executor: ObjectiveExecutor::Attack,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[1502],
+    },
+];
+const Q456: &[ObjectiveDefinition] = &[
+    ObjectiveDefinition {
+        index: 0,
+        kind: CatalogObjectiveKind::KillCreature,
+        target_entry: 2031,
+        required_count: 7,
+        executor: ObjectiveExecutor::Attack,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[2031],
+    },
+    ObjectiveDefinition {
+        index: 1,
+        kind: CatalogObjectiveKind::KillCreature,
+        target_entry: 1984,
+        required_count: 4,
+        executor: ObjectiveExecutor::Attack,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[1984],
+    },
+];
+const Q457: &[ObjectiveDefinition] = &[
+    ObjectiveDefinition {
+        index: 0,
+        kind: CatalogObjectiveKind::KillCreature,
+        target_entry: 2032,
+        required_count: 7,
+        executor: ObjectiveExecutor::Attack,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[2032],
+    },
+    ObjectiveDefinition {
+        index: 1,
+        kind: CatalogObjectiveKind::KillCreature,
+        target_entry: 1985,
+        required_count: 7,
+        executor: ObjectiveExecutor::Attack,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[1985],
+    },
+];
+const Q747: &[ObjectiveDefinition] = &[
+    ObjectiveDefinition {
+        index: 0,
+        kind: CatalogObjectiveKind::CollectItem,
+        target_entry: 4739,
+        required_count: 7,
+        executor: ObjectiveExecutor::CreatureLoot,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[2955],
+    },
+    ObjectiveDefinition {
+        index: 1,
+        kind: CatalogObjectiveKind::CollectItem,
+        target_entry: 4740,
+        required_count: 7,
+        executor: ObjectiveExecutor::CreatureLoot,
+        source_kind: Some(CatalogEntityKind::Creature),
+        source_entries: &[2955],
+    },
+];
+const Q788: &[ObjectiveDefinition] = &[ObjectiveDefinition {
+    index: 0,
+    kind: CatalogObjectiveKind::KillCreature,
+    target_entry: 3098,
+    required_count: 10,
+    executor: ObjectiveExecutor::Attack,
+    source_kind: Some(CatalogEntityKind::Creature),
+    source_entries: &[3098],
+}];
+
 const QUESTS: &[QuestDefinition] = &[
     QuestDefinition {
+        map_id: 0,
         entry: 783,
         min_level: 1,
         required_races: 77,
@@ -341,6 +452,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: TALK,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 7,
         min_level: 1,
         required_races: 77,
@@ -351,6 +463,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: Q7,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 5261,
         min_level: 1,
         required_races: 77,
@@ -361,6 +474,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: TALK,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 33,
         min_level: 1,
         required_races: 77,
@@ -371,6 +485,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: Q33,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 18,
         min_level: 2,
         required_races: 77,
@@ -381,6 +496,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: Q18,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 3903,
         min_level: 2,
         required_races: 77,
@@ -391,6 +507,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: TALK,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 3904,
         min_level: 2,
         required_races: 77,
@@ -401,6 +518,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: Q3904,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 3905,
         min_level: 2,
         required_races: 77,
@@ -411,6 +529,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: Q3905,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 40,
         min_level: 1,
         required_races: 77,
@@ -421,6 +540,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: TALK,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 35,
         min_level: 1,
         required_races: 77,
@@ -431,6 +551,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: TALK,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 37,
         min_level: 1,
         required_races: 77,
@@ -441,6 +562,7 @@ const QUESTS: &[QuestDefinition] = &[
         objectives: TALK,
     },
     QuestDefinition {
+        map_id: 0,
         entry: 45,
         min_level: 1,
         required_races: 77,
@@ -449,6 +571,116 @@ const QUESTS: &[QuestDefinition] = &[
         start: gameobject(55),
         actual_ender: gameobject(56),
         objectives: TALK,
+    },
+    QuestDefinition {
+        map_id: 0,
+        entry: 179,
+        min_level: 1,
+        required_races: 77,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(658),
+        actual_ender: creature(658),
+        objectives: Q179,
+    },
+    QuestDefinition {
+        map_id: 0,
+        entry: 233,
+        min_level: 1,
+        required_races: 77,
+        required_classes: 0,
+        prerequisite_quest: 179,
+        start: creature(658),
+        actual_ender: creature(714),
+        objectives: Q233,
+    },
+    QuestDefinition {
+        map_id: 0,
+        entry: 363,
+        min_level: 1,
+        required_races: 16,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(1568),
+        actual_ender: creature(1569),
+        objectives: TALK,
+    },
+    QuestDefinition {
+        map_id: 0,
+        entry: 364,
+        min_level: 1,
+        required_races: 178,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(1569),
+        actual_ender: creature(1569),
+        objectives: Q364,
+    },
+    QuestDefinition {
+        map_id: 1,
+        entry: 456,
+        min_level: 1,
+        required_races: 77,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(2079),
+        actual_ender: creature(2079),
+        objectives: Q456,
+    },
+    QuestDefinition {
+        map_id: 1,
+        entry: 457,
+        min_level: 1,
+        required_races: 77,
+        required_classes: 0,
+        prerequisite_quest: 456,
+        start: creature(2079),
+        actual_ender: creature(2079),
+        objectives: Q457,
+    },
+    QuestDefinition {
+        map_id: 1,
+        entry: 458,
+        min_level: 1,
+        required_races: 77,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(2077),
+        actual_ender: creature(1992),
+        objectives: TALK,
+    },
+    QuestDefinition {
+        map_id: 1,
+        entry: 747,
+        min_level: 1,
+        required_races: 178,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(2980),
+        actual_ender: creature(2980),
+        objectives: Q747,
+    },
+    QuestDefinition {
+        map_id: 1,
+        entry: 752,
+        min_level: 1,
+        required_races: 178,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(2981),
+        actual_ender: creature(2991),
+        objectives: TALK,
+    },
+    QuestDefinition {
+        map_id: 1,
+        entry: 788,
+        min_level: 1,
+        required_races: 178,
+        required_classes: 0,
+        prerequisite_quest: 0,
+        start: creature(3143),
+        actual_ender: creature(3143),
+        objectives: Q788,
     },
 ];
 
@@ -590,6 +822,7 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
     for definition in QUESTS.iter().copied() {
         for value in [
             definition.entry,
+            definition.map_id,
             definition.min_level,
             definition.required_races,
             definition.required_classes,
@@ -635,8 +868,13 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
                 crate::quest::quest_role::END,
             ) as u8,
         ]);
-        let mut entity_destinations = destinations(ctx, definition.start, 0, 0);
-        entity_destinations.extend(destinations(ctx, definition.actual_ender, 0, 0));
+        let mut entity_destinations = destinations(ctx, definition.start, definition.map_id, 0);
+        entity_destinations.extend(destinations(
+            ctx,
+            definition.actual_ender,
+            definition.map_id,
+            0,
+        ));
         for destination in &entity_destinations {
             hash_destination(&mut hasher, destination);
         }
@@ -684,7 +922,7 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
                         kind: objective.source_kind.unwrap_or(CatalogEntityKind::Creature),
                         entry: *entry,
                     },
-                    0,
+                    definition.map_id,
                     0,
                 ) {
                     hash_destination(&mut hasher, &destination);
@@ -810,8 +1048,9 @@ pub(super) fn refresh_catalog(ctx: &ReducerContext, reference_source_revision: &
     let objectives = ctx.db.pkg_playerbots_catalog_objective();
     for definition in QUESTS.iter().copied() {
         let template = ctx.db.game_quest_template().entry().find(definition.entry);
-        let start_destinations = destinations(ctx, definition.start, 0, 0);
-        let actual_ender_destinations = destinations(ctx, definition.actual_ender, 0, 0);
+        let start_destinations = destinations(ctx, definition.start, definition.map_id, 0);
+        let actual_ender_destinations =
+            destinations(ctx, definition.actual_ender, definition.map_id, 0);
         let eligibility = template
             .map(|template| {
                 (
@@ -855,8 +1094,13 @@ pub(super) fn refresh_catalog(ctx: &ReducerContext, reference_source_revision: &
             objectives.id().delete(row.id);
         }
         for objective in definition.objectives.iter().copied() {
-            let mut evidence =
-                source_destinations(ctx, objective.source_kind, objective.source_entries, 0, 0);
+            let mut evidence = source_destinations(
+                ctx,
+                objective.source_kind,
+                objective.source_entries,
+                definition.map_id,
+                0,
+            );
             if objective.kind == CatalogObjectiveKind::TalkOnly
                 || objective.executor == ObjectiveExecutor::ProvidedItem
             {
@@ -1570,6 +1814,18 @@ fn inspect(
     if admission_kind == AdmissionKind::Available {
         crate::quest::accept_gates(ctx, &character, &template)
             .map_err(AdmissionRefusal::Ineligible)?;
+        if !quest.start_destinations.is_empty()
+            && !quest.start_destinations.iter().any(|destination| {
+                (destination.map_id, destination.instance_id)
+                    == (character.map_id, character.instance_id)
+                    && (destination.x - character.x).hypot(destination.y - character.y)
+                        <= AVAILABLE_QUEST_RADIUS_YD
+            })
+        {
+            return Err(AdmissionRefusal::Ineligible(
+                "quest giver is outside the local search area".to_string(),
+            ));
+        }
     }
     if !relation_exists(
         ctx,
@@ -2105,9 +2361,13 @@ mod tests {
         let entries: Vec<_> = QUESTS.iter().map(|quest| quest.entry).collect();
         assert_eq!(
             entries,
-            [783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45]
+            [
+                783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45, 179, 233, 363, 364, 456,
+                457, 458, 747, 752, 788
+            ]
         );
         assert!(QUESTS.iter().all(|quest| quest.required_classes == 0));
+        assert!(QUESTS.len() <= CATALOG_WALK_LIMIT);
     }
 
     #[test]

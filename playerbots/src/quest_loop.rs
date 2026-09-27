@@ -157,7 +157,10 @@ fn search_entities(
     for gx in gx0..=gx1 {
         for gy in gy0..=gy1 {
             let cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
-            for entity in entities.by_cell().filter((me.map_id, me.instance_id, cell)) {
+            for entity in entities
+                .by_cell_entry()
+                .filter((me.map_id, me.instance_id, cell, 1u32..))
+            {
                 if scanned == RAW_ENTITY_LIMIT {
                     return EntitySearch {
                         rows: found,
@@ -212,8 +215,7 @@ fn preferred_creature(
     .filter(|target| {
         target.entry == source.entry
             && (target.map_id, target.instance_id) == (me.map_id, me.instance_id)
-            && distance_sq(me, target.x, target.y, target.z)
-                <= SEARCH_RADIUS_YD * SEARCH_RADIUS_YD
+            && distance_sq(me, target.x, target.y, target.z) <= SEARCH_RADIUS_YD * SEARCH_RADIUS_YD
     })
 }
 
@@ -430,30 +432,23 @@ fn creature_plan(
     eligible_work: &impl Fn(u64) -> bool,
 ) -> Option<QuestPlan> {
     let preferred = active_fight.unwrap_or(source.guid);
-    preferred_creature_plan(
-        ctx,
-        me,
-        source,
-        preferred,
-        quest,
-        loot_item,
-        eligible_work,
+    preferred_creature_plan(ctx, me, source, preferred, quest, loot_item, eligible_work).or_else(
+        || {
+            (preferred != source.guid)
+                .then(|| {
+                    preferred_creature_plan(
+                        ctx,
+                        me,
+                        source,
+                        source.guid,
+                        quest,
+                        loot_item,
+                        eligible_work,
+                    )
+                })
+                .flatten()
+        },
     )
-    .or_else(|| {
-        (preferred != source.guid)
-            .then(|| {
-                preferred_creature_plan(
-                    ctx,
-                    me,
-                    source,
-                    source.guid,
-                    quest,
-                    loot_item,
-                    eligible_work,
-                )
-            })
-            .flatten()
-    })
 }
 
 fn gameobject_work(

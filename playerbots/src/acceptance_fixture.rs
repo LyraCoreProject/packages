@@ -2292,7 +2292,7 @@ pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(),
     super::ensure_defaults(ctx);
     let character_guid = super::spawn_one(
         ctx,
-        super::class::WARRIOR,
+        (super::BOT_RACE, super::class::WARRIOR),
         super::ROLE_TANK,
         super::role_name_stem(super::ROLE_TANK),
         0,

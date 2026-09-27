@@ -375,19 +375,16 @@ impl Recovery {
             }) => step.target,
             _ => return None,
         };
-        let attempt = self
-            .attempts
-            .iter()
-            .find(|attempt| {
-                attempt.work == active
-                    && attempt.reason == Reason::Quest
-                    && attempt.objective == objective
-                    && attempt.deferred_until_micros.is_none()
-            })?;
+        let attempt = self.attempts.iter().find(|attempt| {
+            attempt.work == active
+                && attempt.reason == Reason::Quest
+                && attempt.objective == objective
+                && attempt.deferred_until_micros.is_none()
+        })?;
         ((attempt.destination.map_id, attempt.destination.instance_id)
             == (me.map_id, me.instance_id)
             && attempt.geometry == crate::nav::inputs(ctx, me.map_id))
-            .then_some(target)
+        .then_some(target)
     }
 
     /// Observe the previous action before objective reconciliation or the next proposal can replace it.
@@ -557,7 +554,7 @@ impl Recovery {
                     };
                 }
             }
-        } else if !provisioning {
+        } else if !provisioning && !state.path_pending {
             attempt.stalled_micros = attempt
                 .stalled_micros
                 .saturating_add(now.saturating_sub(attempt.last_observed_micros).max(0));
