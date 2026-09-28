@@ -2199,6 +2199,9 @@ fn follow_across_partitions(
     moved.map_id = leader.map_id;
     moved.instance_id = leader.instance_id;
     place(&mut moved, leader.x, leader.y, leader.z);
+    // The crossing is movement: a bot left with its old move clock reads as idle and lets its new
+    // surroundings sleep.
+    moved.last_move_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
     ctx.db.game_world_entity().guid().update(moved);
     if let Some(mut character) = crate::helpers::character_by_guid(ctx, me.guid) {
         character.map_id = leader.map_id;
