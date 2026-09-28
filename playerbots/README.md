@@ -33,6 +33,11 @@ Starting areas are `northshire`, `coldridge`, `deathknell`, `shadowglen`, `valle
 the rest use map 1. The population uses supported Warrior, Priest and Mage kits with valid races.
 Shadowglen has no Mages. Red Cloud Mesa currently has only Warriors.
 
+Starting-area batches spread homes within 250 yards of each imported race/class start. Each bot
+tries at most 100 positions, requiring finite imported ground, explicit walkable navigation and the
+same imported zone. A failed search refuses the whole batch. The coordinate-based spawn commands
+keep their 15-yard spread.
+
 ## Package Config
 
 The Package seeds these keys on each Shard the first time its code runs there, and never overwrites

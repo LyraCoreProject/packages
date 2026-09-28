@@ -1,4 +1,4 @@
-//! Bounded Operator batches at imported race and class start positions.
+//! Bounded Operator batches across imported starting areas.
 
 use crate::{game_start_position, game_world_entity};
 use spacetimedb::{reducer, ReducerContext, Table};
@@ -10,6 +10,14 @@ struct StartingArea {
     zone_id: u32,
     name_stem: &'static str,
     classes: &'static [(u8, u8, u8)],
+}
+
+fn starting_offset(index: usize) -> (f32, f32) {
+    // Independent angle and radius sequences spread successive batches through the same disc.
+    let sample = index as f64 + 1.0;
+    let angle = sample * 2.399_963_229_728_653;
+    let reach = 250.0 * (sample * 0.754_877_666_246_692_7).fract().sqrt();
+    ((angle.cos() * reach) as f32, (angle.sin() * reach) as f32)
 }
 
 fn starting_area(name: &str) -> Result<StartingArea, String> {
@@ -31,7 +39,8 @@ fn starting_area(name: &str) -> Result<StartingArea, String> {
 }
 
 /// Spawn at most 50 level-one bots per transaction. The Operator selects the Shard containing
-/// the area's imported content. Missing start positions or navigation refuse the whole batch.
+/// the area's imported content. Candidates stay within 250 yards of the imported start and in
+/// its zone. Missing start positions or walkable imported ground refuse the whole batch.
 #[reducer]
 pub fn playerbots_spawn_starting_area(
     ctx: &ReducerContext,
@@ -69,13 +78,15 @@ pub fn playerbots_spawn_starting_area(
         }
         let at = (0..100)
             .find_map(|attempt| {
-                let (dx, dy) = super::scatter_offset(ordinal * 100 + attempt);
+                let (dx, dy) = starting_offset(ordinal * 100 + attempt);
                 let (x, y) = (start.x + dx, start.y + dy);
                 let z = crate::terrain::ground_z(ctx, area.map_id, x, y)?;
-                (z.is_finite() && crate::nav::walkable(ctx, area.map_id, x, y) == Some(true))
-                    .then_some((x, y, z))
+                (z.is_finite()
+                    && crate::terrain::zone_id_at(ctx, area.map_id, x, y) == Some(area.zone_id)
+                    && crate::nav::walkable(ctx, area.map_id, x, y) == Some(true))
+                .then_some((x, y, z))
             })
-            .ok_or("starting area has no walkable imported ground in 100 candidates")?;
+            .ok_or("starting area has no walkable imported ground in its zone in 100 candidates")?;
         let stem = format!("{}{}", area.name_stem, super::role_name_stem(role));
         let guid = super::spawn_one(ctx, (race, class), role, &stem, area.map_id, at, 1)?;
         if controller == Controller::Frozen {
