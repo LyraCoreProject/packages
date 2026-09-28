@@ -2728,6 +2728,9 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     character.grid_x = grid_x;
     character.grid_y = grid_y;
     character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
+    // A relocation is movement: stamp the move clock (as `emit_creature_leg` would), or the
+    // bot reads as idle and its new cell never wakes the target creature.
+    character.last_move_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
     entities.guid().update(character);
     ctx.db.game_creature_spline().guid().delete(character_guid);
 
