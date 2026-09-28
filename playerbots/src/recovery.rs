@@ -510,7 +510,7 @@ impl Recovery {
             self.active = None;
             return None;
         }
-        let mut blocked_route = false;
+        let mut route_without_movement = false;
         let advanced = movement_progress(
             ctx,
             me,
@@ -525,7 +525,7 @@ impl Recovery {
                     Action::Move(MoveTarget::RecoveryPosition(_))
                 )
             });
-            blocked_route = route.endpoint == route.from;
+            route_without_movement = route.endpoint == route.from;
             if ordinary {
                 attempt.route = Some(route);
                 attempt.last_movement = Some(observation);
@@ -556,7 +556,7 @@ impl Recovery {
                     };
                 }
             }
-        } else if !provisioning && (!state.path_pending || blocked_route) {
+        } else if !provisioning && (!state.path_pending || route_without_movement) {
             // A queued retry cannot hide a completed route that allowed no movement.
             attempt.stalled_micros = attempt
                 .stalled_micros
