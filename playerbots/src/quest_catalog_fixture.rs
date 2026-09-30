@@ -380,6 +380,29 @@ pub fn playerbots_recovery_fixture_exhaust_attempt(
 }
 
 #[reducer]
+pub fn playerbots_recovery_fixture_expire_destinations(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    use super::runner::pkg_playerbots_runner;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut runner = rows
+        .character_guid()
+        .find(character_guid)
+        .ok_or("runner missing")?;
+    if runner.deferred_destinations.is_empty() {
+        return Err("no deferred destination to expire".into());
+    }
+    for deferred in &mut runner.deferred_destinations {
+        deferred.until_micros = ctx.timestamp.to_micros_since_unix_epoch() - 1;
+    }
+    rows.character_guid().update(runner);
+    Ok(())
+}
+
+#[reducer]
 pub fn playerbots_recovery_fixture_keep_two_quest_targets(
     ctx: &ReducerContext,
     character_guid: u64,
