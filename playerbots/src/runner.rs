@@ -2614,7 +2614,9 @@ fn run(
         if incompatible && preempts {
             stop(ctx, me.guid, &mut state);
             state.last_outcome = RunnerOutcome::Cancelled;
-        } else if matches!(fg.running, Running::Cast(_)) || (incompatible && state.path_pending) {
+        } else if matches!(fg.running, Running::Cast(_))
+            || (state.path_pending && chosen.is_some_and(|c| c.id.action == Action::Hold))
+        {
             // A queued movement still owns its turn before its first path leg exists.
             state.chosen = Some(fg.candidate);
             state.last_outcome = RunnerOutcome::Waiting;
