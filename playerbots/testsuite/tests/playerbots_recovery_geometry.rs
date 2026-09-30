@@ -224,7 +224,7 @@ fn snapshot(node: &Standalone, guid: &str) -> serde_json::Value {
     })
 }
 
-fn defer_verified_fight(node: &Standalone, guid: &str) -> serde_json::Value {
+fn defer_fight(node: &Standalone, guid: &str, coverage: &str) -> serde_json::Value {
     let changed_approach = poll_until(Duration::from_secs(15), || {
         node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
         let chosen = row(
@@ -261,9 +261,7 @@ fn defer_verified_fight(node: &Standalone, guid: &str) -> serde_json::Value {
                 && action["outcome"].as_str().is_some_and(|outcome| {
                     outcome.contains("destination = (x = 1356.2, y = 1203.6)")
                         && outcome.contains("status = (blocked = ())")
-                        && outcome.contains(&format!(
-                            "coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 2))"
-                        ))
+                        && outcome.contains(coverage)
                         && outcome.contains("arrived = false")
                 })
         }));
@@ -284,7 +282,7 @@ fn defer_verified_fight(node: &Standalone, guid: &str) -> serde_json::Value {
         serde_json::to_vec_pretty(&state).unwrap(),
     )
     .unwrap();
-    assert!(deferred, "verified blocked fight was not deferred: {state}");
+    assert!(deferred, "blocked fight was not deferred: {state}");
     state
 }
 
@@ -296,7 +294,11 @@ fn playerbots_recovery_classifies_a_verified_blocked_route_without_missing_cover
     record_inputs(&node);
     let guid = prepare(&node);
     let coverage = install_verified_coverage(&node, &guid);
-    let deferred = defer_verified_fight(&node, &guid);
+    let deferred = defer_fight(
+        &node,
+        &guid,
+        &format!("coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 2))"),
+    );
     let path =
         support::log_dir().join(format!("{}-verified-blocked-route.json", node.shard_name()));
     std::fs::write(
@@ -330,7 +332,11 @@ fn playerbots_recovery_retries_exact_work_after_active_coverage_grows() {
     record_inputs(&node);
     let guid = prepare(&node);
     let coverage = install_verified_coverage(&node, &guid);
-    let before = defer_verified_fight(&node, &guid);
+    let before = defer_fight(
+        &node,
+        &guid,
+        &format!("coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 2))"),
+    );
     let retrofit = serde_json::json!([{
         "cell_x": coverage.retrofit_cell.0,
         "cell_y": coverage.retrofit_cell.1,
@@ -393,4 +399,27 @@ fn playerbots_recovery_retries_exact_work_after_active_coverage_grows() {
         .unwrap()
         .contains(&format!("active = (some = (fight = {TARGET}))")));
     assert_eq!(before["quest"], after["quest"]);
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_recovery_does_not_report_missing_coverage_when_checks_are_disabled() {
+    let mut node = Standalone::start("playerbots-recovery-unchecked-coverage");
+    node.publish_module();
+    record_inputs(&node);
+    let guid = prepare(&node);
+    install_verified_coverage(&node, &guid);
+    node.assert_call("debug_set_nav_coverage_enabled", &["false"]);
+    let deferred = defer_fight(&node, &guid, "coverage = (unknown = ())");
+    let runner = deferred["runner"].as_object().unwrap();
+    assert!(runner["failures"].as_str().unwrap().contains("noMovement"));
+    assert!(!runner["failures"]
+        .as_str()
+        .unwrap()
+        .contains("missingImportedCoverage"));
+    assert!(runner["recovery"]
+        .as_str()
+        .unwrap()
+        .contains("coverage_enabled = false"));
+    assert_eq!(deferred["quest"]["rewarded"], "false");
 }

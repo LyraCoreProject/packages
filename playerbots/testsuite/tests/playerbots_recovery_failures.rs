@@ -866,6 +866,13 @@ fn playerbots_recovery_unreachable_quest_ender_defers_and_preserves_the_quest() 
         ender["z"].as_str().unwrap(),
     );
     assert!(accepted, "{initial}");
+    assert!(
+        initial["runner"][0]["recovery"]
+            .as_str()
+            .unwrap()
+            .contains("coverage_enabled = false"),
+        "{initial}"
+    );
     assert_eq!(initial["quest"]["rewarded"], "false", "{initial}");
     assert!(
         initial["actions"].as_array().unwrap().iter().any(|action| {
@@ -924,7 +931,7 @@ fn playerbots_recovery_unreachable_quest_ender_defers_and_preserves_the_quest() 
     let failures = runner["failures"].as_str().unwrap();
     assert!(
         failures.contains("noMovement")
-            && failures.contains("missingImportedCoverage")
+            && !failures.contains("missingImportedCoverage")
             && !failures.contains("deadline"),
         "{deferred}"
     );

@@ -1,5 +1,7 @@
 //! Capacity measurements run only on a build host against an isolated Module.
 
+#[path = "playerbots_capacity/spawning.rs"]
+mod spawning;
 mod support;
 
 use std::io::Write;

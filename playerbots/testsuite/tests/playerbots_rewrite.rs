@@ -341,8 +341,34 @@ fn playerbot_actions(
     guid: &str,
 ) -> Vec<std::collections::BTreeMap<String, String>> {
     node.query_rows(&format!(
-        "SELECT target_guid, outcome FROM pkg_playerbots_action WHERE character_guid = {guid}"
+        "SELECT kind, target_guid, outcome, observed_micros FROM pkg_playerbots_action WHERE character_guid = {guid}"
     ))
+}
+
+fn observe_runner_attack(
+    node: &Standalone,
+    guid: &str,
+) -> Vec<std::collections::BTreeMap<String, String>> {
+    let latest_attack = |rows: &[std::collections::BTreeMap<String, String>]| {
+        rows.iter()
+            .filter(|row| row["kind"] == "(attack = ())")
+            .map(|row| row["observed_micros"].parse::<i64>().unwrap())
+            .max()
+            .unwrap_or(0)
+    };
+    let before = latest_attack(&playerbot_actions(node, guid));
+    let mut actions = Vec::new();
+    // The Runner may choose a class ability before it requests melee again.
+    let requested = poll_until(POLL_TIMEOUT, || {
+        node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
+        actions = playerbot_actions(node, guid);
+        latest_attack(&actions) > before
+    });
+    assert!(
+        requested,
+        "Runner did not request another attack: {actions:?}"
+    );
+    actions
 }
 
 fn assert_attack_action(
@@ -440,8 +466,7 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     node.assert_call("playerbots_fixture_position", &[&warrior, "1211"]);
     let before_turn = playerbot_body(&node, &warrior);
     let first_event_boundary = combat_event_boundary(&node, &warrior, &target);
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&warrior]);
-    let accepted = playerbot_actions(&node, &warrior);
+    let accepted = observe_runner_attack(&node, &warrior);
     let after_turn = playerbot_body(&node, &warrior);
     let mut landed = Vec::new();
     let swung = poll_until(POLL_TIMEOUT, || {
@@ -454,8 +479,7 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     let before_refacing = playerbot_body(&node, &warrior);
     let melee_before_refacing = melee.clone();
     let second_event_boundary = combat_event_boundary(&node, &warrior, &target);
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&warrior]);
-    let accepted_after_refacing = playerbot_actions(&node, &warrior);
+    let accepted_after_refacing = observe_runner_attack(&node, &warrior);
     let after_refacing = playerbot_body(&node, &warrior);
     let melee_immediate_after_refacing = playerbot_melee(&node, &warrior);
     let mut landed_after_refacing = Vec::new();

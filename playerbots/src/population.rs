@@ -12,6 +12,54 @@ struct StartingArea {
     classes: &'static [(u8, u8, u8)],
 }
 
+struct PlacementBudget {
+    routes: u32,
+    expansions: u32,
+}
+
+fn connected_position(
+    ctx: &ReducerContext,
+    map_id: u32,
+    start: (f32, f32, f32),
+    candidate: (f32, f32, f32),
+    budget: &mut PlacementBudget,
+) -> Option<(f32, f32, f32)> {
+    let mut at = start;
+    for _ in 0..4 {
+        if budget.routes == 0 {
+            return None;
+        }
+        budget.routes -= 1;
+        // A clear direct route remains available after the search allowance is spent.
+        let route = crate::nav::route_path_with_budget(
+            ctx,
+            map_id,
+            0,
+            at,
+            candidate,
+            0.0,
+            budget.expansions.min(4096),
+        );
+        budget.expansions = budget.expansions.saturating_sub(route.step.expansions);
+        if route.step.status != crate::nav::RouteStatus::Complete
+            || route.step.clipping.is_some()
+            || route.points.is_empty()
+        {
+            return None;
+        }
+        for point in route.points {
+            if !crate::nav::route_segment_clear(ctx, map_id, 0, at, point) {
+                return None;
+            }
+            at = point;
+        }
+        if (at.0 - candidate.0).hypot(at.1 - candidate.1) <= 0.25 {
+            return Some(at);
+        }
+    }
+    None
+}
+
 fn starting_offset(index: usize) -> (f32, f32) {
     // Independent angle and radius sequences spread successive batches through the same disc.
     let sample = index as f64 + 1.0;
@@ -40,7 +88,8 @@ fn starting_area(name: &str) -> Result<StartingArea, String> {
 
 /// Spawn at most 50 level-one bots per transaction. The Operator selects the Shard containing
 /// the area's imported content. Candidates stay within 250 yards of the imported start and in
-/// its zone. Missing start positions or walkable imported ground refuse the whole batch.
+/// its zone, on a walking route from the imported start. Missing start positions or reachable
+/// imported ground refuse the whole batch.
 #[reducer]
 pub fn playerbots_spawn_starting_area(
     ctx: &ReducerContext,
@@ -61,6 +110,10 @@ pub fn playerbots_spawn_starting_area(
     }
     super::ensure_defaults(ctx);
     let roster = ctx.db.pkg_playerbots_bot().count() as usize;
+    let mut budget = PlacementBudget {
+        routes: 512,
+        expansions: 16_384,
+    };
     for index in 0..count as usize {
         let ordinal = roster + index;
         let (race, class, role) = area.classes[ordinal % area.classes.len()];
@@ -81,12 +134,21 @@ pub fn playerbots_spawn_starting_area(
                 let (dx, dy) = starting_offset(ordinal * 100 + attempt);
                 let (x, y) = (start.x + dx, start.y + dy);
                 let z = crate::terrain::ground_z(ctx, area.map_id, x, y)?;
-                (z.is_finite()
+                if !(z.is_finite()
                     && crate::terrain::zone_id_at(ctx, area.map_id, x, y) == Some(area.zone_id)
                     && crate::nav::walkable(ctx, area.map_id, x, y) == Some(true))
-                .then_some((x, y, z))
+                {
+                    return None;
+                }
+                connected_position(
+                    ctx,
+                    area.map_id,
+                    (start.x, start.y, start.z),
+                    (x, y, z),
+                    &mut budget,
+                )
             })
-            .ok_or("starting area has no walkable imported ground in its zone in 100 candidates")?;
+            .ok_or("starting area has no reachable imported ground within its candidate and route budgets")?;
         let stem = format!("{}{}", area.name_stem, super::role_name_stem(role));
         let guid = super::spawn_one(ctx, (race, class), role, &stem, area.map_id, at, 1)?;
         if controller == Controller::Frozen {

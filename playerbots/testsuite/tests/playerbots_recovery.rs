@@ -1154,6 +1154,13 @@ fn playerbots_recovery_defers_a_partial_endpoint_revisited_after_an_approach() {
     node.assert_call("playerbots_recovery_fixture_partial_route", &[&guid]);
     node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
     let first = snapshot(&node, &guid, Duration::ZERO);
+    assert!(
+        first["runner"]["recovery"]
+            .as_str()
+            .unwrap()
+            .contains("coverage_enabled = false"),
+        "{first}"
+    );
     let first_move = first["actions"]
         .as_array()
         .unwrap()
@@ -1270,7 +1277,7 @@ fn playerbots_recovery_defers_a_partial_endpoint_revisited_after_an_approach() {
         .as_str()
         .unwrap()
         .contains("noMovement"));
-    assert!(deferred["runner"]["failures"]
+    assert!(!deferred["runner"]["failures"]
         .as_str()
         .unwrap()
         .contains("missingImportedCoverage"));

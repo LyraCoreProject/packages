@@ -572,9 +572,11 @@ impl Recovery {
             return Some(Deferral {
                 destination: attempt.destination.clone(),
                 until_micros,
-                missing_coverage: attempt.route.as_ref().is_some_and(|route| {
-                    matches!(route.coverage, crate::nav::CoverageEvidence::Unknown)
-                }),
+                missing_coverage: attempt.geometry.navigation_enabled
+                    && attempt.geometry.coverage_enabled
+                    && attempt.route.as_ref().is_some_and(|route| {
+                        matches!(route.coverage, crate::nav::CoverageEvidence::Unknown)
+                    }),
             });
         }
         None
