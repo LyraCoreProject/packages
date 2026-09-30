@@ -2126,19 +2126,13 @@ pub(super) fn reconcile_active(
     if active.len() > crate::quest::MAX_QUEST_LOG_SIZE {
         return ReconcileResult::ReadLimit;
     }
-    // A retry becoming eligible must not discard a selected trip to another quest giver.
-    // Revalidate that trip; its Runner deadline and recovery still bound the attempt.
-    if let Some(entry) =
-        retained.filter(|entry| !active.iter().any(|quest| quest.quest_entry == *entry))
-    {
-        if let Ok(admission) = admit_available(ctx, character_guid, entry) {
-            if !deferred_admission(&admission, deferred) {
-                record_admission(ctx, character_guid, entry, Some(entry), None);
-                return ReconcileResult::Found(admission);
-            }
-        }
-    }
     let catalog = ctx.db.pkg_playerbots_catalog_quest();
+    let mut retained_available = retained
+        .filter(|entry| !active.iter().any(|quest| quest.quest_entry == *entry))
+        .and_then(|entry| catalog.quest_entry().find(entry))
+        .filter(|quest| quest.catalog_revision == CATALOG_REVISION)
+        .and_then(|quest| admit_available(ctx, character_guid, quest.quest_entry).ok())
+        .filter(|admission| !deferred_admission(admission, deferred));
     let mut held: Vec<_> = active
         .drain(..)
         .filter_map(|row| catalog.quest_entry().find(row.quest_entry))
@@ -2158,6 +2152,8 @@ pub(super) fn reconcile_active(
         match admit_held(ctx, character_guid, entry) {
             Ok(admission) if deferred_admission(&admission, deferred) => {}
             Ok(admission) => {
+                // An expired retry must not replace the retained Bot Objective for another quest giver.
+                let admission = retained_available.take().unwrap_or(admission);
                 if let Some((considered, refusal)) = first_refusal.as_ref() {
                     record_admission(
                         ctx,
@@ -2187,19 +2183,24 @@ pub(super) fn reconcile_active(
         record_admission(ctx, character_guid, *entry, None, Some(refusal));
         return ReconcileResult::Missing;
     }
-    let entries: Vec<_> = ctx
-        .db
-        .pkg_playerbots_catalog_quest()
+    let mut entries: Vec<_> = catalog
         .by_order()
         .filter((CATALOG_REVISION, 0u16..=u16::MAX))
         .take(CATALOG_WALK_LIMIT)
         .map(|quest| quest.quest_entry)
         .collect();
+    if let Some(admission) = &retained_available {
+        if !entries.contains(&admission.quest_entry) {
+            entries.push(admission.quest_entry);
+        }
+    }
     let mut available_refusal = None;
     for entry in entries {
         match admit_available(ctx, character_guid, entry) {
             Ok(admission) if deferred_admission(&admission, deferred) => {}
             Ok(admission) => {
+                let admission = retained_available.take().unwrap_or(admission);
+                let entry = admission.quest_entry;
                 if let Some((considered, refusal)) = available_refusal.as_ref() {
                     record_admission(ctx, character_guid, *considered, Some(entry), Some(refusal));
                 } else {
