@@ -1,5 +1,5 @@
 use super::support::Standalone;
-use lyracore_shared::{terrain, vmap};
+use lyracore_shared::{nav, terrain, vmap};
 use std::collections::BTreeMap;
 
 fn starting_area(name: &str, start_z: f32, surfaces: &[[[f32; 3]; 4]]) -> Standalone {
@@ -235,4 +235,58 @@ fn an_unreachable_class_start_refuses_the_entire_starting_area_batch() {
         "{refusal}"
     );
     assert_eq!(population(), before, "refused batch changed the population");
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB and the playerbots Package on a build host"]
+fn starting_area_direct_routes_remain_available_after_searches_are_exhausted() {
+    let floor = [
+        [940.0, 940.0, 50.0],
+        [1460.0, 940.0, 50.0],
+        [1460.0, 1460.0, 50.0],
+        [940.0, 1460.0, 50.0],
+    ];
+    let node = starting_area("placement-search-budget", 50.0, &[floor]);
+    let center = terrain::cell_index(1200.0).unwrap();
+    let mut rows = Vec::new();
+    for cx in center - 8..=center + 8 {
+        for cy in center - 8..=center + 8 {
+            let mut walk = vec![0xff; nav::WALK_BYTES];
+            for nx in 0..nav::WALK_DIM {
+                for ny in 0..nav::WALK_DIM {
+                    let x = (nav::sub_center(cx, nx, nav::WALK_DIM) - 1200.0).abs();
+                    let y = (nav::sub_center(cy, ny, nav::WALK_DIM) - 1200.0).abs();
+                    if ((99.0..=101.0).contains(&x) && y <= 101.0)
+                        || ((99.0..=101.0).contains(&y) && x <= 101.0)
+                    {
+                        nav::walk_set(&mut walk, nx, ny, false);
+                    }
+                }
+            }
+            let hex: String = walk.iter().map(|b| format!("{b:02x}")).collect();
+            rows.push(format!("0,{cx},{cy},50,{hex},"));
+        }
+    }
+    for (index, batch) in rows.chunks(64).enumerate() {
+        node.assert_call(
+            if index == 0 {
+                "import_nav_chunks"
+            } else {
+                "import_nav_chunks_append"
+            },
+            &[&serde_json::to_string(&batch.join(";")).unwrap()],
+        );
+    }
+    node.assert_call(
+        "playerbots_spawn_starting_area",
+        &["\"northshire\"", "50", "{\"frozen\":[]}"],
+    );
+    let bots =
+        node.query_rows("SELECT character_guid,home_x,home_y,home_z FROM pkg_playerbots_bot");
+    assert_eq!(bots.len(), 50);
+    for bot in bots {
+        assert!((bot["home_x"].parse::<f32>().unwrap() - 1200.0).abs() < 99.0);
+        assert!((bot["home_y"].parse::<f32>().unwrap() - 1200.0).abs() < 99.0);
+        assert_eq!(bot["home_z"].parse::<f32>().unwrap(), 50.0);
+    }
 }

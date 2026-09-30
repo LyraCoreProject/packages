@@ -26,10 +26,11 @@ fn connected_position(
 ) -> Option<(f32, f32, f32)> {
     let mut at = start;
     for _ in 0..4 {
-        if budget.routes == 0 || budget.expansions == 0 {
+        if budget.routes == 0 {
             return None;
         }
         budget.routes -= 1;
+        // A clear direct route remains available after the search allowance is spent.
         let route = crate::nav::route_path_with_budget(
             ctx,
             map_id,
