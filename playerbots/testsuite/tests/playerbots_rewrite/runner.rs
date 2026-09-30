@@ -547,7 +547,7 @@ fn playerbots_movement_interpolates_height_without_imported_floors() {
     assert!((z - expected).abs() < 0.25, "{observed:?}");
 }
 
-fn model_floor_movement(name: &str) -> (Standalone, String) {
+fn model_floor_movement(name: &str, floor_z: [f32; 2]) -> (Standalone, String) {
     use lyracore_shared::terrain::{cell_index, cell_key};
     use lyracore_shared::vmap::{encode, TriClass, VmapTri};
 
@@ -566,17 +566,17 @@ fn model_floor_movement(name: &str) -> (Standalone, String) {
     let blob = encode(&[
         VmapTri {
             verts: [
-                [1208.0, 1198.0, 51.5],
-                [1232.0, 1198.0, 51.5],
-                [1208.0, 1202.0, 51.5],
+                [1208.0, 1198.0, floor_z[0]],
+                [1232.0, 1198.0, floor_z[1]],
+                [1208.0, 1202.0, floor_z[0]],
             ],
             class: TriClass::M2,
         },
         VmapTri {
             verts: [
-                [1232.0, 1198.0, 51.5],
-                [1232.0, 1202.0, 51.5],
-                [1208.0, 1202.0, 51.5],
+                [1232.0, 1198.0, floor_z[1]],
+                [1232.0, 1202.0, floor_z[1]],
+                [1208.0, 1202.0, floor_z[0]],
             ],
             class: TriClass::M2,
         },
@@ -630,7 +630,7 @@ fn model_floor_movement(name: &str) -> (Standalone, String) {
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_keeps_the_walked_floor_below_a_model() {
-    let (node, bot) = model_floor_movement("playerbots-walk-below-model");
+    let (node, bot) = model_floor_movement("playerbots-walk-below-model", [51.5, 51.5]);
     park_movement(&node, &bot);
     let mut positions = Vec::new();
     let progressed = poll_until(Duration::from_secs(8), || {
@@ -656,7 +656,7 @@ fn playerbots_movement_keeps_the_walked_floor_below_a_model() {
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_keeps_the_walked_floor_on_a_model() {
-    let (node, bot) = model_floor_movement("playerbots-walk-on-model");
+    let (node, bot) = model_floor_movement("playerbots-walk-on-model", [51.5, 51.5]);
     node.assert_sql("DELETE FROM game_terrain_chunk");
     node.assert_call("debug_teleport", &[&bot, "0", "1210", "1200", "51.5", "0"]);
     park_movement(&node, &bot);
@@ -678,6 +678,49 @@ fn playerbots_movement_keeps_the_walked_floor_on_a_model() {
     assert!(
         progressed && positions.last().unwrap().0 > 1222.0,
         "walk did not cross the model: {positions:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_sloped_model_keeps_a_continuous_uphill_leg() {
+    let (node, bot) = model_floor_movement("playerbots-walk-uphill-model", [51.5, 61.1]);
+    node.assert_call("debug_teleport", &[&bot, "0", "1210", "1200", "52.3", "0"]);
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_bot SET home_x = 1230, home_y = 1200, home_z = 60.3 WHERE character_guid = {bot}"
+    ));
+    select(&node, &bot, "cohort");
+    let mut first_leg = Vec::new();
+    assert!(poll_until(Duration::from_secs(5), || {
+        first_leg = node.query_rows(&format!(
+            "SELECT dx, dz, dur_ms FROM game_creature_spline WHERE guid = {bot}"
+        ));
+        first_leg
+            .first()
+            .is_some_and(|leg| leg["dur_ms"].parse::<u32>().unwrap() > 0)
+    }));
+    assert!(
+        first_leg[0]["dx"].parse::<f32>().unwrap() >= 1227.5,
+        "uphill leg stopped before the goal: {first_leg:?}"
+    );
+    let mut positions = Vec::new();
+    let arrived = poll_until(Duration::from_secs(5), || {
+        let rows = node.query_rows(&format!(
+            "SELECT x, z FROM game_world_entity WHERE guid = {bot}"
+        ));
+        let x = rows[0]["x"].parse::<f32>().unwrap();
+        let z = rows[0]["z"].parse::<f32>().unwrap();
+        positions.push((x, z));
+        x >= 1227.5
+    });
+    outcomes(&node);
+    assert!(arrived, "uphill movement stalled: {positions:?}");
+    assert!(
+        positions
+            .iter()
+            .all(|(x, z)| (z - (51.5 + (x - 1208.0) * 0.4)).abs() <= 0.3),
+        "walk left the incline: {positions:?}"
     );
 }
 
