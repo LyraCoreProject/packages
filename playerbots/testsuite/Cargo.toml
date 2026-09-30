@@ -1,0 +1,15 @@
+[package]
+name = "lyracore-playerbots-tests"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93.0"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+blake3 = "1"
+serde_json = "1"
+wow_srp = "0.7"
+lyracore-shared = "0.1.0"
+lyracore-test-support = "0.1.0"

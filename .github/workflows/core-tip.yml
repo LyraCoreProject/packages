@@ -44,12 +44,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8908ff10f650a8c8c9eaacb38ab02cab89043227
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
           persist-credentials: false
 
       - name: Install Rust 1.93.0
-        run: rustup toolchain install 1.93.0 --profile minimal
+        run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+
+      - name: Check Package test formatting, lints and discovery
+        run: |
+          ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
+            bash -eu -o pipefail -c '
+              runner="$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py"
+              python3 "$runner" "$GITHUB_WORKSPACE/lyracore" fmt -- --check
+              rustfmt +1.93.0 --edition 2021 --check "$GITHUB_WORKSPACE/collection/playerbots/testsuite/gateway_coordinator.rs"
+              python3 "$runner" "$GITHUB_WORKSPACE/lyracore" clippy --locked --all-targets -- -D warnings
+              python3 "$runner" "$GITHUB_WORKSPACE/lyracore" test --locked
+              python3 "$runner" "$GITHUB_WORKSPACE/lyracore" test --locked -- --list
+              python3 -m unittest discover -s "$GITHUB_WORKSPACE/collection/playerbots/testsuite/scripts/tests"
+            '
 
       - name: Compile every Package against the required Core revision
         run: ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore"
@@ -70,7 +83,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8908ff10f650a8c8c9eaacb38ab02cab89043227
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
           persist-credentials: false
 
@@ -135,7 +148,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8908ff10f650a8c8c9eaacb38ab02cab89043227
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -276,7 +289,6 @@ jobs:
           PY
           echo "PLAYERBOTS_CATALOG_PRECEDING_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
-          echo "PLAYERBOTS_PB002_WASM=$RUNNER_TEMP/playerbots-pb002-preceding.wasm" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_MANIFEST=$RUNNER_TEMP/playerbots-pb002-preceding-inputs.json" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_CORE=$GITHUB_WORKSPACE/preceding-pb002-core" >> "$GITHUB_ENV"
           echo "PLAYERBOTS_COMPANION_PRECEDING_COLLECTION=$GITHUB_WORKSPACE/preceding-pb002-collection" >> "$GITHUB_ENV"
@@ -644,18 +656,17 @@ jobs:
               cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-gateway --bin lyracore-gateway --no-fail-fast \
-                stdb::subscriptions::party_command_durable_tests \
-                -- --ignored --nocapture --test-threads=1
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-module \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" coordinator --no-fail-fast \
+                stdb::subscriptions::package_tests \
+                -- --include-ignored --nocapture --test-threads=1
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                --locked \
                 --test playerbots_rewrite --test playerbots_companion \
                 --test playerbots_provisioning --test playerbots_quest_catalog \
                 --test playerbots_roles --test playerbots_quest_loops \
                 --test playerbots_recovery --test playerbots_recovery_failures \
                 --test playerbots_recovery_casting --test playerbots_recovery_geometry \
-                --test playerbots_orders --test playerbots_imported_fixture \
+                --test playerbots_orders --test playerbots_imported_fixture --test playerbots_personality \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
@@ -689,7 +700,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8908ff10f650a8c8c9eaacb38ab02cab89043227
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -812,12 +823,12 @@ jobs:
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
               set +e
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-gateway --test playerbots_transfer_restart \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                --locked --test playerbots_transfer_restart \
                 --no-fail-fast -- --ignored --nocapture --test-threads=1
               gateway_status=$?
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-module \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                --locked \
                 --test playerbots_transfer --test playerbots_transfer_lifecycle \
                 --test playerbots_transfer_upgrade --test playerbots_transfer_orders \
                 --test playerbots_transfer_recovery \
@@ -910,7 +921,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8908ff10f650a8c8c9eaacb38ab02cab89043227
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -944,12 +955,12 @@ jobs:
               cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-module --test playerbots_acceptance --no-run
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                --locked --test playerbots_acceptance --no-run
 
               listed="$RUNNER_TEMP/playerbots-acceptance-${ACCEPTANCE_CLASS}-listed.txt"
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-module --test playerbots_acceptance \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                --locked --test playerbots_acceptance \
                 -- --ignored --list > "$listed"
               actual="$RUNNER_TEMP/playerbots-acceptance-${ACCEPTANCE_CLASS}-actual.txt"
               expected="$RUNNER_TEMP/playerbots-acceptance-${ACCEPTANCE_CLASS}-expected.txt"
@@ -1021,8 +1032,8 @@ jobs:
           PY_MANIFEST
 
               set +e
-              cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                --locked -p lyracore-module --test playerbots_acceptance --no-fail-fast \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                --locked --test playerbots_acceptance --no-fail-fast \
                 "$ACCEPTANCE_FILTER" -- --ignored --nocapture --test-threads=1 \
                 2>&1 | tee "$RUNNER_TEMP/playerbots-acceptance-${ACCEPTANCE_CLASS}.log"
               class_statuses=("${PIPESTATUS[@]}")
@@ -1033,8 +1044,8 @@ jobs:
               level_gap_cargo_record=not-run
               level_gap_tee_record=not-run
               if test "$ACCEPTANCE_RUN_LEVEL_GAP" = true; then
-                cargo test --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
-                  --locked -p lyracore-module --test playerbots_acceptance --no-fail-fast \
+                python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
+                  --locked --test playerbots_acceptance --no-fail-fast \
                   playerbots_acceptance_level_gap_uses_ordinary_kill_xp -- \
                   --ignored --exact --nocapture --test-threads=1 \
                   2>&1 | tee "$RUNNER_TEMP/playerbots-acceptance-level-gap.log"
@@ -1108,7 +1119,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 8908ff10f650a8c8c9eaacb38ab02cab89043227
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1172,9 +1183,9 @@ jobs:
                 --core "$COMPOSITION_CORE" --collection "$COMPOSITION_COLLECTION" \
                 --evidence "$RUNNER_TEMP/playerbots-composition-executions"
               run_status=$?
-              python3 "$GITHUB_WORKSPACE/lyracore/scripts/check-playerbots-action-lifecycle.py" \
-                --manifest "$GITHUB_WORKSPACE/lyracore/module/tests/playerbots_action_lifecycle_manifest.json" \
-                --core-root "$GITHUB_WORKSPACE/lyracore" \
+              python3 "$GITHUB_WORKSPACE/collection/playerbots/testsuite/scripts/check-playerbots-action-lifecycle.py" \
+                --manifest "$GITHUB_WORKSPACE/collection/playerbots/testsuite/tests/playerbots_action_lifecycle_manifest.json" \
+                --suite-root "$GITHUB_WORKSPACE/collection/playerbots/testsuite" \
                 --package-root "$GITHUB_WORKSPACE/collection" \
                 --core "$COMPOSITION_CORE" --collection "$COMPOSITION_COLLECTION" \
                 --observed "$RUNNER_TEMP/playerbots-composition-executions/executions.json"
