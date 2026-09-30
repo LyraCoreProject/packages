@@ -449,12 +449,12 @@ contract.
 
 ## Action fixture
 
-`module/tests/playerbots_rewrite.rs` in LyraCore drives real Package requests through a private
-Standalone. Install this Package into that core checkout, then run:
+`testsuite/tests/playerbots_rewrite.rs` drives real Package requests through a private
+Standalone. From the Collection checkout, run:
 
 ```sh
-cargo clean -p lyracore-module
-cargo test -p lyracore-module --test playerbots_rewrite -- --ignored --test-threads=1
+./.github/check-playerbots.sh /path/to/LyraCore test --locked \
+  --test playerbots_rewrite -- --ignored --test-threads=1
 ```
 
 The input record is `fixtures/actions.json`. Each run records the tested core and collection commits,
@@ -730,9 +730,9 @@ observations.
 ### Class behavior verification
 
 Run `.github/check-playerbots-class-behavior.sh /path/to/LyraCore` from this collection.
-The script stages `playerbots/tests/class_behavior.rs` beside Core's existing Standalone support,
-refuses to replace an existing test, and removes its staged file on exit. It links the collection
-through `check-core-tip.sh` and runs against private Standalone Shards with the pinned toolchain.
+The script runs `testsuite/tests/playerbots_class_behavior.rs` from this Package. It links the
+Collection through `check-core-tip.sh`, uses Core's `lyracore-test-support` crate, and runs against
+private Standalone Shards with Core's pinned toolchain. Test files stay in the Package checkout.
 The checks cover solo and grouped starter casts, healing, buff retention, queued rage, swing firing,
 and preservation of Operator rotation edits. They do not establish attended client acceptance.
 

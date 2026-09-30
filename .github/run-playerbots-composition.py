@@ -76,33 +76,25 @@ def exact_pass(log: str, expected: str) -> bool:
     )
 
 
-def required_cases(manifest: dict) -> list[tuple[str, str, str]]:
+def required_cases(manifest: dict) -> list[tuple[str, str]]:
     if manifest.get("schema") != "playerbots-action-lifecycle-v1":
         raise ValueError("unsupported lifecycle manifest")
     references = [cell["case"] for cell in manifest["cells"]] + manifest["guards"]
     cases = set()
-    targets = {}
     for case in references:
         source = Path(case["source"])
-        if source.is_absolute() or ".." in source.parts or len(source.parts) < 3:
+        if source.is_absolute() or ".." in source.parts or len(source.parts) < 2:
             raise ValueError("invalid case source path")
-        if source.parts[:2] == ("module", "tests"):
-            crate = "lyracore-module"
-        elif source.parts[:2] == ("gateway", "tests"):
-            crate = "lyracore-gateway"
-        else:
-            raise ValueError("case source has no supported test crate")
+        if source.parts[0] != "tests":
+            raise ValueError("case source is outside the Package test suite")
         target, name = case["target"], case["name"]
         if not re.fullmatch(r"[a-z][a-z0-9_]*", target):
             raise ValueError("invalid Cargo test target")
         if not re.fullmatch(r"[a-z][a-z0-9_]*(?:::[a-z][a-z0-9_]*)*", name):
             raise ValueError("invalid Rust test name")
-        if target in targets and targets[target] != crate:
-            raise ValueError("ambiguous test target across crates")
-        targets[target] = crate
-        cases.add((crate, target, name))
+        cases.add((target, name))
     for name in COMPANION_CASES:
-        cases.add(("lyracore-gateway", "playerbots_companion_acceptance", name))
+        cases.add(("playerbots_companion_acceptance", name))
     return sorted(cases)
 
 
@@ -156,15 +148,15 @@ def main() -> int:
         actual = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
         if actual != expected:
             parser.error("checkout does not match its source pin")
-    source = args.core_root / "module/tests/playerbots_action_lifecycle_manifest.json"
+    source = args.collection_root / "playerbots/testsuite/tests/playerbots_action_lifecycle_manifest.json"
     cases = required_cases(json.loads(source.read_text()))
     args.evidence.mkdir(parents=True, exist_ok=False)
     record = {"schema": "playerbots-test-runs-v1", "core": args.core,
               "collection": args.collection, "runs": []}
     deadline = time.monotonic() + EXECUTION_SECONDS
-    for index, (crate, target, name) in enumerate(cases, 1):
-        command = ["cargo", "test", "--manifest-path", str(args.core_root / "Cargo.toml"),
-                   "--locked", "-p", crate, "--test", target, name, "--", "--ignored",
+    for index, (target, name) in enumerate(cases, 1):
+        command = ["python3", str(args.collection_root / ".github/run-playerbots-tests.py"),
+                   str(args.core_root), "test", "--locked", "--test", target, name, "--", "--ignored",
                    "--exact", "--nocapture", "--test-threads=1"]
         remaining = deadline - time.monotonic() - CLEANUP_SECONDS
         status, failure = None, "total execution budget exhausted before this case started"

@@ -38,9 +38,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          # Includes imported zones and navigation for the wider starting-area regression.
-          ref: 12a6f146e86c3b9d8a1aaeb8099a37023ea205b2
+          # Core supplies the shared private integration fixtures.
+          ref: cf12a5046a3d91997d35ead52905fa9b6c4e6ce2
           path: lyracore
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: 12a6f146e86c3b9d8a1aaeb8099a37023ea205b2
+          path: preceding-capacity-core
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
+          ref: 286e8404d3399b2849ae4a34a253f190e2fd7c05
+          path: preceding-movement-core
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 859f296b942e714cc934db89e7d0be06fa049e18
+          path: preceding-movement-collection
           persist-credentials: false
       - name: Install pinned Rust and SpacetimeDB
         run: |
@@ -59,17 +77,28 @@ jobs:
         with:
           workspaces: lyracore
       - name: Build the published Package baseline for additive migration
-        working-directory: lyracore
+        working-directory: preceding-capacity-core
         # A separate target directory keeps Cargo from reusing baseline artifacts for the current
         # build, which differs only in where the Package symlinks point.
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/capacity-baseline-target
         run: |
-          ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
-            cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
+          ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/preceding-capacity-core" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-capacity-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/capacity-baseline.wasm"
           echo "PLAYERBOTS_CAPACITY_PRECEDING_WASM=$RUNNER_TEMP/capacity-baseline.wasm" >> "$GITHUB_ENV"
+      - name: Build the preceding movement schema for populated migration
+        working-directory: preceding-movement-core
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/movement-baseline-target
+        run: |
+          "$GITHUB_WORKSPACE/preceding-movement-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-movement-core" \
+            cargo build --locked --release --target wasm32-unknown-unknown \
+            -p lyracore-module --features=debug_reducers
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/movement-baseline.wasm"
+          sha256sum "$RUNNER_TEMP/movement-baseline.wasm" > "$RUNNER_TEMP/movement-baseline.sha256"
+          echo "PLAYERBOTS_MOVEMENT_PRECEDING_WASM=$RUNNER_TEMP/movement-baseline.wasm" >> "$GITHUB_ENV"
       - name: Verify bounded planning, movement ownership, starting areas and additive migration
         env:
           PLAYERBOTS_CAPACITY_COUNT: 100
@@ -78,15 +107,19 @@ jobs:
           ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             bash -eu -o pipefail -c '
               cd "$GITHUB_WORKSPACE/lyracore"
-              cargo test --locked -p lyracore-module --test playerbots_capacity \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_movement_upgrade \
+                -- --ignored --test-threads=1 --nocapture
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_capacity \
                 -- --ignored --test-threads=1 --nocapture \
                 --skip playerbots_capacity_profile_imported_navigation
-              cargo test --locked -p lyracore-module --test playerbots_transfer \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_transfer \
                 playerbots_legacy_crossing_ -- --ignored --test-threads=1 --nocapture
             '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: playerbots-capacity-evidence
-          path: /tmp/lyracore-standalone-logs/
+          path: |
+            /tmp/lyracore-standalone-logs/
+            ${{ runner.temp }}/movement-baseline.sha256
           if-no-files-found: error
