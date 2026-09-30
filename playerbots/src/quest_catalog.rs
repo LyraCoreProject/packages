@@ -2126,6 +2126,18 @@ pub(super) fn reconcile_active(
     if active.len() > crate::quest::MAX_QUEST_LOG_SIZE {
         return ReconcileResult::ReadLimit;
     }
+    // A retry becoming eligible must not discard a selected trip to another quest giver.
+    // Revalidate that trip; its Runner deadline and recovery still bound the attempt.
+    if let Some(entry) =
+        retained.filter(|entry| !active.iter().any(|quest| quest.quest_entry == *entry))
+    {
+        if let Ok(admission) = admit_available(ctx, character_guid, entry) {
+            if !deferred_admission(&admission, deferred) {
+                record_admission(ctx, character_guid, entry, Some(entry), None);
+                return ReconcileResult::Found(admission);
+            }
+        }
+    }
     let catalog = ctx.db.pkg_playerbots_catalog_quest();
     let mut held: Vec<_> = active
         .drain(..)
