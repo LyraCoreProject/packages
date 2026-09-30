@@ -548,22 +548,9 @@ fn playerbots_movement_interpolates_height_without_imported_floors() {
 }
 
 fn model_floor_movement(name: &str, floor_z: [f32; 2]) -> (Standalone, String) {
-    use lyracore_shared::terrain::{cell_index, cell_key};
-    use lyracore_shared::vmap::{encode, TriClass, VmapTri};
+    use lyracore_shared::vmap::{TriClass, VmapTri};
 
-    let (node, bots) = fixture(name, "1");
-    let bot = bots[0].clone();
-    select(&node, &bot, "frozen");
-    let heights = std::iter::repeat_n("49", 145).collect::<Vec<_>>().join(":");
-    let mut terrain = Vec::new();
-    for x in cell_index(1250.0).unwrap()..=cell_index(1190.0).unwrap() {
-        for y in cell_index(1210.0).unwrap()..=cell_index(1190.0).unwrap() {
-            terrain.push(format!("0,{x},{y},0,0,0,0,{heights}"));
-        }
-    }
-    node.assert_call("import_terrain_chunks", &[&terrain.join(";")]);
-
-    let blob = encode(&[
+    let triangles = [
         VmapTri {
             verts: [
                 [1208.0, 1198.0, floor_z[0]],
@@ -580,7 +567,30 @@ fn model_floor_movement(name: &str, floor_z: [f32; 2]) -> (Standalone, String) {
             ],
             class: TriClass::M2,
         },
-    ]);
+    ];
+    model_geometry_movement(name, &triangles)
+}
+
+fn model_geometry_movement(
+    name: &str,
+    triangles: &[lyracore_shared::vmap::VmapTri],
+) -> (Standalone, String) {
+    use lyracore_shared::terrain::{cell_index, cell_key};
+    use lyracore_shared::vmap::encode;
+
+    let (node, bots) = fixture(name, "1");
+    let bot = bots[0].clone();
+    select(&node, &bot, "frozen");
+    let heights = std::iter::repeat_n("49", 145).collect::<Vec<_>>().join(":");
+    let mut terrain = Vec::new();
+    for x in cell_index(1250.0).unwrap()..=cell_index(1190.0).unwrap() {
+        for y in cell_index(1210.0).unwrap()..=cell_index(1190.0).unwrap() {
+            terrain.push(format!("0,{x},{y},0,0,0,0,{heights}"));
+        }
+    }
+    node.assert_call("import_terrain_chunks", &[&terrain.join(";")]);
+
+    let blob = encode(triangles);
     let mut manifest = blake3::Hasher::new();
     manifest.update(b"lyracore-vmap-manifest-v1");
     let mut chunks = Vec::new();
@@ -721,6 +731,69 @@ fn playerbots_movement_sloped_model_keeps_a_continuous_uphill_leg() {
             .iter()
             .all(|(x, z)| (z - (51.5 + (x - 1208.0) * 0.4)).abs() <= 0.3),
         "walk left the incline: {positions:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_climbs_close_model_steps() {
+    use lyracore_shared::vmap::{TriClass, VmapTri};
+
+    let mut triangles = Vec::new();
+    for (start, end, z) in [
+        (1208.0, 1210.125, 51.5),
+        (1210.125, 1210.375, 52.3),
+        (1210.375, 1232.0, 53.1),
+    ] {
+        for verts in [
+            [[start, 1198.0, z], [end, 1198.0, z], [start, 1202.0, z]],
+            [[end, 1198.0, z], [end, 1202.0, z], [start, 1202.0, z]],
+        ] {
+            triangles.push(VmapTri {
+                verts,
+                class: TriClass::M2,
+            });
+        }
+    }
+    for (x, z) in [(1210.125, 52.3), (1210.375, 53.1)] {
+        for verts in [
+            [[x, 1198.0, 51.5], [x, 1202.0, 51.5], [x, 1202.0, z]],
+            [[x, 1198.0, 51.5], [x, 1202.0, z], [x, 1198.0, z]],
+        ] {
+            triangles.push(VmapTri {
+                verts,
+                class: TriClass::M2,
+            });
+        }
+    }
+    let (node, bot) = model_geometry_movement("playerbots-walk-close-steps", &triangles);
+    node.assert_call("debug_teleport", &[&bot, "0", "1210", "1200", "51.5", "0"]);
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_bot SET home_x = 1230, home_y = 1200, home_z = 53.1 WHERE character_guid = {bot}"
+    ));
+    select(&node, &bot, "cohort");
+    let mut positions = Vec::new();
+    let arrived = poll_until(Duration::from_secs(8), || {
+        let rows = node.query_rows(&format!(
+            "SELECT x, y, z FROM game_world_entity WHERE guid = {bot}"
+        ));
+        let x = rows[0]["x"].parse::<f32>().unwrap();
+        let y = rows[0]["y"].parse::<f32>().unwrap();
+        let z = rows[0]["z"].parse::<f32>().unwrap();
+        positions.push((x, y, z));
+        x >= 1227.5
+    });
+    outcomes(&node);
+    assert!(
+        arrived,
+        "movement stopped at the close steps: {positions:?}"
+    );
+    assert!(
+        positions.iter().all(|(x, y, z)| (y - 1200.0).abs() <= 0.3
+            && *z >= 51.4
+            && (*x <= 1210.7 || (z - 53.1).abs() <= 0.3)),
+        "movement left the model steps: {positions:?}"
     );
 }
 
