@@ -1057,9 +1057,29 @@ fn objective(
     now: i64,
 ) -> bool {
     state.deferred_destinations.retain(|d| d.until_micros > now);
+    let returning_home = state.objective.as_ref().is_some_and(|objective| {
+        objective.kind == ObjectiveKind::ReturnHome
+            && objective.stage == ObjectiveStage::Travelling
+            && objective.deadline_micros > now
+            && (
+                objective.destination.map_id,
+                objective.destination.instance_id,
+            ) == (me.map_id, me.instance_id)
+            && distance(me, &objective.destination) > 2.05
+            && state.foreground.as_ref().is_some_and(|foreground| {
+                foreground.candidate.id.action == Action::Move(MoveTarget::Home)
+                    && foreground.candidate.id.reason == Reason::ReturnHome
+                    && foreground.candidate.id.objective == objective.identity
+                    && foreground.generation == state.generation
+                    && (foreground.map_id, foreground.instance_id) == (me.map_id, me.instance_id)
+                    // A path leg can expire before the movement tick observes its final position.
+                    && matches!(&foreground.running, Running::Movement(movement)
+                        if movement.destination == objective.destination)
+            })
+    });
     let admission = if bot.controller == Controller::Legacy {
         None
-    } else if party.is_none() {
+    } else if party.is_none() && !returning_home {
         match super::quest_catalog::reconcile_active(
             ctx,
             bot.character_guid,
