@@ -931,13 +931,21 @@ fn playerbots_recovery_invalidates_failed_work_after_an_actual_navigation_import
         &[&guid],
     );
     node.assert_call("playerbots_recovery_fixture_block_quest_target", &[&guid]);
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
+    node.assert_call(
+        "playerbots_recovery_fixture_pass_and_park_movement",
+        &[&guid],
+    );
     let blocked = snapshot(&node, &guid, Duration::ZERO);
-    node.assert_call("playerbots_fixture_companion_due", &[&guid]);
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
+    node.assert_call(
+        "playerbots_recovery_fixture_pass_and_park_movement",
+        &[&guid],
+    );
     let observed = snapshot(&node, &guid, Duration::ZERO);
     node.assert_call("playerbots_recovery_fixture_exhaust_attempt", &[&guid]);
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
+    node.assert_call(
+        "playerbots_recovery_fixture_pass_and_park_movement",
+        &[&guid],
+    );
     let before = snapshot(&node, &guid, Duration::ZERO);
     let path = support::log_dir().join(format!("{}-before-import.json", node.shard_name()));
     std::fs::write(
@@ -1015,7 +1023,10 @@ fn playerbots_recovery_invalidates_failed_work_after_an_actual_navigation_import
     );
     let refused_rows =
         node.query_rows("SELECT key FROM game_nav_chunk WHERE cell_x = 998 AND cell_y = 999");
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
+    node.assert_call(
+        "playerbots_recovery_fixture_pass_and_park_movement",
+        &[&guid],
+    );
     let after = snapshot(&node, &guid, Duration::ZERO);
     let path = support::log_dir().join(format!(
         "{}-changed-navigation-inputs.json",

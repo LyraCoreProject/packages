@@ -355,6 +355,26 @@ pub fn playerbots_recovery_fixture_block_companion(
 }
 
 #[reducer]
+pub fn playerbots_recovery_fixture_pass_and_park_movement(
+    ctx: &ReducerContext,
+    character_guid: u64,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    require_fixture(ctx)?;
+    super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
+    use super::runner::pkg_playerbots_runner;
+    let rows = ctx.db.pkg_playerbots_runner();
+    let mut runner = rows
+        .character_guid()
+        .find(character_guid)
+        .ok_or("runner missing")?;
+    // Movement maintenance has its own clock and must not replace the observed blocked route.
+    runner.movement_due_micros = i64::MAX;
+    rows.character_guid().update(runner);
+    Ok(())
+}
+
+#[reducer]
 pub fn playerbots_recovery_fixture_exhaust_attempt(
     ctx: &ReducerContext,
     character_guid: u64,

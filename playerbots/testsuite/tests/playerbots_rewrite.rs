@@ -476,11 +476,16 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     let melee = playerbot_melee(&node, &warrior);
 
     node.assert_call("playerbots_fixture_position", &[&target, "1214"]);
+    let target_before_refacing = playerbot_body(&node, &target);
+    let target_spline_before_refacing = playerbot_spline(&node, &target);
     let before_refacing = playerbot_body(&node, &warrior);
     let melee_before_refacing = melee.clone();
     let second_event_boundary = combat_event_boundary(&node, &warrior, &target);
     let accepted_after_refacing = observe_runner_attack(&node, &warrior);
     let after_refacing = playerbot_body(&node, &warrior);
+    let target_after_refacing = playerbot_body(&node, &target);
+    let target_spline_after_refacing = playerbot_spline(&node, &target);
+    let warrior_spline_after_refacing = playerbot_spline(&node, &warrior);
     let melee_immediate_after_refacing = playerbot_melee(&node, &warrior);
     let mut landed_after_refacing = Vec::new();
     let swung_after_refacing = poll_until(POLL_TIMEOUT, || {
@@ -518,6 +523,11 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
             "event_boundary": second_event_boundary,
             "body_before": before_refacing,
             "body_after": after_refacing,
+            "target_before": target_before_refacing,
+            "target_after": target_after_refacing,
+            "target_spline_before": target_spline_before_refacing,
+            "target_spline_after": target_spline_after_refacing,
+            "warrior_spline_after": warrior_spline_after_refacing,
             "accepted": accepted_after_refacing,
             "melee_before": melee_before_refacing,
             "melee_immediate_after": melee_immediate_after_refacing,
