@@ -646,6 +646,79 @@ fn playerbots_tank_repairs_range_and_completes_a_real_taunt() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_active_renew_keeps_its_tick_and_allows_another_heal() {
+    let fixture = fixture("playerbots-roles-active-renew", 10);
+    let node = &fixture.node;
+    assert!(known(node, &fixture.priest, 139));
+    node.assert_call("playerbots_fixture_roles_priest_mana", &[&fixture.priest]);
+    node.assert_call(
+        "playerbots_fixture_companion_health",
+        &[&fixture.leader, "60"],
+    );
+    assert!(poll_until(POLL_TIMEOUT, || {
+        pass(node, &fixture.priest);
+        !active_auras(node, &fixture.leader, 139).is_empty()
+    }));
+    let first = active_auras(node, &fixture.leader, 139);
+    let tick = node.query_rows(&format!(
+        "SELECT next_tick_micros FROM game_aura WHERE target_guid = {} AND spell_id = 139",
+        fixture.leader
+    ))[0]["next_tick_micros"]
+        .clone();
+
+    node.assert_sql(&format!(
+        "DELETE FROM game_spell_cooldown WHERE caster_guid = {}",
+        fixture.priest
+    ));
+    pass(node, &fixture.priest);
+    assert_eq!(active_auras(node, &fixture.leader, 139), first);
+    assert_eq!(
+        node.query_rows(&format!(
+            "SELECT next_tick_micros FROM game_aura WHERE target_guid = {} AND spell_id = 139",
+            fixture.leader
+        ))[0]["next_tick_micros"],
+        tick
+    );
+
+    node.assert_call(
+        "playerbots_fixture_companion_health",
+        &[&fixture.mage, "70"],
+    );
+    assert!(poll_until(POLL_TIMEOUT, || {
+        pass(node, &fixture.priest);
+        !active_auras(node, &fixture.mage, 139).is_empty()
+    }));
+    assert_eq!(active_auras(node, &fixture.leader, 139), first);
+
+    node.assert_call(
+        "playerbots_fixture_companion_health",
+        &[&fixture.leader, "25"],
+    );
+    let wounded = entity(node, &fixture.leader)["health"]
+        .parse::<u32>()
+        .unwrap();
+    assert!(poll_until(POLL_TIMEOUT, || {
+        pass(node, &fixture.priest);
+        cast_events(node, &fixture.priest, 2050)
+            .iter()
+            .any(|event| {
+                event["target_guid"] == fixture.leader
+                    && event["is_completion"] == "true"
+                    && event["healed"].parse::<u32>().unwrap() > 0
+            })
+    }));
+    assert!(
+        entity(node, &fixture.leader)["health"]
+            .parse::<u32>()
+            .unwrap()
+            > wounded
+    );
+    assert_eq!(active_auras(node, &fixture.leader, 139), first);
+    evidence(&fixture, "active-renew-and-direct-heal");
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_buffs_and_repeated_pulls_retain_roles_through_rest_los_and_death() {
     let fixture = fixture("playerbots-roles-repeated-pulls", 10);
     let node = &fixture.node;

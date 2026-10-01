@@ -38,28 +38,25 @@ fn wounded_member(
     .then_some((unit.health, unit.max_health, member.character_guid))
 }
 
-fn wounded_ally(
+fn wounded_allies(
     party: &Party,
     partition: (u32, u64),
     heal_at_pct: u8,
     retained: Option<u64>,
-) -> Option<u64> {
-    if let Some(retained) = retained.filter(|guid| {
-        party.members.iter().any(|member| {
-            member.character_guid == *guid
-                && wounded_member(member, partition, heal_at_pct).is_some()
-        })
-    }) {
-        return Some(retained);
-    }
-    party
+) -> Vec<u64> {
+    let mut members: Vec<_> = party
         .members
         .iter()
         .filter_map(|member| wounded_member(member, partition, heal_at_pct))
-        .min_by(|a, b| {
-            (u64::from(a.0) * u64::from(b.1), a.2).cmp(&(u64::from(b.0) * u64::from(a.1), b.2))
-        })
-        .map(|(_, _, guid)| guid)
+        .collect();
+    members.sort_by(|a, b| {
+        (Some(a.2) != retained, u64::from(a.0) * u64::from(b.1), a.2).cmp(&(
+            Some(b.2) != retained,
+            u64::from(b.0) * u64::from(a.1),
+            b.2,
+        ))
+    });
+    members.into_iter().map(|(_, _, guid)| guid).collect()
 }
 
 enum CastPreparation {
@@ -293,6 +290,26 @@ struct HealingSelection {
     target: Option<u64>,
 }
 
+fn periodic_heal_only(ctx: &ReducerContext, spell: u32) -> bool {
+    let effects: Vec<_> = ctx
+        .db
+        .game_spell_effect()
+        .by_spell()
+        .filter(spell)
+        .take(4)
+        .collect();
+    effects.len() <= 3
+        && effects
+            .iter()
+            .any(|effect| effect.kind == crate::spell::A_PERIODIC_HEAL)
+        && !effects.iter().any(|effect| {
+            matches!(
+                effect.kind,
+                crate::spell::E_HEAL | crate::spell::E_HEAL_MAX_HEALTH
+            )
+        })
+}
+
 fn healing(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
@@ -307,8 +324,8 @@ fn healing(
     let mut selected_target = None;
     for row in rows {
         let heal_at_pct = row.threshold_pct.min(personality_heal_at);
-        let target = match party {
-            Some(party) => wounded_ally(
+        let targets = match party {
+            Some(party) => wounded_allies(
                 party,
                 (me.map_id, me.instance_id),
                 heal_at_pct,
@@ -316,11 +333,22 @@ fn healing(
             ),
             None => (me.max_health > 0
                 && u64::from(me.health) * 100 < u64::from(me.max_health) * u64::from(heal_at_pct))
-            .then_some(me.guid),
+            .then_some(me.guid)
+            .into_iter()
+            .collect(),
         };
-        let Some(target) = target else {
+        if targets.is_empty() {
             continue;
-        };
+        }
+        let periodic_only = periodic_heal_only(ctx, row.spell_id);
+        let mut target = None;
+        for guid in targets {
+            if !periodic_only || buff_missing(ctx, guid, row.spell_id, me.level as u8)? {
+                target = Some(guid);
+                break;
+            }
+        }
+        let Some(target) = target else { continue };
         if selected_target.is_none() {
             selected_target = Some(target);
         }
@@ -599,7 +627,10 @@ mod tests {
             enemies: vec![],
             fight_constraint: None,
         };
-        assert_eq!(wounded_ally(&party, (0, 0), 50, None), Some(11));
-        assert_eq!(wounded_ally(&party, (0, 0), 50, Some(12)), Some(12));
+        assert_eq!(wounded_allies(&party, (0, 0), 50, None), vec![11, 12, 13]);
+        assert_eq!(
+            wounded_allies(&party, (0, 0), 50, Some(12)),
+            vec![12, 11, 13]
+        );
     }
 }
