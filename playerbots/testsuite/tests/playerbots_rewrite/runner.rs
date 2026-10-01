@@ -665,6 +665,42 @@ fn playerbots_movement_keeps_the_walked_floor_below_a_model() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_reaches_home_with_a_floor_height_offset() {
+    let (node, bot) = model_geometry_movement("playerbots-home-height-offset", &[]);
+    node.assert_call("debug_teleport", &[&bot, "0", "1200", "1200", "49", "0"]);
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_bot SET home_x = 1208, home_y = 1200, home_z = 50.5 WHERE character_guid = {bot}"
+    ));
+    select(&node, &bot, "cohort");
+    let mut positions = Vec::new();
+    let arrived = poll_until(Duration::from_secs(8), || {
+        let rows = node.query_rows(&format!(
+            "SELECT x, y, z FROM game_world_entity WHERE guid = {bot}"
+        ));
+        let position = ["x", "y", "z"].map(|field| rows[0][field].parse::<f32>().unwrap());
+        positions.push(position);
+        ((position[0] - 1208.0).powi(2)
+            + (position[1] - 1200.0).powi(2)
+            + (position[2] - 50.5).powi(2))
+        .sqrt()
+            <= 2.05
+    });
+    outcomes(&node);
+    assert!(
+        arrived,
+        "movement stopped outside the Home arrival radius: {positions:?}"
+    );
+    assert!(
+        positions
+            .iter()
+            .all(|position| (position[2] - 49.0).abs() < 0.01),
+        "arrival must stay on the actual floor: {positions:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_keeps_the_walked_floor_on_a_model() {
     let (node, bot) = model_floor_movement("playerbots-walk-on-model", [51.5, 51.5]);
     node.assert_sql("DELETE FROM game_terrain_chunk");
