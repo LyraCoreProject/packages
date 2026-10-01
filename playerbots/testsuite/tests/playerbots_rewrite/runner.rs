@@ -2481,3 +2481,65 @@ fn playerbots_runner_recovery_missing_result_keeps_other_actions_eligible() {
     assert!(runner(&node, &bot)["chosen"].contains("5090100"));
     outcomes(&node);
 }
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_does_not_climb_a_steep_model_face() {
+    use lyracore_shared::vmap::{TriClass, VmapTri};
+
+    let mut triangles = Vec::new();
+    for (start, end, low, high) in [
+        (1208.0, 1210.0, 51.5, 51.5),
+        (1210.0, 1216.0, 51.5, 69.5),
+        (1216.0, 1232.0, 69.5, 69.5),
+    ] {
+        for verts in [
+            [
+                [start, 1198.0, low],
+                [end, 1198.0, high],
+                [start, 1202.0, low],
+            ],
+            [
+                [end, 1198.0, high],
+                [end, 1202.0, high],
+                [start, 1202.0, low],
+            ],
+        ] {
+            triangles.push(VmapTri {
+                verts,
+                class: TriClass::M2,
+            });
+        }
+    }
+    let (node, bot) = model_geometry_movement("playerbots-steep-model", &triangles);
+    node.assert_call("debug_teleport", &[&bot, "0", "1209", "1200", "51.5", "0"]);
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_bot SET home_x = 1230, home_y = 1200, home_z = 69.5 WHERE character_guid = {bot}"
+    ));
+    select(&node, &bot, "cohort");
+    let began = std::time::Instant::now();
+    let mut positions = Vec::new();
+    let mut observed = false;
+    poll_until(Duration::from_secs(6), || {
+        let rows = node.query_rows(&format!(
+            "SELECT x, z FROM game_world_entity WHERE guid = {bot}"
+        ));
+        let x = rows[0]["x"].parse::<f32>().unwrap();
+        let z = rows[0]["z"].parse::<f32>().unwrap();
+        positions.push((x, z));
+        observed |= node
+            .query_rows(&format!(
+                "SELECT * FROM pkg_playerbots_action WHERE character_guid = {bot}"
+            ))
+            .iter()
+            .any(|row| row["kind"].contains("move"));
+        z > 52.4 || began.elapsed() >= Duration::from_secs(5)
+    });
+    outcomes(&node);
+    assert!(observed, "the bot did not request movement");
+    assert!(
+        positions.iter().all(|(_, z)| *z <= 52.4),
+        "walk climbed a steep model face: {positions:?}"
+    );
+}
