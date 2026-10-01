@@ -28,18 +28,22 @@ impl PlanningBudget {
 fn begin(
     ctx: &ReducerContext,
     me: &crate::WorldEntity,
-    destination: (f32, f32, f32),
+    destination: &Destination,
     stand_off: f32,
 ) -> u32 {
     #[cfg(feature = "debug_reducers")]
     let _route_time = super::super::profiling::movement(ctx, me.guid);
+    // The planner's radius is horizontal; arrival includes the height difference.
+    let horizontal_stop = (stand_off.powi(2) - (me.z - destination.z).powi(2))
+        .max(0.0)
+        .sqrt();
     let route = crate::nav::route_path(
         ctx,
         me.map_id,
         me.instance_id,
         (me.x, me.y, me.z),
-        destination,
-        stand_off,
+        (destination.x, destination.y, destination.z),
+        horizontal_stop,
     );
     let expansions = route.step.expansions;
     if route.points.is_empty() {
@@ -50,8 +54,8 @@ fn begin(
         me.guid,
         me.map_id,
         me.instance_id,
-        (destination.0, destination.1).into(),
-        (me.x - destination.0).hypot(me.y - destination.1) <= stand_off + 0.05,
+        (destination.x, destination.y).into(),
+        distance(me, destination) <= stand_off + 0.05,
         route.step,
     );
     if let Ok(mover) = crate::helpers::live_entity(ctx, me.guid) {
@@ -268,8 +272,10 @@ fn advance(
                 state.last_outcome = RunnerOutcome::Cancelled;
                 return;
             }
-            let more_path = (spline.dx - destination.x).hypot(spline.dy - destination.y)
-                > stand_off(foreground.candidate) + 0.05;
+            let more_path = lyracore_shared::movement_path::distance(
+                (spline.dx, spline.dy, spline.dz),
+                (destination.x, destination.y, destination.z),
+            ) > stand_off(foreground.candidate) + 0.05;
             let renew_at =
                 (now.max(0) as u64).saturating_add(if more_path { RENEWAL_LEAD_MICROS } else { 0 });
             let destination_changed = (destination.x - movement.destination.x)
@@ -293,7 +299,7 @@ fn advance(
         }
     }
     let stand_off = stand_off(foreground.candidate);
-    if (me.x - destination.x).hypot(me.y - destination.y) <= stand_off + 0.05 {
+    if distance(&me, &destination) <= stand_off + 0.05 {
         // The next decision observes arrival and advances the objective's own progress clock.
         return;
     }
@@ -302,12 +308,7 @@ fn advance(
         state.movement_due_micros = now;
         return;
     };
-    let expansions = begin(
-        ctx,
-        &me,
-        (destination.x, destination.y, destination.z),
-        stand_off,
-    );
+    let expansions = begin(ctx, &me, &destination, stand_off);
     budget.record(expansions);
     state.route_expansions = expansions;
     #[cfg(feature = "debug_reducers")]

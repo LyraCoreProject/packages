@@ -44,7 +44,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 76a13f816da7526550c353f5c5ea1ef114b362dc
+          ref: 82e7cddc05fbfca382384fa568a9cd6e8315bfbe
           path: lyracore
           persist-credentials: false
 
@@ -83,7 +83,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 76a13f816da7526550c353f5c5ea1ef114b362dc
+          ref: 82e7cddc05fbfca382384fa568a9cd6e8315bfbe
           path: lyracore
           persist-credentials: false
 
@@ -148,7 +148,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 76a13f816da7526550c353f5c5ea1ef114b362dc
+          ref: 82e7cddc05fbfca382384fa568a9cd6e8315bfbe
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -700,7 +700,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 76a13f816da7526550c353f5c5ea1ef114b362dc
+          ref: 82e7cddc05fbfca382384fa568a9cd6e8315bfbe
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -921,7 +921,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 76a13f816da7526550c353f5c5ea1ef114b362dc
+          ref: 82e7cddc05fbfca382384fa568a9cd6e8315bfbe
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1119,7 +1119,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 76a13f816da7526550c353f5c5ea1ef114b362dc
+          ref: 82e7cddc05fbfca382384fa568a9cd6e8315bfbe
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target

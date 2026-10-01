@@ -665,6 +665,42 @@ fn playerbots_movement_keeps_the_walked_floor_below_a_model() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_reaches_home_with_a_floor_height_offset() {
+    let (node, bot) = model_geometry_movement("playerbots-home-height-offset", &[]);
+    node.assert_call("debug_teleport", &[&bot, "0", "1200", "1200", "49", "0"]);
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_bot SET home_x = 1208, home_y = 1200, home_z = 50.5 WHERE character_guid = {bot}"
+    ));
+    select(&node, &bot, "cohort");
+    let mut positions = Vec::new();
+    let arrived = poll_until(Duration::from_secs(8), || {
+        let rows = node.query_rows(&format!(
+            "SELECT x, y, z FROM game_world_entity WHERE guid = {bot}"
+        ));
+        let position = ["x", "y", "z"].map(|field| rows[0][field].parse::<f32>().unwrap());
+        positions.push(position);
+        ((position[0] - 1208.0).powi(2)
+            + (position[1] - 1200.0).powi(2)
+            + (position[2] - 50.5).powi(2))
+        .sqrt()
+            <= 2.05
+    });
+    outcomes(&node);
+    assert!(
+        arrived,
+        "movement stopped outside the Home arrival radius: {positions:?}"
+    );
+    assert!(
+        positions
+            .iter()
+            .all(|position| (position[2] - 49.0).abs() < 0.01),
+        "arrival must stay on the actual floor: {positions:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_keeps_the_walked_floor_on_a_model() {
     let (node, bot) = model_floor_movement("playerbots-walk-on-model", [51.5, 51.5]);
     node.assert_sql("DELETE FROM game_terrain_chunk");
@@ -2480,4 +2516,81 @@ fn playerbots_runner_recovery_missing_result_keeps_other_actions_eligible() {
     }
     assert!(runner(&node, &bot)["chosen"].contains("5090100"));
     outcomes(&node);
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_does_not_climb_a_steep_model_face() {
+    use lyracore_shared::vmap::{TriClass, VmapTri};
+
+    let mut triangles = Vec::new();
+    for (start, end, low, high) in [
+        (1208.0, 1210.0, 51.5, 51.5),
+        (1210.0, 1216.0, 51.5, 69.5),
+        (1216.0, 1232.0, 69.5, 69.5),
+    ] {
+        for verts in [
+            [
+                [start, 1198.0, low],
+                [end, 1198.0, high],
+                [start, 1202.0, low],
+            ],
+            [
+                [end, 1198.0, high],
+                [end, 1202.0, high],
+                [start, 1202.0, low],
+            ],
+        ] {
+            triangles.push(VmapTri {
+                verts,
+                class: TriClass::M2,
+            });
+        }
+    }
+    let (node, bot) = model_geometry_movement("playerbots-steep-model", &triangles);
+    node.assert_call("debug_teleport", &[&bot, "0", "1209", "1200", "51.5", "0"]);
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_bot SET home_x = 1230, home_y = 1200, home_z = 69.5 WHERE character_guid = {bot}"
+    ));
+    let previous = node
+        .query_rows(&format!(
+            "SELECT started_micros FROM pkg_playerbots_action WHERE character_guid = {bot}"
+        ))
+        .iter()
+        .map(|row| row["started_micros"].parse::<i64>().unwrap())
+        .max()
+        .unwrap_or(0);
+    select(&node, &bot, "cohort");
+    let began = std::time::Instant::now();
+    let mut positions = Vec::new();
+    let mut observed = false;
+    assert!(poll_until(Duration::from_secs(6), || {
+        let rows = node.query_rows(&format!(
+            "SELECT x, z FROM game_world_entity WHERE guid = {bot}"
+        ));
+        let x = rows[0]["x"].parse::<f32>().unwrap();
+        let z = rows[0]["z"].parse::<f32>().unwrap();
+        positions.push((x, z));
+        observed |= node
+            .query_rows(&format!(
+                "SELECT * FROM pkg_playerbots_action WHERE character_guid = {bot}"
+            ))
+            .iter()
+            .any(|row| {
+                row["kind"] == "(move = ())"
+                    && row["started_micros"].parse::<i64>().unwrap() > previous
+            });
+        z > 52.4 || began.elapsed() >= Duration::from_secs(5)
+    }));
+    outcomes(&node);
+    assert!(observed, "the bot did not request fresh movement");
+    assert!(
+        positions.iter().any(|(x, _)| *x > 1209.05),
+        "the bot never approached the model face: {positions:?}"
+    );
+    assert!(
+        positions.iter().all(|(_, z)| *z <= 52.4),
+        "walk climbed a steep model face: {positions:?}"
+    );
 }
