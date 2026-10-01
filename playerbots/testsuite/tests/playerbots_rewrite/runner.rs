@@ -2517,11 +2517,19 @@ fn playerbots_movement_does_not_climb_a_steep_model_face() {
     node.assert_sql(&format!(
         "UPDATE pkg_playerbots_bot SET home_x = 1230, home_y = 1200, home_z = 69.5 WHERE character_guid = {bot}"
     ));
+    let previous = node
+        .query_rows(&format!(
+            "SELECT started_micros FROM pkg_playerbots_action WHERE character_guid = {bot}"
+        ))
+        .iter()
+        .map(|row| row["started_micros"].parse::<i64>().unwrap())
+        .max()
+        .unwrap_or(0);
     select(&node, &bot, "cohort");
     let began = std::time::Instant::now();
     let mut positions = Vec::new();
     let mut observed = false;
-    poll_until(Duration::from_secs(6), || {
+    assert!(poll_until(Duration::from_secs(6), || {
         let rows = node.query_rows(&format!(
             "SELECT x, z FROM game_world_entity WHERE guid = {bot}"
         ));
@@ -2533,11 +2541,18 @@ fn playerbots_movement_does_not_climb_a_steep_model_face() {
                 "SELECT * FROM pkg_playerbots_action WHERE character_guid = {bot}"
             ))
             .iter()
-            .any(|row| row["kind"].contains("move"));
+            .any(|row| {
+                row["kind"] == "(move = ())"
+                    && row["started_micros"].parse::<i64>().unwrap() > previous
+            });
         z > 52.4 || began.elapsed() >= Duration::from_secs(5)
-    });
+    }));
     outcomes(&node);
-    assert!(observed, "the bot did not request movement");
+    assert!(observed, "the bot did not request fresh movement");
+    assert!(
+        positions.iter().any(|(x, _)| *x > 1209.05),
+        "the bot never approached the model face: {positions:?}"
+    );
     assert!(
         positions.iter().all(|(_, z)| *z <= 52.4),
         "walk climbed a steep model face: {positions:?}"
