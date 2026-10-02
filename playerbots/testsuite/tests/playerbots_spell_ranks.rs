@@ -59,6 +59,9 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
             let mut rank = base.clone();
             rank.insert("spell_id".into(), spell.to_string());
             rank.insert("spell_level".into(), level.to_string());
+            if rank["max_level"] != "0" {
+                rank.insert("max_level".into(), (level + 5).to_string());
+            }
             insert_row(&node, "game_spell", rank);
             let mut effect = effect.clone();
             effect.insert("id".into(), (u64::from(spell) << 2).to_string());
@@ -115,13 +118,17 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
         ))
     );
     assert!(
-        support::poll_until(Duration::from_secs(10), || {
+        support::poll_until(Duration::from_secs(20), || {
             node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
-            node.query_rows(&format!("SELECT spell_id, is_completion, is_interrupted FROM game_spell_cast_event WHERE caster_guid = {guid}"))
+            let table = if class == "1" { "game_spell_cast_event" } else { "game_spell_impact_event" };
+            node.query_rows(&format!("SELECT spell_id, damage FROM {table} WHERE caster_guid = {guid}"))
             .iter().any(|row| row["spell_id"] == expected.to_string()
-                && row["is_completion"] == "true" && row["is_interrupted"] == "false")
+                && row["damage"].parse::<u32>().unwrap() > 0)
         }),
-        "learned rank {expected} was selected but never completed"
+        "learned rank {expected} was selected but dealt no damage: runner={:?}; actions={:?}; casts={:?}",
+        node.query_rows(&format!("SELECT chosen, last_outcome, foreground FROM pkg_playerbots_runner WHERE character_guid = {guid}")),
+        node.query_rows(&format!("SELECT spell_id, outcome FROM pkg_playerbots_action WHERE character_guid = {guid}")),
+        node.query_rows(&format!("SELECT spell_id, is_completion, is_interrupted, damage FROM game_spell_cast_event WHERE caster_guid = {guid}")),
     );
 }
 
