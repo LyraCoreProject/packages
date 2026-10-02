@@ -570,6 +570,14 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     }));
     assert_attack_action(&accepted_after_refacing, &target, "alreadyArmed");
     assert_eq!(
+        target_before_refacing[0]["x"].parse::<f32>().unwrap(),
+        1214.0
+    );
+    assert_eq!(
+        target_after_refacing[0]["x"].parse::<f32>().unwrap(),
+        1214.0
+    );
+    assert_eq!(
         before_refacing[0]["orientation"],
         after_turn[0]["orientation"]
     );
