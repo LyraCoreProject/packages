@@ -1356,13 +1356,6 @@ fn playerbots_runner_mage_defense_retains_a_valid_target_and_replaces_invalid_ta
         .into_iter()
         .find(|row| row["target_guid"] == target && row["spell_id"] == "133")
     };
-    let health = |target: &str| {
-        node.query_rows(&format!(
-            "SELECT health FROM game_world_entity WHERE guid = {target}"
-        ))[0]["health"]
-            .parse::<u32>()
-            .unwrap()
-    };
 
     node.assert_call(
         "playerbots_fixture_runner_damage_and_park",
@@ -1395,9 +1388,13 @@ fn playerbots_runner_mage_defense_retains_a_valid_target_and_replaces_invalid_ta
             && retained["chosen"].contains("reason = (defense = ())"),
         "{retained:?}"
     );
-    assert!(poll_until(POLL_TIMEOUT, || cast(&first)
-        .is_some_and(|row| row["outcome"].contains("castResolved"))));
-    assert!(health(&first) < 1_000);
+    // A resolved Fireball may still miss, so the cast outcome is the stable signal, not damage.
+    assert!(
+        poll_until(POLL_TIMEOUT, || cast(&first)
+            .is_some_and(|row| row["outcome"].contains("castResolved"))),
+        "the defensive Fireball at the retained target never resolved: {:?}",
+        cast(&first)
+    );
     assert_eq!(runner(&node, bot)["objective_sequence"], objective);
     assert!(runner(&node, bot)["combat_progress"].contains("none"));
 
