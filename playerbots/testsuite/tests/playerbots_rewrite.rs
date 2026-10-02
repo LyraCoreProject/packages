@@ -169,12 +169,12 @@ fn playerbots_an_expired_cast_cannot_heal_later() {
         "(expired = ())"
     );
     std::thread::sleep(std::time::Duration::from_secs(6));
-    let health = |guid: &str| {
-        node.query_rows(&format!(
-            "SELECT health FROM game_world_entity WHERE guid = {guid}"
-        ))[0]["health"]
-            .clone()
-    };
+    // Natural recovery can advance between queries, so compare one snapshot.
+    let bodies = node.query_rows(&format!(
+        "SELECT guid, health FROM game_world_entity WHERE guid = {} OR guid = {}",
+        bot, bots[1]
+    ));
+    let health = |guid: &str| &bodies.iter().find(|row| row["guid"] == guid).unwrap()["health"];
     assert_eq!(
         health(bot),
         health(&bots[1]),
