@@ -293,7 +293,7 @@ fn playerbots_provisioning_arms_then_reconciles_and_repairs_without_cost() {
     assert!(history.contains("spell = 6673"));
     assert!(!history.contains("spell 6673 is not available"));
     assert!(history.contains("warrior-tank-free"));
-    assert_eq!(completed["revision"], "2");
+    assert_eq!(completed["revision"], "3");
     assert!(history.contains("applied"));
     for action in ["skill", "spell", "talent", "item", "equip"] {
         assert!(

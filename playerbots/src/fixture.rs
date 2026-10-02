@@ -775,6 +775,8 @@ pub fn playerbots_fixture_position(ctx: &ReducerContext, guid: u64, x: f32) -> R
     entity.grid_x = gx;
     entity.grid_y = gy;
     entity.cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
+    // A pending spline must not restore the position this fixture replaces.
+    ctx.db.game_creature_spline().guid().delete(guid);
     ctx.db.game_world_entity().guid().update(entity);
     Ok(())
 }

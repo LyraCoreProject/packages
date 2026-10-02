@@ -175,6 +175,10 @@ fn rotation_rows(
         .filter(|row| conditions.contains(&row.condition))
         .collect();
     rows.sort_by_key(|row| (row.priority, row.spell_id, row.id));
+    for row in &mut rows {
+        row.spell_id = super::spell_ranks::highest_known(ctx, bot.character_guid, row.spell_id)
+            .map_err(|_| RoleReadError::RotationLimit)?;
+    }
     Ok(rows)
 }
 

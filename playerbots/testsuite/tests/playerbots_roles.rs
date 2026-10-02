@@ -1420,7 +1420,7 @@ fn playerbots_populated_pb006_state_upgrades_roles_without_replacing_operator_ca
     assert!(migrated_runner["companion_buff_target_guid"].contains("none"));
     assert_eq!(preceding_provisioning["revision"], "1");
     assert!(!preceding_provisioning["history"].is_empty());
-    assert_eq!(upgraded_provisioning["revision"], "2");
+    assert_eq!(upgraded_provisioning["revision"], "3");
     assert!(upgraded_provisioning["cause"].contains("periodic"));
     assert!(upgraded_provisioning["history"].contains(preceding_provisioning["history"].as_str()));
     assert!(preceding_levels.iter().all(|row| row["spell_level"] == "0"));

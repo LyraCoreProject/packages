@@ -88,11 +88,18 @@ Profiles make training and their bounded item grants free. They cover the config
 weapon skill, vanilla talents, gear, four bags, food, drink, potions, ammunition or class reagents,
 bandages, and a Hearthstone. Reconciliation only adds profile entries. It never raises level, awards
 experience or quest credit, removes quest items, or replaces equal or stronger equipped gear.
-One profile accepts at most 12 kit spell rows, 16 tabs at one tree position, and 64 talents in one
+Kit and rotation spell IDs name rank families. Provisioning trains the family's ranks in order,
+up to the Character's level, through the ordinary trainer Gates. Combat, buffs, healing, and solo
+recovery use the highest learned rank. A spell without rank metadata keeps its configured ID.
+Imported Shards need the complete `spellmeta` import with both the world dump and client DBC source.
+
+One profile accepts at most 12 kit spell rows, 16 ranks per family, 16 tabs at one tree position, and 64 talents in one
 tab. Trainer admission reads at most 16 exact offerings, 16 reverse wrapper effects, and three
 effects per candidate wrapper. Each limit reads one extra row to detect overflow. A larger catalogue
 records a typed profile-limit outcome when that bounded prefix cannot decide admission. An eligible
 offering completes admission without reading later duplicates.
+Each pass scans at most 32 satisfied actions and resumes its cursor on the next pass. It still
+performs at most one gameplay write. Profile revision 3 also repairs previously staged bots.
 
 `pkg_playerbots_provisioning` records the profile, revision, free-grant policy, current cursor, next
 repair time, and the last 32 typed decisions. A full inventory, missing catalogue row, death, or

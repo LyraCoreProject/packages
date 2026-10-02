@@ -427,7 +427,15 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
         RecoveryResult::Pending => RecoveryLookup::Pending,
         RecoveryResult::Missing => RecoveryLookup::Missing,
         RecoveryResult::Rotation(id) => match rotations.id().find(id).filter(valid) {
-            Some(row) => RecoveryLookup::Spell(row),
+            Some(mut row) => {
+                match super::spell_ranks::highest_known(ctx, bot.character_guid, row.spell_id) {
+                    Ok(spell) => {
+                        row.spell_id = spell;
+                        RecoveryLookup::Spell(row)
+                    }
+                    Err(_) => RecoveryLookup::Missing,
+                }
+            }
             None => {
                 scan.result = RecoveryResult::Missing;
                 RecoveryLookup::Missing

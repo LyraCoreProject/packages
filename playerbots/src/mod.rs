@@ -48,6 +48,7 @@ mod imported_fixture;
 mod load_fixture;
 #[cfg(feature = "debug_reducers")]
 mod fixture;
+mod spell_ranks;
 #[cfg(feature = "debug_reducers")]
 mod transfer_assist_fixture;
 #[cfg(feature = "debug_reducers")]
@@ -355,7 +356,7 @@ crate::character_owned!(transfer, fn sweep_transfer_pkg_playerbots_personality(c
     remint = id,
 });
 
-/// What a `(class, role)` bot LEARNS at spawn. The kit is also the legality answer: a `(class,
+/// Spell families a `(class, role)` bot trains as it levels. The kit is also the legality answer: a `(class,
 /// role)` pair with no kit rows is a pairing this Package cannot fill, and the spawn verb refuses
 /// it by name. [static]
 #[table(
@@ -372,7 +373,8 @@ pub struct PlayerbotsKit {
     pub spell_id: u32,
 }
 
-/// What a `(class, role)` bot CASTS, in priority order. Rows, not code: one class carries three
+/// Spell families a `(class, role)` bot casts, in priority order, using each family's highest
+/// learned rank. Rows, not code: one class carries three
 /// different fights because three sets of rows say so, and an Operator retunes a fight with a SQL
 /// UPDATE while the realm is up. Every `spell_id` here must also be a kit row for the same pair,
 /// or the bot would never have learned it. [static]
