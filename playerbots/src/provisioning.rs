@@ -4,10 +4,10 @@
 use super::{
     class, pkg_playerbots_bot, pkg_playerbots_kit, Controller, PlayerbotsBot, ROLE_DPS, ROLE_HEALER,
 };
-use crate::{game_item_instance, game_world_entity};
+use crate::{game_item_instance, game_spell, game_world_entity};
 use spacetimedb::{table, ReducerContext, Table};
 
-const PROFILE_REVISION: u32 = 2;
+const PROFILE_REVISION: u32 = 3;
 pub(super) const WARRIOR_PROFILE_SKILL: u32 = 43;
 const STEP_INTERVAL_MICROS: i64 = 1_000_000;
 const RETRY_INTERVAL_MICROS: i64 = 30_000_000;
@@ -322,7 +322,26 @@ pub(super) fn profile_actions(
     }
     spells.sort_unstable();
     spells.dedup();
-    actions.extend(spells.into_iter().map(ProvisionAction::Spell));
+    let level = ctx
+        .db
+        .game_world_entity()
+        .guid()
+        .find(bot.character_guid)
+        .map_or(0, |entity| entity.level);
+    for spell in spells {
+        for rank in super::spell_ranks::family(ctx, spell).map_err(profile_limit)? {
+            if rank == spell
+                || ctx
+                    .db
+                    .game_spell()
+                    .spell_id()
+                    .find(rank)
+                    .is_none_or(|row| u32::from(row.spell_level) <= level)
+            {
+                actions.push(ProvisionAction::Spell(rank));
+            }
+        }
+    }
     let tree = preferred_talent_tree(bot.class, bot.role);
     actions.push(ProvisionAction::Talent(ProvisionTalent {
         preferred_tree: tree,
@@ -710,7 +729,8 @@ pub(super) fn reconcile_due(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64)
         };
     }
 
-    finish_cycle(&mut state, now);
+    // A ranked profile can exceed one bounded scan. Resume at the next action.
+    state.next_repair_micros = now.saturating_add(STEP_INTERVAL_MICROS);
     rows.character_guid().update(state);
     ReconcileStep::Ready
 }
