@@ -1189,6 +1189,36 @@ fn playerbots_bounded_role_reads_record_typed_holds() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_party_facts_allow_eighty_threat_sources_on_one_enemy_and_refuse_eighty_one() {
+    let fixture = fixture("playerbots-roles-threat-source-limit", 10);
+    let node = &fixture.node;
+    for (kind, case, refused) in [
+        ("4", "threat-sources-at-limit", false),
+        ("5", "threat-sources-over-limit", true),
+    ] {
+        node.assert_call(
+            "playerbots_fixture_roles_overflow",
+            &[&fixture.warrior, kind],
+        );
+        pass(node, &fixture.warrior);
+        evidence(&fixture, case);
+        let state = runner(node, &fixture.warrior);
+        assert_eq!(
+            state["chosen"].contains("partyUnavailable"),
+            refused,
+            "{state:?}"
+        );
+        assert_eq!(
+            state["failures"].contains("fightLimit"),
+            refused,
+            "{state:?}"
+        );
+        node.assert_call("playerbots_fixture_roles_clear_overflow", &[]);
+    }
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_buff_read_failure_preserves_a_valid_party_heal() {
     let fixture = fixture("playerbots-roles-buff-failure-heal", 10);
     let node = &fixture.node;
