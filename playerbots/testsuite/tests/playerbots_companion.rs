@@ -691,18 +691,29 @@ fn playerbots_priest_in_a_ten_member_raid_heals_across_subgroups_then_follows_th
         ))
         .is_empty()));
     let pending = node.query_rows(&format!(
-        "SELECT target_guid FROM game_pending_cast WHERE caster_guid = {priest}"
-    ));
+        "SELECT scheduled_id, target_guid FROM game_pending_cast WHERE caster_guid = {priest}"
+    ))[0]
+        .clone();
     evidence(&node, "raid-heal-started");
-    assert_eq!(pending[0]["target_guid"], *ally);
+    assert_eq!(pending["target_guid"], *ally);
     assert!(runner(&node, priest)["chosen"].contains("heal"));
     assert_party_readable(&node, priest);
-    assert!(poll_until(POLL_TIMEOUT, || node
-        .query_rows(&format!(
-            "SELECT scheduled_id FROM game_pending_cast WHERE caster_guid = {priest}"
+    let cast_resolved = poll_until(POLL_TIMEOUT, || {
+        node.query_rows(&format!(
+            "SELECT cast_id, outcome FROM pkg_playerbots_action WHERE character_guid = {priest} AND spell_id = {HEAL}"
         ))
-        .is_empty()));
+        .iter()
+        .any(|action| {
+            action["cast_id"] == pending["scheduled_id"]
+                && action["outcome"] == "(castResolved = ())"
+        }) && node
+            .query_rows(&format!(
+                "SELECT scheduled_id FROM game_pending_cast WHERE caster_guid = {priest}"
+            ))
+            .is_empty()
+    });
     evidence(&node, "raid-heal-completed");
+    assert!(cast_resolved);
     assert!(health(&node, ally) > ally_before);
     node.assert_call("playerbots_fixture_companion_health", &[ally, "100"]);
     due(&node, priest);

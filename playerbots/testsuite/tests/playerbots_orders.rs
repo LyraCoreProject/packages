@@ -992,11 +992,21 @@ fn playerbots_assist_in_a_ten_member_raid_follows_a_member_in_another_subgroup()
     assert_eq!(slots[&fixture.leader], "0");
     assert_eq!(slots[&fixture.warrior], "1");
 
-    let chosen = &fixture.enemies[1];
-    select_and_engage(node, &fixture.leader, chosen);
+    // The leader fights enemies[1]. The Assist names a member in Subgroup 2 who fights enemies[0],
+    // so only the named member's fight can send the warrior to enemies[0].
+    let leader_enemy = &fixture.enemies[1];
+    let chosen = &fixture.enemies[0];
+    let assisted = &fillers[5];
+    assert_eq!(slots[assisted], "2");
+    select_and_engage(node, &fixture.leader, leader_enemy);
+    node.assert_call(
+        "playerbots_fixture_companion_move",
+        &[assisted, "1206", "1198"],
+    );
+    select_and_engage(node, assisted, chosen);
     issue(
         &fixture,
-        &format!("assist|{}|{}", fixture.warrior, fixture.leader),
+        &format!("assist|{}|{assisted}", fixture.warrior),
         &fixture.warrior,
         true,
     );
@@ -1023,6 +1033,7 @@ fn playerbots_assist_in_a_ten_member_raid_follows_a_member_in_another_subgroup()
     evidence(&fixture, "raid-assist-fight");
     assert_eq!(melee.len(), 1);
     assert_eq!(melee[0]["target_guid"], *chosen);
+    assert_ne!(melee[0]["target_guid"], *leader_enemy);
 }
 
 #[test]

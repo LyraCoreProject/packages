@@ -962,14 +962,35 @@ pub fn playerbots_fixture_raid_mirror(
         .revision
         .checked_add(1)
         .ok_or("raid fixture roster revision exhausted")?;
+    if raid_slots.len() != members.len() {
+        return Err("raid fixture needs one Raid Slot per member".to_string());
+    }
+    let mut subgroup_sizes = [0usize; lyracore_shared::group::RAID_SUBGROUPS as usize];
+    for byte in &raid_slots {
+        let slot = lyracore_shared::group::RaidSlot::from_wire(*byte)
+            .ok_or("raid fixture has an invalid Raid Slot")?;
+        let size = &mut subgroup_sizes[usize::from(slot.subgroup())];
+        *size += 1;
+        if *size > lyracore_shared::group::SUBGROUP_SIZE {
+            return Err("raid fixture overfills a Subgroup".to_string());
+        }
+    }
     for (index, guid) in fillers.iter().enumerate() {
         if !members.contains(guid) {
             return Err("raid fixture filler is not a member".to_string());
         }
         let bots = ctx.db.pkg_playerbots_bot();
-        for bot in bots.by_character().filter(*guid).collect::<Vec<_>>() {
+        let rows: Vec<_> = bots.by_character().filter(*guid).collect();
+        if rows.is_empty() {
+            return Err("raid fixture filler has no bot row".to_string());
+        }
+        for bot in rows {
             bots.id().delete(bot.id);
         }
+        // A filler that thought before this reducer ran may hold movement, a cast or an attack.
+        playerbots_fixture_cancel(ctx, *guid, false)?;
+        ctx.db.game_creature_spline().guid().delete(*guid);
+        ctx.db.game_melee_attack().attacker_guid().delete(*guid);
         companion_unit(ctx, *guid, 1240.0 + index as f32, 1230.0, 100)?;
     }
     let partitions = fixture_group_partitions(ctx, group_id, &members)?;
@@ -1293,6 +1314,11 @@ pub fn playerbots_fixture_roles_clear_overflow(ctx: &ReducerContext) -> Result<(
         threats.id().delete(row.id);
     }
     crate::creatures::despawn_creature_entity(ctx, enemy);
+    ctx.db.game_creature_spawn().guid().delete(enemy);
+    ctx.db
+        .game_creature_template()
+        .entry()
+        .delete(OVERFLOW_ENEMY_ENTRY);
     Ok(())
 }
 
