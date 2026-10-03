@@ -972,20 +972,9 @@ fn stop_movement(ctx: &ReducerContext, guid: u64) {
     {
         return;
     }
-    if let Some(me) = ctx.db.game_world_entity().guid().find(guid) {
-        let point = (me.x, me.y, me.z);
-        crate::creatures::tick::emit_move_spline(
-            ctx,
-            guid,
-            point,
-            point,
-            0,
-            false,
-            (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32,
-            me.map_id,
-            me.instance_id,
-            (me.grid_x, me.grid_y),
-        );
+    if let Some(mut me) = ctx.db.game_world_entity().guid().find(guid) {
+        crate::creatures::tick::stop_where_rendered(ctx, &mut me);
+        ctx.db.game_world_entity().guid().update(me);
     } else {
         ctx.db.game_creature_spline().guid().delete(guid);
     }

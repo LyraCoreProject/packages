@@ -347,13 +347,9 @@ fn playerbots_movement_retains_its_path_across_decision_turns() {
     outcomes(&node);
 }
 
-#[test]
-#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
-fn playerbots_movement_follows_retained_waypoints_around_an_obstacle() {
+/// Walls a 2 by 6 yard block east of the spawn point, so a route to x 1238 needs waypoints.
+fn import_obstacle_nav(node: &Standalone) {
     use lyracore_shared::{nav, terrain};
-    let (node, bots) = fixture("playerbots-waypoint-obstacle", "1");
-    let bot = &bots[0];
-    select(&node, bot, "frozen");
     let mut chunks = Vec::new();
     for cx in terrain::cell_index(1250.0).unwrap()..=terrain::cell_index(1190.0).unwrap() {
         for cy in terrain::cell_index(1210.0).unwrap()..=terrain::cell_index(1190.0).unwrap() {
@@ -373,6 +369,15 @@ fn playerbots_movement_follows_retained_waypoints_around_an_obstacle() {
     }
     node.assert_call("import_nav_chunks", &[&chunks.join(";")]);
     node.assert_call("debug_set_nav_enabled", &["true"]);
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_follows_retained_waypoints_around_an_obstacle() {
+    let (node, bots) = fixture("playerbots-waypoint-obstacle", "1");
+    let bot = &bots[0];
+    select(&node, bot, "frozen");
+    import_obstacle_nav(&node);
     park_movement(&node, bot);
     let initial = node.query_rows(&format!(
         "SELECT * FROM game_creature_spline WHERE guid = {bot}"
@@ -471,6 +476,170 @@ fn playerbots_movement_cancels_a_path_after_navigation_inputs_change() {
         .all(|row| row["dur_ms"] == "0")));
     assert!(position(&node, &bot) < before + 4.0);
     assert!(runner(&node, &bot)["foreground"].contains("none"));
+    outcomes(&node);
+}
+
+fn path_points(path: &str) -> Vec<(f32, f32, f32)> {
+    fn number(text: &str, key: &str) -> f32 {
+        let rest = &text[text.find(key).expect("path point field missing") + key.len()..];
+        let end = rest
+            .find(|c: char| !(c.is_ascii_digit() || "-+.e".contains(c)))
+            .unwrap_or(rest.len());
+        rest[..end].parse().unwrap()
+    }
+    let points = path.split("navigation").next().unwrap();
+    points
+        .split("x = ")
+        .skip(1)
+        .map(|point| {
+            (
+                number(point, ""),
+                number(point, "y = "),
+                number(point, "z = "),
+            )
+        })
+        .collect()
+}
+
+fn coordinates(row: &BTreeMap<String, String>, fields: [&str; 3]) -> (f32, f32, f32) {
+    let read = |field: &str| row[field].parse::<f32>().unwrap();
+    (read(fields[0]), read(fields[1]), read(fields[2]))
+}
+
+struct StoppedRoute {
+    leg: BTreeMap<String, String>,
+    stored: (f32, f32, f32),
+    stored_before: (f32, f32, f32),
+    stop: BTreeMap<String, String>,
+}
+
+/// Lets a bot walk its Route Path for a while with creature ticks off, so the stored position lags
+/// the leg, then stops it with a runner decision.
+fn stop_walking_route(node: &Standalone, bot: &str, before_stop: impl FnOnce()) -> StoppedRoute {
+    let position = || {
+        let row = &node.query_rows(&format!(
+            "SELECT x, y, z FROM game_world_entity WHERE guid = {bot}"
+        ))[0];
+        coordinates(row, ["x", "y", "z"])
+    };
+    import_obstacle_nav(node);
+    park_movement(node, bot);
+    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    let leg = node.query_rows(&format!(
+        "SELECT * FROM game_creature_spline WHERE guid = {bot}"
+    ));
+    assert_eq!(leg.len(), 1, "{leg:?}");
+    let leg = leg.into_iter().next().unwrap();
+    assert!(leg["dur_ms"].parse::<u32>().unwrap() > 3_000, "{leg:?}");
+    let stored_before = position();
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert_eq!(
+        position(),
+        stored_before,
+        "no creature tick may move the bot"
+    );
+    before_stop();
+    select(node, bot, "frozen");
+    let stop = node.query_rows(&format!(
+        "SELECT * FROM game_creature_spline WHERE guid = {bot}"
+    ));
+    assert_eq!(stop.len(), 1, "{stop:?}");
+    let stop = stop.into_iter().next().unwrap();
+    assert_eq!(stop["dur_ms"], "0", "{stop:?}");
+    assert!(stop["start_micros"].parse::<u64>().unwrap() > leg["start_micros"].parse().unwrap());
+    StoppedRoute {
+        stored: position(),
+        leg,
+        stored_before,
+        stop,
+    }
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_stop_between_ticks_holds_the_point_the_path_renders() {
+    use lyracore_shared::movement_path;
+    let (node, bots) = fixture("playerbots-stop-rendered", "1");
+    let bot = &bots[0];
+    let stopped = stop_walking_route(&node, bot, || ());
+    let points = path_points(&stopped.leg["path"]);
+    assert!(points.len() >= 3, "the route must bend: {points:?}");
+    let start = coordinates(&stopped.leg, ["sx", "sy", "sz"]);
+    let elapsed = stopped.stop["start_micros"].parse::<u64>().unwrap()
+        - stopped.leg["start_micros"].parse::<u64>().unwrap();
+    let t = elapsed as f32 / (stopped.leg["dur_ms"].parse::<f32>().unwrap() * 1000.0);
+    assert!(t < 1.0, "the bot must still be walking: {t}");
+    let (rendered, next) = movement_path::sample(start, &points, t);
+    assert!(
+        next > 0,
+        "the bot must have passed a waypoint: {rendered:?}"
+    );
+    assert!(
+        movement_path::distance(rendered, stopped.stored_before) > 4.0,
+        "fixture must leave the stored position behind the leg"
+    );
+    for (name, point) in [
+        ("stored position", stopped.stored),
+        (
+            "stop row start",
+            coordinates(&stopped.stop, ["sx", "sy", "sz"]),
+        ),
+        (
+            "stop row end",
+            coordinates(&stopped.stop, ["dx", "dy", "dz"]),
+        ),
+    ] {
+        assert!(
+            movement_path::distance(point, rendered) < 0.05,
+            "{name} {point:?} is not the rendered point {rendered:?}"
+        );
+    }
+    let heading = node.query_rows(&format!(
+        "SELECT orientation FROM game_world_entity WHERE guid = {bot}"
+    ))[0]["orientation"]
+        .parse::<f32>()
+        .unwrap();
+    let toward = (points[next].1 - rendered.1).atan2(points[next].0 - rendered.0);
+    let turn = (heading - toward).rem_euclid(std::f32::consts::TAU);
+    assert!(
+        turn.min(std::f32::consts::TAU - turn) < 0.01,
+        "heading {heading} does not face the next waypoint {toward}"
+    );
+    outcomes(&node);
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_stop_after_navigation_inputs_change_keeps_the_stored_point() {
+    use lyracore_shared::movement_path;
+    let (node, bots) = fixture("playerbots-stop-halted-path", "1");
+    let bot = &bots[0];
+    let stopped = stop_walking_route(&node, bot, || {
+        node.assert_call("import_nav_chunks", &["0,400,400,0,,"]);
+    });
+    let points = path_points(&stopped.leg["path"]);
+    let start = coordinates(&stopped.leg, ["sx", "sy", "sz"]);
+    let elapsed = stopped.stop["start_micros"].parse::<u64>().unwrap()
+        - stopped.leg["start_micros"].parse::<u64>().unwrap();
+    let t = elapsed as f32 / (stopped.leg["dur_ms"].parse::<f32>().unwrap() * 1000.0);
+    let (rendered, _) = movement_path::sample(start, &points, t);
+    assert!(
+        movement_path::distance(rendered, stopped.stored_before) > 4.0,
+        "fixture must leave the stored position behind the leg"
+    );
+    assert_eq!(stopped.stored, stopped.stored_before);
+    for (name, point) in [
+        (
+            "stop row start",
+            coordinates(&stopped.stop, ["sx", "sy", "sz"]),
+        ),
+        (
+            "stop row end",
+            coordinates(&stopped.stop, ["dx", "dy", "dz"]),
+        ),
+    ] {
+        assert_eq!(point, stopped.stored, "{name} must hold the stored point");
+    }
     outcomes(&node);
 }
 
