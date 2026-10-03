@@ -118,6 +118,66 @@ fn fixture_role(name: &str, role: &str) -> (Standalone, Vec<String>) {
     (node, bots)
 }
 
+/// Stage the three-member companion party, then widen it to a ten-member Raid. The leader holds
+/// Subgroup 0, the priest Subgroup 1 and the ally Subgroup 2, and no Subgroup passes five members.
+/// The seven fillers stand in for humans.
+fn raid_fixture(name: &str) -> (Standalone, Vec<String>) {
+    const RAID_SUBGROUPS: [u8; 10] = [0, 1, 2, 0, 0, 0, 0, 1, 1, 2];
+    let mut node = Standalone::start(name);
+    node.publish_module();
+    record_inputs(&node);
+    node.assert_call("claim_operator", &[]);
+    node.assert_call("install_guid_range", &["1000000"]);
+    node.assert_call("playerbots_spawn_role", &["10", "1200", "1200", "50", "1"]);
+    node.assert_call("playerbots_fixture_prepare", &[]);
+    let bots: Vec<_> = node
+        .query_rows("SELECT character_guid FROM pkg_playerbots_bot")
+        .into_iter()
+        .map(|row| row["character_guid"].clone())
+        .collect();
+    assert_eq!(bots.len(), 10);
+    node.assert_call(
+        "playerbots_fixture_companion_stage",
+        &[&bots[0], &bots[1], &bots[2]],
+    );
+    let (priest, leader, ally) = (&bots[0], &bots[1], &bots[2]);
+    let members: Vec<_> = [leader, priest, ally]
+        .into_iter()
+        .chain(&bots[3..])
+        .cloned()
+        .collect();
+    node.assert_call(
+        "playerbots_fixture_raid_mirror",
+        &[
+            "5090300",
+            leader,
+            &format!("[{}]", members.join(",")),
+            &format!("{RAID_SUBGROUPS:?}"),
+            &format!("[{}]", bots[3..].join(",")),
+            &format!(r#"{{"guid":{leader},"ownership":null}}"#),
+        ],
+    );
+    (node, bots)
+}
+
+/// Every explanation field that records a refused party read stays clear of it.
+fn assert_party_readable(node: &Standalone, guid: &str) {
+    let state = runner(node, guid);
+    for field in ["chosen", "last_outcome", "failures", "history"] {
+        for refusal in [
+            "partyUnavailable",
+            "partyReadUnavailable",
+            "partyFactsUnavailable",
+            "fightLimit",
+        ] {
+            assert!(
+                !state[field].contains(refusal),
+                "{field} holds {refusal}: {state:?}"
+            );
+        }
+    }
+}
+
 fn due(node: &Standalone, guid: &str) {
     node.assert_call("playerbots_fixture_companion_due", &[guid]);
     node.assert_call("playerbots_fixture_runner_pass", &[]);
@@ -605,6 +665,69 @@ fn playerbots_priest_retains_one_ally_cast_while_the_leader_moves_then_resumes_f
         pending["scheduled_id"]
     )));
     assert_eq!(resumed["objective_sequence"], objective);
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_priest_in_a_ten_member_raid_heals_across_subgroups_then_follows_the_leader() {
+    let (node, bots) = raid_fixture("playerbots-companion-raid");
+    let (priest, leader, ally) = (&bots[0], &bots[1], &bots[2]);
+    let slots: BTreeMap<_, _> = node
+        .query_rows("SELECT character_guid, raid_slot FROM game_group_member")
+        .into_iter()
+        .map(|row| (row["character_guid"].clone(), row["raid_slot"].clone()))
+        .collect();
+    assert_eq!(slots.len(), 10, "{slots:?}");
+    assert_eq!(slots[leader], "0");
+    assert_eq!(slots[priest], "1");
+    assert_eq!(slots[ally], "2");
+    node.assert_call("playerbots_fixture_companion_health", &[ally, "25"]);
+    node.assert_call("playerbots_fixture_runner_select_cohort", &[priest]);
+    let ally_before = health(&node, ally);
+    pass_once(&node, priest);
+    assert!(poll_until(POLL_TIMEOUT, || !node
+        .query_rows(&format!(
+            "SELECT scheduled_id FROM game_pending_cast WHERE caster_guid = {priest}"
+        ))
+        .is_empty()));
+    let pending = node.query_rows(&format!(
+        "SELECT scheduled_id, target_guid FROM game_pending_cast WHERE caster_guid = {priest}"
+    ))[0]
+        .clone();
+    evidence(&node, "raid-heal-started");
+    assert_eq!(pending["target_guid"], *ally);
+    assert!(runner(&node, priest)["chosen"].contains("heal"));
+    assert_party_readable(&node, priest);
+    let cast_resolved = poll_until(POLL_TIMEOUT, || {
+        node.query_rows(&format!(
+            "SELECT cast_id, outcome FROM pkg_playerbots_action WHERE character_guid = {priest} AND spell_id = {HEAL}"
+        ))
+        .iter()
+        .any(|action| {
+            action["cast_id"] == pending["scheduled_id"]
+                && action["outcome"] == "(castResolved = ())"
+        }) && node
+            .query_rows(&format!(
+                "SELECT scheduled_id FROM game_pending_cast WHERE caster_guid = {priest}"
+            ))
+            .is_empty()
+    });
+    evidence(&node, "raid-heal-completed");
+    assert!(cast_resolved);
+    assert!(health(&node, ally) > ally_before);
+    node.assert_call("playerbots_fixture_companion_health", &[ally, "100"]);
+    due(&node, priest);
+    let followed = poll_until(POLL_TIMEOUT, || {
+        runner(&node, priest)["chosen"].contains("follow")
+    });
+    evidence(&node, "raid-follow");
+    assert!(followed);
+    let state = runner(&node, priest);
+    assert!(
+        state["companion_leader_guid"].contains(leader.as_str()),
+        "{state:?}"
+    );
+    assert_party_readable(&node, priest);
 }
 
 #[test]
