@@ -949,6 +949,84 @@ fn playerbots_assist_uses_only_the_named_members_actual_fight() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_assist_in_a_ten_member_raid_follows_a_member_in_another_subgroup() {
+    let fixture = fixture("playerbots-orders-raid-assist");
+    let node = &fixture.node;
+    node.assert_call("playerbots_spawn_role", &["6", "1200", "1200", "50", "2"]);
+    let fillers: Vec<_> = node
+        .query_rows("SELECT character_guid FROM pkg_playerbots_bot")
+        .into_iter()
+        .map(|row| row["character_guid"].clone())
+        .filter(|guid| ![&fixture.warrior, &fixture.priest, &fixture.mage].contains(&guid))
+        .collect();
+    assert_eq!(fillers.len(), 6);
+    // Leader 0, warrior 1, priest 1, mage 2, then fillers filling Subgroup 0 to five, Subgroup 1
+    // to three and Subgroup 2 to two.
+    let members: Vec<_> = [
+        &fixture.leader,
+        &fixture.warrior,
+        &fixture.priest,
+        &fixture.mage,
+    ]
+    .into_iter()
+    .chain(&fillers)
+    .cloned()
+    .collect();
+    node.assert_call(
+        "playerbots_fixture_raid_mirror",
+        &[
+            "5098000",
+            &fixture.leader,
+            &format!("[{}]", members.join(",")),
+            "[0,1,1,2,0,0,0,0,1,2]",
+            &format!("[{}]", fillers.join(",")),
+            &fixture.actor,
+        ],
+    );
+    let slots: BTreeMap<_, _> = node
+        .query_rows("SELECT character_guid, raid_slot FROM game_group_member")
+        .into_iter()
+        .map(|row| (row["character_guid"].clone(), row["raid_slot"].clone()))
+        .collect();
+    assert_eq!(slots.len(), 10, "{slots:?}");
+    assert_eq!(slots[&fixture.leader], "0");
+    assert_eq!(slots[&fixture.warrior], "1");
+
+    let chosen = &fixture.enemies[1];
+    select_and_engage(node, &fixture.leader, chosen);
+    issue(
+        &fixture,
+        &format!("assist|{}|{}", fixture.warrior, fixture.leader),
+        &fixture.warrior,
+        true,
+    );
+    let applied = order(node, &fixture.warrior);
+    let approach = runner(node, &fixture.warrior);
+    evidence(&fixture, "raid-assist-applied");
+    assert!(
+        applied["last_outcome"]
+            .to_ascii_lowercase()
+            .contains("applied"),
+        "{applied:?}"
+    );
+    assert!(!format!("{applied:?}")
+        .to_ascii_lowercase()
+        .contains("stalepartymirror"));
+    assert!(approach["chosen"].contains("move"), "{approach:?}");
+    assert!(approach["chosen"].contains(chosen.as_str()), "{approach:?}");
+    wait_for_melee_range(node, &fixture.warrior, chosen);
+    pass(node, &fixture.warrior);
+    let melee = node.query_rows(&format!(
+        "SELECT target_guid FROM game_melee_attack WHERE attacker_guid = {}",
+        fixture.warrior
+    ));
+    evidence(&fixture, "raid-assist-fight");
+    assert_eq!(melee.len(), 1);
+    assert_eq!(melee[0]["target_guid"], *chosen);
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_refused_assist_does_not_cancel_following_a_moving_member() {
     let fixture = fixture("playerbots-orders-refused-assist-follow");
     let node = &fixture.node;

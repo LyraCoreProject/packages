@@ -801,6 +801,10 @@ fn companion_unit(
     Ok(())
 }
 
+fn companion_creature_guid(entry: u32) -> u64 {
+    (0xF130u64 << 48) | ((u64::from(entry)) << 24) | 1
+}
+
 fn companion_creature(
     ctx: &ReducerContext,
     entry: u32,
@@ -809,7 +813,7 @@ fn companion_creature(
     z: f32,
     faction_template: Option<u32>,
 ) -> Result<u64, String> {
-    let guid = (0xF130u64 << 48) | ((u64::from(entry)) << 24) | 1;
+    let guid = companion_creature_guid(entry);
     let mut template = ctx
         .db
         .game_creature_template()
@@ -926,6 +930,63 @@ pub fn playerbots_fixture_companion_stage(
         raid_slots,
     )?;
     Ok(())
+}
+
+/// Turn a staged private Group into a Raid of up to 40 members. `members` keeps the staged order
+/// so every member keeps its membership revision. `raid_slots[n]` is `members[n]`'s Raid Slot
+/// byte. Each Character in `fillers` stands in for a human: its bot row goes, it returns to full
+/// health, and it waits away from the fixture's fights.
+#[reducer]
+pub fn playerbots_fixture_raid_mirror(
+    ctx: &ReducerContext,
+    group_id: u64,
+    leader_guid: u64,
+    members: Vec<u64>,
+    raid_slots: Vec<u8>,
+    fillers: Vec<u64>,
+    request_actor: crate::SessionActor,
+) -> Result<(), String> {
+    crate::helpers::require_operator(ctx)?;
+    if ![COMPANION_GROUP, ROLES_GROUP].contains(&group_id) {
+        return Err("raid fixture names a Group outside the private fixtures".to_string());
+    }
+    if members.len() > lyracore_shared::group::RAID_MAX_MEMBERS {
+        return Err("raid fixture exceeds the Raid member bound".to_string());
+    }
+    let roster_revision = ctx
+        .db
+        .game_group_roster_revision()
+        .group_id()
+        .find(group_id)
+        .ok_or("raid fixture roster revision missing")?
+        .revision
+        .checked_add(1)
+        .ok_or("raid fixture roster revision exhausted")?;
+    for (index, guid) in fillers.iter().enumerate() {
+        if !members.contains(guid) {
+            return Err("raid fixture filler is not a member".to_string());
+        }
+        let bots = ctx.db.pkg_playerbots_bot();
+        for bot in bots.by_character().filter(*guid).collect::<Vec<_>>() {
+            bots.id().delete(bot.id);
+        }
+        companion_unit(ctx, *guid, 1240.0 + index as f32, 1230.0, 100)?;
+    }
+    let partitions = fixture_group_partitions(ctx, group_id, &members)?;
+    crate::group::sync_group_mirror(
+        ctx,
+        group_id,
+        leader_guid,
+        0,
+        2,
+        0,
+        members,
+        request_actor,
+        partitions,
+        roster_revision,
+        1,
+        raid_slots,
+    )
 }
 
 /// Stage the supported level-5 Warrior, Priest, and Mage around one human-led party. The fourth
@@ -1070,7 +1131,14 @@ pub fn playerbots_fixture_roles_short_taunt(ctx: &ReducerContext) -> Result<(), 
     Ok(())
 }
 
+const OVERFLOW_ENEMY_ENTRY: u32 = 5_098_010;
+
+fn overflow_enemy_guid() -> u64 {
+    companion_creature_guid(OVERFLOW_ENEMY_ENTRY)
+}
+
 /// Stage one oversized role read. Reserved ids let the paired clear reducer restore this fixture.
+/// Kinds 4 and 5 put 80 and 81 threat sources on one enemy, `guid` among them.
 #[reducer]
 pub fn playerbots_fixture_roles_overflow(
     ctx: &ReducerContext,
@@ -1162,6 +1230,24 @@ pub fn playerbots_fixture_roles_overflow(
                 });
             }
         }
+        4 | 5 => {
+            let enemy = companion_creature(ctx, OVERFLOW_ENEMY_ENTRY, 1216.0, 1200.0, 50.0, None)?;
+            let sources = if kind == 4 { 80 } else { 81 };
+            ctx.db.game_threat().insert(crate::ThreatEntry {
+                id: 0,
+                creature_guid: enemy,
+                source_guid: guid,
+                threat: 1,
+            });
+            for index in 1..sources {
+                ctx.db.game_threat().insert(crate::ThreatEntry {
+                    id: 0,
+                    creature_guid: enemy,
+                    source_guid: 5_098_900 + index,
+                    threat: 1,
+                });
+            }
+        }
         _ => return Err("unknown role overflow fixture kind".to_string()),
     }
     Ok(())
@@ -1202,6 +1288,11 @@ pub fn playerbots_fixture_roles_clear_overflow(ctx: &ReducerContext) -> Result<(
     {
         threats.id().delete(row.id);
     }
+    let enemy = overflow_enemy_guid();
+    for row in threats.by_creature().filter(&enemy).collect::<Vec<_>>() {
+        threats.id().delete(row.id);
+    }
+    crate::creatures::despawn_creature_entity(ctx, enemy);
     Ok(())
 }
 
