@@ -109,7 +109,7 @@ jobs:
               cd "$GITHUB_WORKSPACE/lyracore"
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_movement_upgrade \
                 -- --ignored --test-threads=1 --nocapture
-              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_capacity \
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_capacity --test playerbots_disk_capacity \
                 -- --ignored --test-threads=1 --nocapture \
                 --skip playerbots_capacity_profile_imported_navigation
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_transfer \
