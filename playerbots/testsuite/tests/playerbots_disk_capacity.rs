@@ -35,11 +35,12 @@ fn disk_capacity_expiry_freezes_bots_and_refuses_new_work() {
     );
     let before = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot");
     let guid = &before[0]["character_guid"];
+    node.assert_sql(&format!("UPDATE pkg_playerbots_bot SET next_think_micros = 9223372036854775807 WHERE character_guid = {guid}"));
     lease(&node, 0);
     assert!(
         poll_until(Duration::from_secs(10), || {
             node.query_rows("SELECT controller FROM pkg_playerbots_bot")[0]["controller"]
-                .contains("Frozen")
+                .contains("frozen")
         }),
         "expired lease did not freeze the existing bot"
     );
@@ -71,11 +72,11 @@ fn disk_capacity_expiry_freezes_bots_and_refuses_new_work() {
     lease(&node, future);
     assert!(
         node.query_rows("SELECT controller FROM pkg_playerbots_bot")[0]["controller"]
-            .contains("Frozen")
+            .contains("frozen")
     );
     node.assert_call("playerbots_select_controller", &[guid, "{\"cohort\":[]}"]);
     assert!(
         node.query_rows("SELECT controller FROM pkg_playerbots_bot")[0]["controller"]
-            .contains("Cohort")
+            .contains("cohort")
     );
 }

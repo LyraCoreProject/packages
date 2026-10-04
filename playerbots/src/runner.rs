@@ -710,13 +710,13 @@ fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
 pub(super) fn pass(ctx: &ReducerContext) {
     super::ensure_defaults(ctx);
     if super::capacity::require_capacity(ctx).is_err() {
-        let now = ctx.timestamp.to_micros_since_unix_epoch();
-        let due: Vec<_> = ctx.db.pkg_playerbots_bot().by_due().filter(..=now)
+        let active: Vec<_> = ctx.db.pkg_playerbots_bot().iter()
+            .filter(|bot| bot.controller != Controller::Frozen)
             .take(BATCH_LIMIT)
             .collect();
-        for bot in due {
+        for bot in active {
             if let Err(error) = transition_controller(ctx, bot.character_guid, Controller::Frozen) {
-                log::error!("could not suspend playerbot {}: {error}", bot.character_guid);
+                spacetimedb::log::error!("could not suspend playerbot {}: {error}", bot.character_guid);
             }
         }
         return;

@@ -30,7 +30,7 @@ Nothing populates on its own. A realm gets bots when its Operator asks for them.
 
 Managed Realms can set `capacity_until_micros` in this Package's Config. It is a host-issued
 UTC expiry in microseconds. Once present, an expired or malformed value refuses spawning and
-controller activation. The Runner freezes due bots in bounded batches, cancelling their actions.
+controller activation. The Runner freezes existing bots in bounded batches, cancelling their actions.
 Renewing the lease does not resume frozen bots. The Operator must select their controllers.
 An absent key preserves unmanaged Realm behavior; do not delete it to recover from a disk warning.
 
