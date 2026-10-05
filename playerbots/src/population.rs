@@ -98,6 +98,7 @@ pub fn playerbots_spawn_starting_area(
     controller: Controller,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
+    super::capacity::require_capacity(ctx)?;
     if !(1..=50).contains(&count) {
         return Err("starting-area batches must contain 1 through 50 bots".to_string());
     }

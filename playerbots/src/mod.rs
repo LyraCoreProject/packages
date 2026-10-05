@@ -19,6 +19,7 @@
 use spacetimedb::{reducer, table, Identity, ReducerContext, Table};
 
 mod actions;
+mod capacity;
 mod class_behavior;
 mod companion;
 mod decision;
@@ -833,6 +834,7 @@ fn spawn_one(
     at: (f32, f32, f32),
     level: u8,
 ) -> Result<u64, String> {
+    capacity::require_capacity(ctx)?;
     let (x, y, z) = at;
     let name = first_free_name(ctx, name_stem)
         .ok_or_else(|| format!("no free bot name left for stem '{name_stem}'"))?;
