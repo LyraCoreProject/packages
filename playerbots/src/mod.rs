@@ -1,14 +1,14 @@
 //! The `playerbots` Package: a standing population of session-less Characters that a real player
 //! can group with, so a small realm still has a party to test content with.
 //!
-//! A bot is a REAL Character on a Package-minted Account. It has a `game_character` row, a live
+//! A bot is a REAL Character on a Package-owned Account. It has a `game_character` row, a live
 //! `game_world_entity` row with the PLAYER type mask, a spellbook, and durable position. What it
 //! does not have is a Session: nothing ever calls `player_login` for it. That one difference is the
 //! whole design. Because the bot is durable, it survives a Gateway restart and a republish. Because
 //! it has no Session, the Gateway's session-less paths already treat it correctly: it can be invited
 //! by name, and it refuses whispers.
 //!
-//! This file owns the roster: Accounts, names, the class/role tables, the Operator verbs, and the
+//! This file owns the roster: names, the class/role tables, the Operator verbs, and the
 //! despawn sweep. `runner.rs` owns controller selection and due work; `goals.rs` retains Legacy policy.
 //!
 //! WHY NO SCHEDULE ROW: the bot mind runs on one `game_tick_pass!`, which the core scheduler owns.
@@ -102,7 +102,7 @@ pub(crate) use goals::*;
 pub(crate) use orders::*;
 
 use crate::package_config::game_package_config;
-use crate::{game_account, game_character, game_world_entity};
+use crate::{game_character, game_world_entity};
 
 /// The Package Config namespace and the Package name the Trust Review prints.
 pub(crate) const PACKAGE: &str = "playerbots";
@@ -134,10 +134,6 @@ pub(crate) mod class {
 /// Every bot is a Human. Human can be Warrior, Paladin, Priest and Mage, so one race covers every
 /// class this Package kits and the appearance fields stay a single constant.
 const BOT_RACE: u8 = 1;
-
-/// The most Characters one Account may hold. `create_character` enforces this itself; the roster
-/// mints its next Account before it hits the refusal rather than after.
-const CHARACTERS_PER_ACCOUNT: usize = 10;
 
 // ---- rotation conditions -------------------------------------------------------------------
 
@@ -744,72 +740,6 @@ fn first_free_name(ctx: &ReducerContext, stem: &str) -> Option<String> {
     None
 }
 
-// ---- accounts --------------------------------------------------------------------------------
-
-/// The username of the Package's `index`-th Account block.
-pub(crate) fn bot_account_username(index: u32) -> String {
-    format!("PLAYERBOT{index:03}")
-}
-
-/// Given how many Characters each already-minted bot Account holds, the index of the block a new
-/// bot belongs in: the first block with room, or a fresh block past the end. Pure, so the block
-/// arithmetic is testable without a live database.
-pub(crate) fn account_block_with_room(occupancy: &[usize]) -> u32 {
-    occupancy
-        .iter()
-        .position(|held| *held < CHARACTERS_PER_ACCOUNT)
-        .unwrap_or(occupancy.len()) as u32
-}
-
-/// The Account the next bot Character goes on, minting a new block when every existing one is
-/// full. Bot Accounts carry no credentials: nothing ever logs in to them, and an Account with an
-/// empty verifier can complete no SRP handshake, so a minted block is not a way in.
-///
-/// The occupancy census is one pass over `game_character` that buckets by Account, rather than one
-/// indexed count per block: the roster asks about every block at once, and a bot that is mid
-/// Transfer counting or not counting toward its block's cap is harmless either way.
-fn ensure_bot_account(ctx: &ReducerContext) -> u64 {
-    let accounts = ctx.db.game_account();
-    let mut blocks: Vec<(u32, u64)> = Vec::new();
-    for index in 0.. {
-        match accounts.username().find(bot_account_username(index)) {
-            Some(account) => blocks.push((index, account.id)),
-            None => break,
-        }
-    }
-    let held_by_account: std::collections::HashMap<u64, usize> = ctx
-        .db
-        .game_character()
-        .iter()
-        .fold(std::collections::HashMap::new(), |mut counts, character| {
-            *counts.entry(character.account_id).or_insert(0) += 1;
-            counts
-        });
-    let occupancy: Vec<usize> = blocks
-        .iter()
-        .map(|(_, id)| held_by_account.get(id).copied().unwrap_or(0))
-        .collect();
-    let wanted = account_block_with_room(&occupancy);
-    if let Some((_, id)) = blocks.iter().find(|(index, _)| *index == wanted) {
-        return *id;
-    }
-    let username = bot_account_username(wanted);
-    accounts.insert(crate::auth::Account { // package-api: exempt a bot population owns Accounts no login ever creates
-        id: 0,
-        username: username.clone(),
-        salt: Vec::new(),
-        verifier: Vec::new(),
-        identity: None,
-        banned: false,
-        alpha_test_tools: false,
-    });
-    accounts
-        .username()
-        .find(&username)
-        .map(|account| account.id)
-        .unwrap_or(0)
-}
-
 // ---- spawning --------------------------------------------------------------------------------
 
 /// The personality a freshly spawned bot of `role` starts with. The Operator retunes a live bot
@@ -838,31 +768,17 @@ fn spawn_one(
     let (x, y, z) = at;
     let name = first_free_name(ctx, name_stem)
         .ok_or_else(|| format!("no free bot name left for stem '{name_stem}'"))?;
-    let account_id = ensure_bot_account(ctx);
-    crate::auth::create_character( // package-api: exempt a bot Character is created without a Session
-        ctx,
-        account_id,
-        name.clone(),
-        race,
-        class,
-        0,
-        0,
-        0,
-        0,
-        0,
-        0,
-    )?;
-    // `create_character` reports success, not the guid it minted, so the roster recovers it from
-    // the name it just proved free.
-    let chars = ctx.db.game_character();
-    let mut character = chars
-        .name()
-        .find(&name)
-        .ok_or_else(|| format!("bot character '{name}' vanished after creation"))?;
-    let guid = character.guid;
+    let guid = crate::package_account::create_package_character(ctx, PACKAGE, &name, race, class)?;
+    crate::stats::set_character_level(ctx, guid, level as u32)?;
 
     // The Character was created at its class start position; move it to where the Operator asked
-    // for it, and make that its home so a logout-equivalent never drags it back.
+    // for it, and make that its home so a logout-equivalent never drags it back. Read after
+    // levelling, because `set_character_level` rewrites level, stats and vitals on the durable row.
+    let chars = ctx.db.game_character();
+    let mut character = chars
+        .guid()
+        .find(guid)
+        .ok_or_else(|| format!("bot character {guid} vanished after creation"))?;
     character.map_id = map_id;
     character.x = x;
     character.y = y;
@@ -871,16 +787,8 @@ fn spawn_one(
     character.home_x = x;
     character.home_y = y;
     character.home_z = z;
-    chars.guid().update(character);
-
-    crate::stats::set_character_level(ctx, guid, level as u32)?;
-
-    // `set_character_level` rewrites level, stats and vitals on the durable row, so the copy above
-    // is stale. Read the row back and build the live entity from the durable truth.
-    let character = chars
-        .guid()
-        .find(guid)
-        .ok_or_else(|| format!("bot character {guid} vanished after levelling"))?;
+    let character = chars.guid().update(character);
+    let account_id = character.account_id;
     let entity = crate::creatures::build_player_entity(ctx, &character, Identity::ZERO);
     ctx.db.game_world_entity().insert(entity);
 
@@ -1224,34 +1132,6 @@ mod tests {
     fn a_top_up_at_or_over_target_creates_nothing() {
         assert_eq!(populate_shortfall(10, 10), 0);
         assert_eq!(populate_shortfall(12, 10), 0);
-    }
-
-    #[test]
-    fn the_first_account_block_takes_the_first_ten_bots() {
-        assert_eq!(account_block_with_room(&[]), 0);
-        assert_eq!(account_block_with_room(&[9]), 0);
-    }
-
-    #[test]
-    fn a_full_account_block_mints_the_next_one() {
-        assert_eq!(account_block_with_room(&[10]), 1);
-        assert_eq!(account_block_with_room(&[10, 10]), 2);
-    }
-
-    #[test]
-    fn a_block_that_freed_a_slot_is_refilled_before_a_new_one_is_minted() {
-        assert_eq!(
-            account_block_with_room(&[10, 9, 10]),
-            1,
-            "a despawn frees a slot; the roster must reuse it rather than minting Accounts forever"
-        );
-    }
-
-    #[test]
-    fn account_block_usernames_sort_in_block_order() {
-        assert_eq!(bot_account_username(0), "PLAYERBOT000");
-        assert_eq!(bot_account_username(12), "PLAYERBOT012");
-        assert!(bot_account_username(2) < bot_account_username(10));
     }
 
     #[test]
