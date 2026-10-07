@@ -40,8 +40,8 @@ const GOAL_WANDER: u32 = 3;
 const ROLE_DPS: &str = "2";
 
 /// Where this Shard mints Character guids from. A bare standalone has no Gateway to hand it a
-/// range, and minting a bot Character is the first thing here that needs one — `create_character`
-/// refuses with `NO_GUID_RANGE` until it exists.
+/// range, and minting a bot Character is the first thing here that needs one — Core's Character
+/// creation refuses with `NO_GUID_RANGE` until it exists.
 const GUID_BASE: &str = "1000000";
 
 /// `pkg_playerbots_goal.kind` for a bot that has broken off and is running home.
