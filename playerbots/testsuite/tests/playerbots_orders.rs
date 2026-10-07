@@ -317,10 +317,10 @@ fn finish_refused_command(fixture: &OrdersFixture, payload: &str, token_base: u6
     let token = (token_base + intent.parse::<u64>().unwrap()).to_string();
     fixture
         .node
-        .assert_call("playerbots_fixture_command_apply", &[&intent, &token]);
+        .assert_call("party_command_fixture_apply", &[&intent, &token]);
     fixture
         .node
-        .assert_call("playerbots_fixture_command_finish", &[&intent, &token]);
+        .assert_call("party_command_fixture_finish", &[&intent, &token]);
     intent
 }
 
@@ -570,7 +570,7 @@ fn playerbots_each_issuer_fence_survives_intervening_leadership() {
     let newer_token = (16_000 + newer.parse::<u64>().unwrap()).to_string();
     node.assert_call("claim_party_command_intent", &[&older, &older_token]);
     node.assert_call("defer_party_command_intent", &[&older, &older_token]);
-    node.assert_call("playerbots_fixture_command_drive", &[&newer, &newer_token]);
+    node.assert_call("party_command_fixture_drive", &[&newer, &newer_token]);
     let applied_newer = order(node, &fixture.warrior);
     let sequences = node.query_rows(&format!(
         "SELECT id, issuer_sequence FROM game_party_command_intent WHERE id = {older} OR id = {newer}"
@@ -598,7 +598,7 @@ fn playerbots_each_issuer_fence_survives_intervening_leadership() {
     node.assert_call("claim_party_command_intent", &[&older, &older_token]);
     node.assert_call("defer_party_command_intent", &[&older, &older_token]);
     node.assert_call(
-        "playerbots_fixture_command_drive",
+        "party_command_fixture_drive",
         &[&intervening, &intervening_token],
     );
     let applied_intervening = order(node, &fixture.warrior);
@@ -607,8 +607,8 @@ fn playerbots_each_issuer_fence_survives_intervening_leadership() {
     pass(node, &fixture.warrior);
     let before_delayed = order(node, &fixture.warrior);
     evidence(&fixture, "intervening-order-inactive-before-delayed-intent");
-    node.assert_call("playerbots_fixture_command_apply", &[&older, &older_token]);
-    node.assert_call("playerbots_fixture_command_finish", &[&older, &older_token]);
+    node.assert_call("party_command_fixture_apply", &[&older, &older_token]);
+    node.assert_call("party_command_fixture_finish", &[&older, &older_token]);
     let after_delayed = order(node, &fixture.warrior);
     let receipt = node.query_rows(&format!(
         "SELECT outcome FROM game_party_command_receipt WHERE intent_id = {older}"
@@ -1499,11 +1499,11 @@ fn playerbots_order_target_gate_rechecks_body_and_consent_after_authority() {
     let suppressed = queue(&fixture, &format!("follow|{}", fixture.warrior));
     let suppressed_token = 40_000 + suppressed.parse::<u64>().unwrap();
     node.assert_call(
-        "playerbots_fixture_command_apply_after_gate_change",
+        "party_command_fixture_apply_after_gate_change",
         &[&suppressed, &suppressed_token.to_string(), "2"],
     );
     node.assert_call(
-        "playerbots_fixture_command_finish",
+        "party_command_fixture_finish",
         &[&suppressed, &suppressed_token.to_string()],
     );
     let suppressed_receipt = node.query_rows(&format!(
@@ -1523,11 +1523,11 @@ fn playerbots_order_target_gate_rechecks_body_and_consent_after_authority() {
     let missing = queue(&fixture, &format!("follow|{}", fixture.mage));
     let missing_token = 41_000 + missing.parse::<u64>().unwrap();
     node.assert_call(
-        "playerbots_fixture_command_apply_after_gate_change",
+        "party_command_fixture_apply_after_gate_change",
         &[&missing, &missing_token.to_string(), "1"],
     );
     node.assert_call(
-        "playerbots_fixture_command_finish",
+        "party_command_fixture_finish",
         &[&missing, &missing_token.to_string()],
     );
     let missing_receipt = node.query_rows(&format!(
@@ -2047,7 +2047,7 @@ fn playerbots_command_receipts_survive_history_rollover_and_wait_for_capacity() 
 
     let waiting = queue(&fixture, &payload);
     let token = (20_000 + waiting.parse::<u64>().unwrap()).to_string();
-    node.assert_call("playerbots_fixture_command_apply", &[&waiting, &token]);
+    node.assert_call("party_command_fixture_apply", &[&waiting, &token]);
     let pending = node.query_rows(&format!(
         "SELECT pending, state FROM game_party_command_intent WHERE id = {waiting}"
     ));
@@ -2088,12 +2088,9 @@ fn playerbots_command_receipts_survive_history_rollover_and_wait_for_capacity() 
         .to_ascii_lowercase()
         .contains("applied"));
 
-    node.assert_call(
-        "playerbots_fixture_command_release_receipt",
-        &[&fixture.warrior],
-    );
-    node.assert_call("playerbots_fixture_command_apply", &[&waiting, &token]);
-    node.assert_call("playerbots_fixture_command_finish", &[&waiting, &token]);
+    node.assert_call("party_command_fixture_release_receipt", &[&fixture.warrior]);
+    node.assert_call("party_command_fixture_apply", &[&waiting, &token]);
+    node.assert_call("party_command_fixture_finish", &[&waiting, &token]);
     let finished = node.query_rows(&format!(
         "SELECT pending, state FROM game_party_command_intent WHERE id = {waiting}"
     ));
@@ -2109,7 +2106,7 @@ fn playerbots_command_receipts_survive_history_rollover_and_wait_for_capacity() 
         .is_empty());
 
     let expired_head = &blocked[1];
-    node.assert_call("playerbots_fixture_command_expire", &[expired_head]);
+    node.assert_call("party_command_fixture_expire", &[expired_head]);
     let before_rotation =
         node.query_rows("SELECT head_intent_id FROM game_party_command_dispatch_lane");
     node.assert_call("defer_party_command_intent", &[expired_head, "999999"]);

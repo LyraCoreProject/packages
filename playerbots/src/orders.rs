@@ -9,6 +9,8 @@ pub(crate) const STAY: u8 = 1;
 pub(crate) const ASSIST: u8 = 2;
 pub(crate) const TARGET: u8 = 3;
 const HISTORY_LIMIT: usize = 8;
+/// The addon command that carries each Companion Order outcome back to the issuer.
+pub(crate) const ORDER_RESULT_COMMAND: &str = "playerbots.order.result";
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
 pub struct CommandIssuerFence {
@@ -336,7 +338,7 @@ pub(crate) fn record_runtime_outcome(
     states.character_guid().update(state);
 }
 
-crate::game_client_command!(parse_command, apply_command);
+crate::game_client_command!(parse_command, apply_command, ORDER_RESULT_COMMAND);
 
 #[cfg(test)]
 mod tests {
