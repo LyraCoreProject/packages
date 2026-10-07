@@ -41,6 +41,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
+          # Core main before the three-argument client-command marker, which the baseline predates.
+          ref: 0cae690301552430d713a582b0036e7096c215d2
+          path: baseline-core
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/LyraCore
           ref: aae00a1036d3d727fd1ddc6626dacc837e1dd2ac
           path: lyracore
           persist-credentials: false
@@ -61,14 +68,12 @@ jobs:
         with:
           workspaces: lyracore
       - name: Build the published Package baseline for additive migration
-        working-directory: lyracore
-        # A separate target directory keeps Cargo from reusing baseline artifacts for the current
-        # build, which differs only in where the Package symlinks point.
+        working-directory: baseline-core
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/claim-baseline-target
         run: |
-          ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
-            cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
+          ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/baseline-core" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/baseline-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/claim-baseline.wasm"
           echo "PLAYERBOTS_CLAIM_BASELINE_WASM=$RUNNER_TEMP/claim-baseline.wasm" >> "$GITHUB_ENV"
