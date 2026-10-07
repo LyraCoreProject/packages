@@ -973,6 +973,17 @@ pub fn playerbots_spawn_class_role(
     spawn_batch(ctx, count, (x, y, z), class, role, role_name_stem(role))
 }
 
+// The roster is the record of every bot on this Shard, including bots that crossed from another
+// Shard and bots on Accounts made before Package-owned Accounts. Package Teardown leaves each one
+// a Dormant Character.
+crate::game_package_characters!(fn playerbots_characters(ctx) {
+    ctx.db
+        .pkg_playerbots_bot()
+        .iter()
+        .map(|bot| bot.character_guid)
+        .collect()
+});
+
 /// Remove every bot: the Character and everything it owns, through the same cascade a real
 /// Character deletion uses. The roster row and the personality row go with it through their own
 /// sweeps, so there is one delete path and nothing to keep in step with it.
