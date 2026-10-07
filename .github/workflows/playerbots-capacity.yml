@@ -60,6 +60,12 @@ jobs:
           ref: 859f296b942e714cc934db89e7d0be06fa049e18
           path: preceding-movement-collection
           persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: LyraCoreProject/packages
+          ref: 9c8a28944314cc9baa1f8ea6ff5a76be266e6cf2
+          path: preceding-runner-collection
+          persist-credentials: false
       - name: Install pinned Rust and SpacetimeDB
         run: |
           rustup toolchain install 1.93.0 --profile minimal
@@ -99,6 +105,17 @@ jobs:
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/movement-baseline.wasm"
           sha256sum "$RUNNER_TEMP/movement-baseline.wasm" > "$RUNNER_TEMP/movement-baseline.sha256"
           echo "PLAYERBOTS_MOVEMENT_PRECEDING_WASM=$RUNNER_TEMP/movement-baseline.wasm" >> "$GITHUB_ENV"
+      - name: Build the preceding Runner for movement queue migration
+        working-directory: lyracore
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/runner-baseline-target
+        run: |
+          "$GITHUB_WORKSPACE/preceding-runner-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/lyracore" \
+            cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
+            --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
+          cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/runner-baseline.wasm"
+          sha256sum "$RUNNER_TEMP/runner-baseline.wasm" > "$RUNNER_TEMP/runner-baseline.sha256"
+          echo "PLAYERBOTS_RUNNER_PRECEDING_WASM=$RUNNER_TEMP/runner-baseline.wasm" >> "$GITHUB_ENV"
       - name: Verify bounded planning, movement ownership, starting areas and additive migration
         env:
           PLAYERBOTS_CAPACITY_COUNT: 100
@@ -107,6 +124,8 @@ jobs:
           ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
             bash -eu -o pipefail -c '
               cd "$GITHUB_WORKSPACE/lyracore"
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_rewrite \
+                runner::playerbots_movement_poll_preserves_the_retained_runner_row -- --ignored --exact --test-threads=1 --nocapture
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_movement_upgrade \
                 -- --ignored --test-threads=1 --nocapture
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test --locked --test playerbots_capacity --test playerbots_disk_capacity \
@@ -122,4 +141,5 @@ jobs:
           path: |
             /tmp/lyracore-standalone-logs/
             ${{ runner.temp }}/movement-baseline.sha256
+            ${{ runner.temp }}/runner-baseline.sha256
           if-no-files-found: error

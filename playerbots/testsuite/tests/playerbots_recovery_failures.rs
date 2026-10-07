@@ -1055,6 +1055,9 @@ fn playerbots_recovery_queued_retry_does_not_hide_a_completed_blocked_route() {
     // No fixture reducer holds the route queue. SQL stages that boundary; pass_once runs recovery.
     let hold_queued_route = || {
         node.assert_sql(&format!(
+            "DELETE FROM pkg_playerbots_movement WHERE character_guid = {guid}"
+        ));
+        node.assert_sql(&format!(
             "UPDATE pkg_playerbots_runner SET path_pending = true, movement_due_micros = {} WHERE character_guid = {guid}",
             i64::MAX
         ));

@@ -54,7 +54,9 @@ fn playerbots_movement_upgrade_preserves_the_retained_destination() {
     std::thread::sleep(Duration::from_secs(1));
     node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
     assert!(
-        runner(&node, &bot)["movement_due_micros"]
+        node.query_rows(&format!(
+            "SELECT due_micros FROM pkg_playerbots_movement WHERE character_guid = {bot}"
+        ))[0]["due_micros"]
             .parse::<i64>()
             .unwrap()
             < i64::MAX
@@ -68,6 +70,77 @@ fn playerbots_movement_upgrade_preserves_the_retained_destination() {
         support::log_dir().join(format!("{}-migration.json", node.shard_name())),
         serde_json::to_vec_pretty(&serde_json::json!({"before": before, "migrated": migrated,
             "arrived": runner(&node, &bot)}))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+#[test]
+#[ignore = "requires preceding Runner Wasm, SpacetimeDB, and the playerbots Package"]
+fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
+    let current = support::module_bytes();
+    let previous = std::env::var_os("PLAYERBOTS_RUNNER_PRECEDING_WASM")
+        .expect("PLAYERBOTS_RUNNER_PRECEDING_WASM must name the preceding Module");
+    let mut node = Standalone::start_persistent("playerbots-movement-queue-upgrade");
+    node.publish_module_bytes(&std::fs::read(previous).unwrap());
+    node.assert_call("claim_operator", &[]);
+    node.assert_call("install_guid_range", &["1000000"]);
+    node.assert_call("playerbots_spawn_role", &["1", "1200", "1200", "50", "1"]);
+    node.assert_call("playerbots_fixture_prepare", &[]);
+    let bot = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot")[0]["character_guid"]
+        .clone();
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    for controller in [r#"{"frozen":[]}"#, r#"{"cohort":[]}"#] {
+        node.assert_call("playerbots_select_controller", &[&bot, controller]);
+    }
+    assert!(poll_until(POLL_TIMEOUT, || runner(&node, &bot)
+        ["foreground"]
+        .contains("movement")));
+    node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
+    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    let before = runner(&node, &bot);
+    assert_ne!(before["movement_due_micros"], i64::MAX.to_string());
+    node.publish_module_bytes(current);
+    assert_eq!(runner(&node, &bot), before);
+    assert!(node
+        .query_rows("SELECT * FROM pkg_playerbots_movement")
+        .is_empty());
+    node.assert_call("playerbots_fixture_runner_pass", &[]);
+    let queue = node.query_rows("SELECT * FROM pkg_playerbots_movement");
+    assert_eq!(queue.len(), 1);
+    let migrated = runner(&node, &bot);
+    assert_eq!(migrated["movement_due_micros"], i64::MAX.to_string());
+    for field in [
+        "history",
+        "chosen",
+        "objective",
+        "observed_micros",
+        "next_eligible_micros",
+    ] {
+        assert_eq!(migrated[field], before[field], "migration changed {field}");
+    }
+    node.restart_persistent();
+    assert_eq!(
+        node.query_rows("SELECT * FROM pkg_playerbots_movement"),
+        queue
+    );
+    assert_eq!(runner(&node, &bot), migrated);
+    node.assert_call("debug_repair_after_publish", &[]);
+    assert!(poll_until(Duration::from_secs(8), || (position(
+        &node, &bot
+    ) - 1238.0)
+        .abs()
+        < 0.1));
+    node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
+    assert!(node
+        .query_rows("SELECT * FROM pkg_playerbots_movement")
+        .is_empty());
+    std::fs::write(
+        support::log_dir().join(format!("{}-migration.json", node.shard_name())),
+        serde_json::to_vec_pretty(
+            &serde_json::json!({"before": before, "migrated": migrated, "queue": queue,
+            "arrived": runner(&node, &bot)}),
+        )
         .unwrap(),
     )
     .unwrap();

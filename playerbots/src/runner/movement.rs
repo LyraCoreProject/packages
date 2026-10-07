@@ -124,22 +124,85 @@ pub(super) fn stand_off(candidate: Candidate) -> f32 {
     }
 }
 
+pub(super) fn persist_due(ctx: &ReducerContext, state: &mut PlayerbotsRunner) {
+    if !state
+        .foreground
+        .as_ref()
+        .is_some_and(|foreground| matches!(foreground.running, Running::Movement(_)))
+    {
+        state.movement_due_micros = i64::MAX;
+        state.path_pending = false;
+    }
+    let rows = ctx.db.pkg_playerbots_movement();
+    let existing = rows.character_guid().find(state.character_guid);
+    if state.movement_due_micros == i64::MAX {
+        if existing.is_some() {
+            rows.character_guid().delete(state.character_guid);
+        }
+        return;
+    }
+    let queued = PlayerbotsMovement {
+        character_guid: state.character_guid,
+        due_micros: state.movement_due_micros,
+        path_pending: state.path_pending,
+    };
+    match existing {
+        Some(old)
+            if (old.due_micros, old.path_pending) == (queued.due_micros, queued.path_pending) => {}
+        Some(_) => {
+            rows.character_guid().update(queued);
+        }
+        None => {
+            rows.insert(queued);
+        }
+    }
+    state.movement_due_micros = i64::MAX;
+}
+
 pub(super) fn pass(ctx: &ReducerContext, now: i64) {
+    // Retire each old due time once, including future work, without scanning migrated rows again.
     let rows = ctx.db.pkg_playerbots_runner();
-    let due: Vec<_> = rows
+    let legacy: Vec<_> = rows
+        .by_movement_due()
+        .filter(..i64::MAX)
+        .take(BATCH_LIMIT)
+        .collect();
+    for mut state in legacy {
+        persist_due(ctx, &mut state);
+        rows.character_guid().update(state);
+    }
+    let movement = ctx.db.pkg_playerbots_movement();
+    let retained = |queued: PlayerbotsMovement| {
+        let state = rows.character_guid().find(queued.character_guid);
+        if state.is_none() {
+            movement.character_guid().delete(queued.character_guid);
+        }
+        state
+    };
+    let due: Vec<_> = movement
         .by_path_due()
         .filter((false, ..=now))
         .take(BATCH_LIMIT)
+        .filter_map(retained)
         .collect();
     for mut state in due {
-        advance(ctx, &mut state, now, None);
+        let pending = state.path_pending;
+        let persist_runner = advance(ctx, &mut state, now, None);
+        persist_due(ctx, &mut state);
         // Movement must not advance the decision's observation or eligibility clocks.
-        rows.character_guid().update(state);
+        if persist_runner || pending != state.path_pending {
+            rows.character_guid().update(state);
+        }
     }
 
     let mut continuing = std::collections::VecDeque::new();
     let mut starting = std::collections::VecDeque::new();
-    for state in rows.by_path_due().filter((true, ..=now)).take(BATCH_LIMIT) {
+    for state in movement
+        .by_path_due()
+        .filter((true, ..=now))
+        .take(BATCH_LIMIT)
+        .filter_map(retained)
+    {
         if owned_observation(ctx, &state).is_some() {
             continuing.push_back(state);
         } else {
@@ -160,6 +223,7 @@ pub(super) fn pass(ctx: &ReducerContext, now: i64) {
                 continue;
             };
             advance(ctx, &mut state, now, Some(&mut budget));
+            persist_due(ctx, &mut state);
             rows.character_guid().update(state);
         }
     }
@@ -174,24 +238,25 @@ fn owned_observation(
         .filter(|observation| observation.observed_micros >= foreground.started_micros)
 }
 
+/// False means only the execution clock or pending flag changed.
 fn advance(
     ctx: &ReducerContext,
     state: &mut PlayerbotsRunner,
     now: i64,
     budget: Option<&mut PlanningBudget>,
-) {
+) -> bool {
     state.movement_due_micros = i64::MAX;
     state.path_pending = false;
     let guid = state.character_guid;
     let Some(foreground) = state.foreground.clone() else {
-        return;
+        return true;
     };
     let Running::Movement(movement) = &foreground.running else {
-        return;
+        return true;
     };
     let Some(me) = ctx.db.game_world_entity().guid().find(guid) else {
         stop(ctx, guid, state);
-        return;
+        return true;
     };
     let controller = ctx
         .db
@@ -220,7 +285,7 @@ fn advance(
         stop_movement(ctx, guid);
         state.foreground = None;
         state.last_outcome = RunnerOutcome::Cancelled;
-        return;
+        return true;
     }
     let Some(destination) = destination(
         ctx,
@@ -233,7 +298,7 @@ fn advance(
     ) else {
         stop(ctx, guid, state);
         state.last_outcome = RunnerOutcome::Cancelled;
-        return;
+        return true;
     };
     let spline = ctx.db.game_creature_spline().guid().find(guid);
     let observation = actions::observation(ctx, guid, actions::ActionKind::Move);
@@ -254,13 +319,13 @@ fn advance(
         // A queued first search must respect motion installed by another owner while it waited.
         state.foreground = None;
         state.last_outcome = RunnerOutcome::Cancelled;
-        return;
+        return true;
     }
     let observation =
         observation.filter(|observation| observation.observed_micros >= foreground.started_micros);
     if let Some(observation) = &observation {
         let actions::ActionOutcome::Movement(previous) = &observation.outcome else {
-            return;
+            return true;
         };
         if let Some(spline) = spline {
             if spline
@@ -270,7 +335,7 @@ fn advance(
             {
                 stop(ctx, guid, state);
                 state.last_outcome = RunnerOutcome::Cancelled;
-                return;
+                return true;
             }
             let more_path = lyracore_shared::movement_path::distance(
                 (spline.dx, spline.dy, spline.dz),
@@ -289,24 +354,24 @@ fn advance(
                     > renew_at
             {
                 state.movement_due_micros = now.saturating_add(INTERVAL);
-                return;
+                return false;
             }
         } else if (me.x - previous.route.endpoint.x).hypot(me.y - previous.route.endpoint.y) > 0.25
         {
             state.foreground = None;
             state.last_outcome = RunnerOutcome::Cancelled;
-            return;
+            return true;
         }
     }
     let stand_off = stand_off(foreground.candidate);
     if distance(&me, &destination) <= stand_off + 0.05 {
         // The next decision observes arrival and advances the objective's own progress clock.
-        return;
+        return true;
     }
     let Some(budget) = budget else {
         state.path_pending = true;
         state.movement_due_micros = now;
-        return;
+        return true;
     };
     let expansions = begin(ctx, &me, &destination, stand_off);
     budget.record(expansions);
@@ -331,6 +396,7 @@ fn advance(
         movement.destination = destination;
     }
     state.movement_due_micros = now.saturating_add(INTERVAL);
+    true
 }
 
 fn destination(
