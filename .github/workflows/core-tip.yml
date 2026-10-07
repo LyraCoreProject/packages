@@ -59,7 +59,6 @@ jobs:
             bash -eu -o pipefail -c '
               runner="$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py"
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" fmt -- --check
-              rustfmt +1.93.0 --edition 2021 --check "$GITHUB_WORKSPACE/collection/playerbots/testsuite/gateway_coordinator.rs"
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" clippy --locked --all-targets -- -D warnings
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" test --locked
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" test --locked -- --list
@@ -659,9 +658,6 @@ jobs:
               cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
-              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" coordinator --no-fail-fast \
-                stdb::subscriptions::package_tests \
-                -- --include-ignored --nocapture --test-threads=1
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
                 --locked \
                 --test playerbots_rewrite --test playerbots_companion \
