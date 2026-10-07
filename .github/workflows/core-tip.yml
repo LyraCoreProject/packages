@@ -46,7 +46,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
 
@@ -59,6 +59,7 @@ jobs:
             bash -eu -o pipefail -c '
               runner="$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py"
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" fmt -- --check
+              rustfmt +1.93.0 --edition 2021 --check "$GITHUB_WORKSPACE/collection/playerbots/testsuite/gateway_coordinator.rs"
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" clippy --locked --all-targets -- -D warnings
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" test --locked
               python3 "$runner" "$GITHUB_WORKSPACE/lyracore" test --locked -- --list
@@ -84,7 +85,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
 
@@ -150,7 +151,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -658,6 +659,9 @@ jobs:
               cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
+              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" coordinator --no-fail-fast \
+                stdb::subscriptions::package_tests \
+                -- --include-ignored --nocapture --test-threads=1
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
                 --locked \
                 --test playerbots_rewrite --test playerbots_companion \
@@ -701,7 +705,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -923,7 +927,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1122,7 +1126,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target

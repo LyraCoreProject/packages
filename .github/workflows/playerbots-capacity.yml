@@ -42,7 +42,7 @@ jobs:
         with:
           repository: LyraCoreProject/LyraCore
           # Core supplies the shared private integration fixtures.
-          ref: e1de66950d21a061611a78b2893d2a85a8c649e1
+          ref: 7e83dc2cfe7af2df8a475cd02d489b7647e853ae
           path: lyracore
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
