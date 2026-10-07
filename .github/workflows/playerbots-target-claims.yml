@@ -41,14 +41,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          # Core main before the three-argument client-command marker, which the baseline predates.
-          ref: 0cae690301552430d713a582b0036e7096c215d2
-          path: baseline-core
-          persist-credentials: false
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: LyraCoreProject/LyraCore
-          ref: f4df8081a7646e4d2689851c93c19dd8fb9e9cd2
+          ref: 8533c637843ce0e4ebbb3bf3063641861459bddc
           path: lyracore
           persist-credentials: false
       - name: Install pinned Rust and SpacetimeDB
