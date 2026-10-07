@@ -17,6 +17,8 @@ Historical migration tests need the preceding artifacts and source manifests pre
 `.github/workflows/core-tip.yml`. Companion wire tests also need the pinned wire client. The
 imported-world cases require Operator-supplied geometry. Missing inputs fail their checks.
 
+CI runs these suites only on demand. Label a PR `full-ci`, or run the workflow by hand.
+
 `gateway_coordinator.rs` exercises the Gateway's private coordinator seam. Core admits that source
 only when `LYRACORE_COORDINATOR_TEST_SOURCE` is set for a test build:
 
