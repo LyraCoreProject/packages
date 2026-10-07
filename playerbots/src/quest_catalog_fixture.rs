@@ -364,7 +364,10 @@ pub fn playerbots_recovery_fixture_pass_and_park_movement(
     super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
     use super::runner::pkg_playerbots_movement;
     // Movement maintenance has its own clock and must not replace the observed blocked route.
-    ctx.db.pkg_playerbots_movement().character_guid().delete(character_guid);
+    ctx.db
+        .pkg_playerbots_movement()
+        .character_guid()
+        .delete(character_guid);
     Ok(())
 }
 

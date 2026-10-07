@@ -132,7 +132,9 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
         .abs()
         < 0.1));
     node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
-    assert!(node.query_rows("SELECT * FROM pkg_playerbots_movement").is_empty());
+    assert!(node
+        .query_rows("SELECT * FROM pkg_playerbots_movement")
+        .is_empty());
     std::fs::write(
         support::log_dir().join(format!("{}-migration.json", node.shard_name())),
         serde_json::to_vec_pretty(

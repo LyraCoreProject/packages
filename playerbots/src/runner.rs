@@ -590,14 +590,6 @@ impl PlayerbotsRunner {
 
     pub(super) fn save(mut self, ctx: &ReducerContext) {
         self.solo_target_guid = super::target_claims::selected(ctx, &self).unwrap_or(0);
-        if !self
-            .foreground
-            .as_ref()
-            .is_some_and(|foreground| matches!(foreground.running, Running::Movement(_)))
-        {
-            self.movement_due_micros = i64::MAX;
-            self.path_pending = false;
-        }
         self.observed_micros = ctx.timestamp.to_micros_since_unix_epoch();
         self.next_eligible_micros = self
             .next_eligible_micros
@@ -880,8 +872,8 @@ pub(super) fn transition_controller(
         return Ok(());
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let mut state = PlayerbotsRunner::load(ctx, guid)
-        .unwrap_or_else(|| PlayerbotsRunner::initial(guid, now));
+    let mut state =
+        PlayerbotsRunner::load(ctx, guid).unwrap_or_else(|| PlayerbotsRunner::initial(guid, now));
     stop(ctx, guid, &mut state);
     state.last_stall_check_micros = now;
     state.generation = state
@@ -3125,8 +3117,7 @@ pub(super) fn fixture_refuse_quest_candidate(
     target: u64,
 ) -> Result<(), String> {
     let me = crate::helpers::live_entity(ctx, guid)?;
-    let mut state = PlayerbotsRunner::load(ctx, guid)
-        .ok_or("runner missing")?;
+    let mut state = PlayerbotsRunner::load(ctx, guid).ok_or("runner missing")?;
     let destination = state
         .objective
         .as_ref()

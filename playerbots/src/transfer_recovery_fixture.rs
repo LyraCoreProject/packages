@@ -1,8 +1,8 @@
 #![cfg(feature = "debug_reducers")]
 
 use super::actions::pkg_playerbots_action;
-use super::runner::{CompanionTransferPurpose, TransferCheckpoint, TransferPurpose};
 use super::pkg_playerbots_bot;
+use super::runner::{CompanionTransferPurpose, TransferCheckpoint, TransferPurpose};
 use crate::game_creature_spline;
 use spacetimedb::{reducer, ReducerContext};
 

@@ -414,6 +414,7 @@ fn measure_travel(node: Standalone, count: usize) {
             "scheduler": node.query_rows("SELECT * FROM pkg_playerbots_scheduler"),
             "bots": node.query_rows("SELECT character_guid, scheduler_lag_micros FROM pkg_playerbots_bot"),
             "runners": node.query_rows("SELECT character_guid, observed_micros, route_expansions, last_outcome, path_pending, movement_due_micros FROM pkg_playerbots_runner"),
+            "movement_queue": node.query_rows("SELECT * FROM pkg_playerbots_movement"),
         }));
         capture_timings(&node, &mut timings);
     }

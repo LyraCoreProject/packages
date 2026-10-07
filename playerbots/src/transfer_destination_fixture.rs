@@ -363,8 +363,7 @@ pub fn playerbots_transfer_destination_catalogue_stage(
             .filter(character_guid)
             .next()
             .is_some()
-        || super::runner::PlayerbotsRunner::load(ctx, character_guid)
-            .is_some()
+        || super::runner::PlayerbotsRunner::load(ctx, character_guid).is_some()
     {
         return Err(
             "destination catalogue fixture must run before the Character arrives".to_string(),

@@ -2163,9 +2163,15 @@ fn playerbots_runner_history_is_bounded_and_deleted_with_the_character() {
         1
     );
     park_movement(&node, bot);
-    assert_eq!(node.query_rows("SELECT * FROM pkg_playerbots_movement").len(), 1);
+    assert_eq!(
+        node.query_rows("SELECT * FROM pkg_playerbots_movement")
+            .len(),
+        1
+    );
     node.assert_call("playerbots_despawn_all", &[]);
-    assert!(node.query_rows("SELECT * FROM pkg_playerbots_movement").is_empty());
+    assert!(node
+        .query_rows("SELECT * FROM pkg_playerbots_movement")
+        .is_empty());
     assert!(node
         .query_rows("SELECT * FROM pkg_playerbots_runner")
         .is_empty());

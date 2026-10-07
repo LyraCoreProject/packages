@@ -125,9 +125,11 @@ pub(super) fn stand_off(candidate: Candidate) -> f32 {
 }
 
 pub(super) fn persist_due(ctx: &ReducerContext, state: &mut PlayerbotsRunner) {
-    if !state.foreground.as_ref().is_some_and(|foreground| {
-        matches!(foreground.running, Running::Movement(_))
-    }) {
+    if !state
+        .foreground
+        .as_ref()
+        .is_some_and(|foreground| matches!(foreground.running, Running::Movement(_)))
+    {
         state.movement_due_micros = i64::MAX;
         state.path_pending = false;
     }
@@ -185,10 +187,10 @@ pub(super) fn pass(ctx: &ReducerContext, now: i64) {
         .collect();
     for mut state in due {
         let pending = state.path_pending;
-        let changed = advance(ctx, &mut state, now, None);
+        let persist_runner = advance(ctx, &mut state, now, None);
         persist_due(ctx, &mut state);
         // Movement must not advance the decision's observation or eligibility clocks.
-        if changed || pending != state.path_pending {
+        if persist_runner || pending != state.path_pending {
             rows.character_guid().update(state);
         }
     }
@@ -236,7 +238,7 @@ fn owned_observation(
         .filter(|observation| observation.observed_micros >= foreground.started_micros)
 }
 
-/// Returns whether the retained Runner changed beyond its movement due time and pending flag.
+/// False means only the execution clock or pending flag changed.
 fn advance(
     ctx: &ReducerContext,
     state: &mut PlayerbotsRunner,
