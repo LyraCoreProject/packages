@@ -223,12 +223,7 @@ pub fn playerbots_transfer_orders_remote(
     if partitions.len() != 5 || !partitions.iter().any(|p| p.character_guid == priest) {
         return Err("order Transfer fixture requires its five-member party".to_string());
     }
-    let ensure_instance = crate::instance::ensure_instance; // package-api: exempt private fixture stages admitted instance
-    ensure_instance(ctx, INSTANCE, 36, GROUP, request_actor)?;
-    let admitted = crate::instance::resolve_or_create_instance(ctx, leader, 36); // package-api: exempt private fixture stages normal leader admission
-    if admitted? != INSTANCE {
-        return Err("fixture admitted another instance".to_string());
-    }
+    crate::package_fixture::admit_to_instance(ctx, leader, 36, INSTANCE, GROUP, request_actor)?;
     for guid in [Some(leader), (mode == 1).then_some(priest)]
         .into_iter()
         .flatten()

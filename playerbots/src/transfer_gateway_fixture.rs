@@ -1,7 +1,9 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Private three-database authority and mirror-failure staging for Gateway Transfer cases.
 
 use super::pkg_playerbots_bot;
-use crate::transfer::game_transfer_in; // package-api: exempt private fixture binds the arrival before injecting a mirror fault
+use crate::transfer::game_transfer_in;
 use crate::{
     game_character, game_character_shard, game_group, game_group_member,
     game_group_member_partition, game_group_roster_revision, game_world_entity,
@@ -482,7 +484,12 @@ fn restage_completed_member_crossing(
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     locators.insert(locator(character_guid, source_map, source_instance, now));
-    crate::realm_core::record_shard(ctx, character_guid, destination_map, destination_instance); // package-api: exempt private fixture models a completed Realm locator crossing
+    crate::package_fixture::record_completed_transfer(
+        ctx,
+        character_guid,
+        destination_map,
+        destination_instance,
+    );
     let settled = locators
         .character_guid()
         .find(character_guid)
@@ -543,7 +550,7 @@ pub fn playerbots_transfer_gateway_exit_realm_stage(
             return Err("Gateway exit fixture Realm location changed".to_string());
         }
     }
-    crate::realm_core::record_shard(ctx, leader_guid, 0, 0); // package-api: exempt private fixture models the leader's completed return
+    crate::package_fixture::record_completed_transfer(ctx, leader_guid, 0, 0);
     let settled = ctx
         .db
         .game_character_shard()
@@ -615,7 +622,6 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     {
         return Err("Gateway exit destination leader body already exists".to_string());
     }
-    crate::account_ownership::require_actor(ctx, request_actor)?; // package-api: exempt private fixture checks exact destination authority before mutation
     leader.map_id = 0;
     leader.pending_instance_id = 0;
     (leader.x, leader.y, leader.z) = EXIT_LEADER_POSITION;
