@@ -23,13 +23,8 @@ def main() -> int:
     environment = os.environ.copy()
     environment["LYRACORE_TEST_CORE"] = str(core)
     environment.setdefault("CARGO_TARGET_DIR", str(core / "target"))
-    environment.pop("LYRACORE_COORDINATOR_TEST_SOURCE", None)
     cargo = ["cargo", f"+{toolchain}"]
-    if command == "coordinator":
-        environment["LYRACORE_COORDINATOR_TEST_SOURCE"] = str(suite / "gateway_coordinator.rs")
-        cargo += ["test", "--manifest-path", str(core / "Cargo.toml"), "--locked",
-                  "-p", "lyracore-gateway", "--bin", "lyracore-gateway", *arguments]
-    elif command in {"test", "check", "clippy", "fmt", "generate-lockfile"}:
+    if command in {"test", "check", "clippy", "fmt", "generate-lockfile"}:
         patches = []
         for name in ["lyracore-shared", "lyracore-test-support"]:
             path = core / "crates" / name
