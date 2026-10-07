@@ -209,13 +209,14 @@ pub fn playerbots_transfer_fixture_entry_route_stage(
         guid: leader_guid,
         ownership: None,
     };
-    let ensure_instance = crate::instance::ensure_instance; // package-api: exempt private fixture stages admitted instance
-    ensure_instance(ctx, DESTINATION_INSTANCE, 36, GROUP, actor)?;
-    let resolved = crate::instance::resolve_or_create_instance(ctx, group.leader_guid, 36); // package-api: exempt private fixture verifies admitted instance
-    if resolved? != DESTINATION_INSTANCE {
-        return Err("Transfer entry fixture resolved another instance".to_string());
-    }
-    Ok(())
+    crate::package_fixture::admit_to_instance(
+        ctx,
+        group.leader_guid,
+        36,
+        DESTINATION_INSTANCE,
+        GROUP,
+        actor,
+    )
 }
 
 /// Put the private role-fixture leader in Deadmines and optionally declare the source-side portal.
@@ -254,7 +255,6 @@ pub fn playerbots_transfer_fixture_stage_authenticated(
     if request_actor.guid != leader_guid {
         return Err("Transfer fixture authority does not own the party leader".to_string());
     }
-    crate::account_ownership::require_actor(ctx, request_actor)?; // package-api: exempt private fixture checks exact entry authority before mutation
     stage_transfer_fixture(ctx, companion_guid, leader_guid, mode, request_actor)
 }
 
@@ -300,17 +300,19 @@ fn stage_transfer_fixture(
         place_live(ctx, companion_guid, 0, 0, ENTRY_SOURCE)?;
     }
 
-    let ensure_instance = crate::instance::ensure_instance; // package-api: exempt private fixture stages the admitted party instance
-    ensure_instance(ctx, DESTINATION_INSTANCE, 36, GROUP, request_actor)?;
     let bound_guid = if mode == 3 {
         companion_guid
     } else {
         leader_guid
     };
-    let admitted_instance = crate::instance::resolve_or_create_instance(ctx, bound_guid, 36); // package-api: exempt private fixture stages an ordinary party instance binding
-    if admitted_instance? != DESTINATION_INSTANCE {
-        return Err("Transfer fixture resolved another instance".to_string());
-    }
+    crate::package_fixture::admit_to_instance(
+        ctx,
+        bound_guid,
+        36,
+        DESTINATION_INSTANCE,
+        GROUP,
+        request_actor,
+    )?;
 
     if mode == 3 {
         place_live(ctx, companion_guid, 36, DESTINATION_INSTANCE, EXIT_SOURCE)?;
