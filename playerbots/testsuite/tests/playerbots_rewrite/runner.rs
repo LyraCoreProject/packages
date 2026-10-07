@@ -1022,6 +1022,70 @@ fn park_movement(node: &Standalone, bot: &str) {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_movement_poll_preserves_the_retained_runner_row() {
+    let (node, bot) = parked_movement("playerbots-movement-write-volume");
+    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    assert!(poll_until(POLL_TIMEOUT, || {
+        !node
+            .query_rows(&format!(
+                "SELECT guid FROM game_creature_spline WHERE guid = {bot} AND dur_ms > 0"
+            ))
+            .is_empty()
+    }));
+    node.assert_sql(&format!(
+        "UPDATE game_creature_spline SET dur_ms = 60000 WHERE guid = {bot}"
+    ));
+    let before = runner(&node, &bot);
+    let due_query = format!("SELECT * FROM pkg_playerbots_movement WHERE character_guid = {bot}");
+    let queued = node.query_rows(&due_query);
+    let leg = node.query_rows(&format!(
+        "SELECT * FROM game_creature_spline WHERE guid = {bot}"
+    ));
+    std::thread::sleep(Duration::from_millis(600));
+    node.assert_call("playerbots_fixture_runner_pass", &[]);
+    let after = runner(&node, &bot);
+    std::fs::write(
+        support::log_dir().join(format!("{}-runner-write-volume.json", node.shard_name())),
+        serde_json::to_vec_pretty(&serde_json::json!({"before": before, "after": after})).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        node.query_rows(&format!(
+            "SELECT * FROM game_creature_spline WHERE guid = {bot}"
+        )),
+        leg,
+        "polling must retain the owned path"
+    );
+    assert_eq!(
+        after, before,
+        "an unchanged path must not rewrite the retained decision and history"
+    );
+    assert!(
+        node.query_rows(&due_query)[0]["due_micros"]
+            .parse::<i64>()
+            .unwrap()
+            > queued[0]["due_micros"].parse::<i64>().unwrap()
+    );
+    let updates = node.capture_updates(
+        &format!("SELECT * FROM pkg_playerbots_runner WHERE character_guid = {bot}"),
+        1,
+        || {
+            std::thread::sleep(Duration::from_millis(600));
+            node.assert_call("playerbots_fixture_runner_pass", &[]);
+            select(&node, &bot, "frozen");
+        },
+    );
+    assert!(
+        updates[0]["pkg_playerbots_runner"]["inserts"][0]["last_outcome"]
+            .get("frozen")
+            .is_some(),
+        "polling emitted a retained Runner update: {updates:?}"
+    );
+    assert!(node.query_rows(&due_query).is_empty());
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_freeze_cancels_continuation() {
     let (node, bot) = parked_movement("playerbots-movement-freeze");
     select(&node, &bot, "frozen");
@@ -2098,7 +2162,10 @@ fn playerbots_runner_history_is_bounded_and_deleted_with_the_character() {
         node.query_rows("SELECT * FROM pkg_playerbots_runner").len(),
         1
     );
+    park_movement(&node, bot);
+    assert_eq!(node.query_rows("SELECT * FROM pkg_playerbots_movement").len(), 1);
     node.assert_call("playerbots_despawn_all", &[]);
+    assert!(node.query_rows("SELECT * FROM pkg_playerbots_movement").is_empty());
     assert!(node
         .query_rows("SELECT * FROM pkg_playerbots_runner")
         .is_empty());

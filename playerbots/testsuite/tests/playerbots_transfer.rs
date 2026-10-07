@@ -729,6 +729,8 @@ fn playerbots_legacy_crossing_releases_runner_when_its_party_leaves() {
         .node
         .assert_call("playerbots_fixture_runner_pass_once", &[&fixture.companion]);
     assert!(runner(&fixture.node, &fixture.companion)["foreground"].contains("movement"));
+    let movement_queue = format!("SELECT * FROM pkg_playerbots_movement WHERE character_guid = {}", fixture.companion);
+    assert_eq!(fixture.node.query_rows(&movement_queue).len(), 1);
     fixture.node.assert_sql(&format!(
         "DELETE FROM game_group_member WHERE character_guid = {}",
         fixture.companion
@@ -740,6 +742,7 @@ fn playerbots_legacy_crossing_releases_runner_when_its_party_leaves() {
     assert!(state["foreground"].contains("none"), "{state:?}");
     assert_eq!(state["path_pending"], "false");
     assert_eq!(state["movement_due_micros"], i64::MAX.to_string());
+    assert!(fixture.node.query_rows(&movement_queue).is_empty());
 }
 
 #[test]

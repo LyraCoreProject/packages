@@ -7,7 +7,7 @@ use super::quest_catalog::{
     CatalogWorkArea, ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest,
     PlayerbotsQuestCatalog, CATALOG_BLUEPRINT_REVISION, CATALOG_NAME, CATALOG_REVISION,
 };
-use super::runner::{pkg_playerbots_runner, ObjectiveKind};
+use super::runner::ObjectiveKind;
 use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content before staging
 use crate::nav::game_navigation_revision; // package-api: exempt private fixture requires Navigation Inputs staged by the real import reducer
 use crate::{
@@ -273,11 +273,7 @@ pub fn playerbots_transfer_quest_execute(
     character_guid: u64,
 ) -> Result<(), String> {
     require_private_fixture(ctx)?;
-    let mut state = ctx
-        .db
-        .pkg_playerbots_runner()
-        .character_guid()
-        .find(character_guid)
+    let mut state = super::runner::PlayerbotsRunner::load(ctx, character_guid)
         .ok_or("source Quest runner is absent")?;
     let objective_identity = state
         .objective
@@ -367,11 +363,7 @@ pub fn playerbots_transfer_destination_catalogue_stage(
             .filter(character_guid)
             .next()
             .is_some()
-        || ctx
-            .db
-            .pkg_playerbots_runner()
-            .character_guid()
-            .find(character_guid)
+        || super::runner::PlayerbotsRunner::load(ctx, character_guid)
             .is_some()
     {
         return Err(

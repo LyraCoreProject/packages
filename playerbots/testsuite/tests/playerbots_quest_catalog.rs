@@ -1224,6 +1224,9 @@ fn playerbots_missing_quest_target_retry_keeps_a_queued_return_home() {
         "UPDATE pkg_playerbots_action SET observed_micros = 0 WHERE character_guid = {bot}"
     ));
     node.assert_sql(&format!(
+        "DELETE FROM pkg_playerbots_movement WHERE character_guid = {bot}"
+    ));
+    node.assert_sql(&format!(
         "UPDATE pkg_playerbots_runner SET path_pending = true, movement_due_micros = {} WHERE character_guid = {bot}", i64::MAX
     ));
     retry_quest_during_return_home(&node, &bot);

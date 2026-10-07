@@ -525,7 +525,9 @@ migration default; it does not claim to publish an older Package binary before u
 ## Durable controller and objective
 
 Cohort movement continues on the Core movement tick while the decision queue waits. Each pass
-checks at most 128 due movements in oldest-due order, independently of the 16-decision budget.
+checks at most 1,024 due movements in each queue, independently of the 256-decision budget.
+Continuing paths and pending searches keep separate due order. Each pass starts at most 32 searches
+within the shared route-expansion budget.
 It retains the selected Candidate, target, and Route Path. The Core and client traverse the same
 waypoints without waiting for another decision at each turn. The planner retains at most 64 points
 and 112 yards, then fits the route to the client's quarter-yard coordinates. It plans the next
@@ -537,9 +539,16 @@ include controller generation, ownership, consent, casts, control, death, partit
 new Companion Orders. A ready cast, attack, or interaction can interrupt travel. An arrived
 movement waits for the next decision to observe arrival. Legacy movement keeps its existing legs.
 
-`pkg_playerbots_runner.movement_due_micros` is an end-appended indexed execution clock. Its migration
-default is `i64::MAX`, so existing rows start continuation only after their next selected movement.
-Frozen and inactive rows stay outside this queue. Legacy policy keeps its existing executor.
+`pkg_playerbots_movement` retains each active movement's due time and pending-search flag. Polling an
+unchanged path updates this small row every 500 ms without rewriting the Runner's decision, history,
+or recovery evidence. The queue survives restart, is removed on Character deletion, and does not
+cross a Shard Boundary. The destination selects movement from its own facts after Transfer.
+
+The existing `pkg_playerbots_runner.movement_due_micros` column remains for additive migration.
+Each pass moves at most 1,024 finite due times into the new queue and sets the old column to
+`i64::MAX`. Saving a new decision also moves its requested due time into the queue, preserving any
+earlier queued request. Frozen and inactive rows have no movement queue entry. Publishing this
+change preserves existing rows and needs no destructive migration or manual backfill.
 
 `playerbots_select_controller(guid, controller)` selects one supported controller for that
 Character. The SpacetimeDB argument names remain `legacy`, `recordOnly`, `cohort`, and `frozen`

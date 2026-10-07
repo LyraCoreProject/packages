@@ -2,7 +2,7 @@
 
 use super::actions::pkg_playerbots_action;
 use super::runner::{CompanionTransferPurpose, TransferCheckpoint, TransferPurpose};
-use super::{pkg_playerbots_bot, pkg_playerbots_runner};
+use super::pkg_playerbots_bot;
 use crate::game_creature_spline;
 use spacetimedb::{reducer, ReducerContext};
 
@@ -34,11 +34,7 @@ pub fn playerbots_transfer_recovery_fixture_stage_arrival(
         })
         .ok_or("Transfer Recovery fixture requires a Runner owner")?;
     let me = crate::helpers::live_entity(ctx, character_guid)?;
-    let mut state = ctx
-        .db
-        .pkg_playerbots_runner()
-        .character_guid()
-        .find(character_guid)
+    let mut state = super::runner::PlayerbotsRunner::load(ctx, character_guid)
         .ok_or("Transfer Recovery fixture Runner is absent")?;
     let objective = state
         .objective

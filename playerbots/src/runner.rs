@@ -282,7 +282,7 @@ pub struct PlayerbotsRunner {
     /// before this row is exported and rebuilt from destination facts on the first live pass.
     #[default(None::<TransferCheckpoint>)]
     pub transfer_checkpoint: Option<TransferCheckpoint>,
-    /// Movement execution has its own due queue; decision backpressure must not stop a route.
+    /// Retained for additive migration. Saving moves a finite due time to pkg_playerbots_movement.
     #[default(i64::MAX)]
     pub movement_due_micros: i64,
     /// Zero means no claim; MAX marks a pre-publish row awaiting the bounded index backfill.
@@ -300,6 +300,21 @@ crate::character_owned!(transfer, fn sweep_transfer_pkg_playerbots_runner(ctx, c
     table = pkg_playerbots_runner,
     primary_key = character_guid,
 });
+
+/// Movement polling must not rewrite the retained decision and history.
+#[table(accessor = pkg_playerbots_movement, public,
+    index(accessor = by_path_due, btree(columns = [path_pending, due_micros, character_guid])))]
+pub struct PlayerbotsMovement {
+    #[primary_key]
+    pub character_guid: u64,
+    pub due_micros: i64,
+    pub path_pending: bool,
+}
+
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_movement(ctx, character_guid) {
+    ctx.db.pkg_playerbots_movement().character_guid().delete(character_guid);
+});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_movement());
 
 #[table(accessor = pkg_playerbots_scheduler, public)]
 pub struct PlayerbotsScheduler {
@@ -465,6 +480,16 @@ fn defense_target(
 }
 
 impl PlayerbotsRunner {
+    pub(super) fn load(ctx: &ReducerContext, guid: u64) -> Option<Self> {
+        let mut state = ctx.db.pkg_playerbots_runner().character_guid().find(guid)?;
+        if state.movement_due_micros == i64::MAX {
+            if let Some(queued) = ctx.db.pkg_playerbots_movement().character_guid().find(guid) {
+                state.movement_due_micros = queued.due_micros;
+            }
+        }
+        Some(state)
+    }
+
     fn initial(guid: u64, now: i64) -> Self {
         Self {
             character_guid: guid,
@@ -593,6 +618,7 @@ impl PlayerbotsRunner {
             };
             bounded_push(&mut self.history, transition, HISTORY_LIMIT);
         }
+        movement::persist_due(ctx, &mut self);
         let rows = ctx.db.pkg_playerbots_runner();
         if rows.character_guid().find(self.character_guid).is_some() {
             rows.character_guid().update(self);
@@ -710,13 +736,19 @@ fn due_batch(ctx: &ReducerContext, now: i64) -> Vec<PlayerbotsBot> {
 pub(super) fn pass(ctx: &ReducerContext) {
     super::ensure_defaults(ctx);
     if super::capacity::require_capacity(ctx).is_err() {
-        let active: Vec<_> = ctx.db.pkg_playerbots_bot().iter()
+        let active: Vec<_> = ctx
+            .db
+            .pkg_playerbots_bot()
+            .iter()
             .filter(|bot| bot.controller != Controller::Frozen)
             .take(BATCH_LIMIT)
             .collect();
         for bot in active {
             if let Err(error) = transition_controller(ctx, bot.character_guid, Controller::Frozen) {
-                spacetimedb::log::error!("could not suspend playerbot {}: {error}", bot.character_guid);
+                spacetimedb::log::error!(
+                    "could not suspend playerbot {}: {error}",
+                    bot.character_guid
+                );
             }
         }
         return;
@@ -728,11 +760,7 @@ pub(super) fn pass(ctx: &ReducerContext) {
     let guids = due.iter().map(|b| b.character_guid).collect();
     let count = due.len();
     for mut bot in due {
-        let mut state = ctx
-            .db
-            .pkg_playerbots_runner()
-            .character_guid()
-            .find(bot.character_guid)
+        let mut state = PlayerbotsRunner::load(ctx, bot.character_guid)
             .unwrap_or_else(|| PlayerbotsRunner::initial(bot.character_guid, now));
         if crate::actor::sessionless_action_gate(ctx, bot.character_guid).is_err() {
             if matches!(bot.controller, Controller::Legacy | Controller::Cohort) {
@@ -852,11 +880,7 @@ pub(super) fn transition_controller(
         return Ok(());
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let mut state = ctx
-        .db
-        .pkg_playerbots_runner()
-        .character_guid()
-        .find(guid)
+    let mut state = PlayerbotsRunner::load(ctx, guid)
         .unwrap_or_else(|| PlayerbotsRunner::initial(guid, now));
     stop(ctx, guid, &mut state);
     state.last_stall_check_micros = now;
@@ -918,11 +942,7 @@ pub fn playerbots_migrate_legacy_controllers(
         if bot.controller != Controller::Legacy {
             continue;
         }
-        let transfer_checkpoint = ctx
-            .db
-            .pkg_playerbots_runner()
-            .character_guid()
-            .find(guid)
+        let transfer_checkpoint = PlayerbotsRunner::load(ctx, guid)
             .is_some_and(|state| state.transfer_checkpoint.is_some());
         let transfer_intent = ctx
             .db
@@ -3105,11 +3125,7 @@ pub(super) fn fixture_refuse_quest_candidate(
     target: u64,
 ) -> Result<(), String> {
     let me = crate::helpers::live_entity(ctx, guid)?;
-    let mut state = ctx
-        .db
-        .pkg_playerbots_runner()
-        .character_guid()
-        .find(guid)
+    let mut state = PlayerbotsRunner::load(ctx, guid)
         .ok_or("runner missing")?;
     let destination = state
         .objective
@@ -3138,7 +3154,7 @@ pub(super) fn fixture_refuse_quest_candidate(
 }
 
 crate::game_hook!(on_character_relocated, fn playerbots_runner_relocated(ctx, payload) {
-    let Some(mut state) = ctx.db.pkg_playerbots_runner().character_guid().find(payload.character_guid) else { return; };
+    let Some(mut state) = PlayerbotsRunner::load(ctx, payload.character_guid) else { return; };
     if !state.foreground.as_ref().is_some_and(|foreground| matches!(foreground.running, Running::Movement(_))) { return; }
     state.foreground = None;
     state.movement_due_micros = i64::MAX;
@@ -3150,7 +3166,7 @@ crate::game_hook!(on_character_relocated, fn playerbots_runner_relocated(ctx, pa
 crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payload) {
     let Some(bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.caster_guid).next() else { return; };
     if !matches!(bot.controller, Controller::Legacy | Controller::Cohort) { return; }
-    let Some(mut state) = ctx.db.pkg_playerbots_runner().character_guid().find(payload.caster_guid) else { return; };
+    let Some(mut state) = PlayerbotsRunner::load(ctx, payload.caster_guid) else { return; };
     let Some(fg) = &state.foreground else { return; };
     let Running::Cast(handle) = &fg.running else { return; };
     if fg.generation != state.generation || handle.scheduled_id != payload.scheduled_id { return; }
@@ -3177,7 +3193,7 @@ crate::game_hook!(on_damage_taken, fn playerbots_runner_reconsider_damage(ctx, p
     let Some(mut bot) = ctx.db.pkg_playerbots_bot().by_character().filter(payload.target_guid).next() else { return; };
     if !matches!(bot.controller, Controller::Cohort | Controller::RecordOnly) { return; }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    let mut state = ctx.db.pkg_playerbots_runner().character_guid().find(payload.target_guid)
+    let mut state = PlayerbotsRunner::load(ctx, payload.target_guid)
         .unwrap_or_else(|| PlayerbotsRunner::initial(payload.target_guid, now));
     let me = ctx.db.game_world_entity().guid().find(payload.target_guid);
     let retain_current = match (me.as_ref(), state.defense_target) {
