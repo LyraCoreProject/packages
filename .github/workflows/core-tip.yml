@@ -46,7 +46,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7399e78c2e838f8ecba3fe8bd0700d475df69c8b
+          ref: bf6887d2eeb2f3fb46af41dd2478e3ea47ddf280
           path: lyracore
           persist-credentials: false
 
@@ -85,7 +85,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7399e78c2e838f8ecba3fe8bd0700d475df69c8b
+          ref: bf6887d2eeb2f3fb46af41dd2478e3ea47ddf280
           path: lyracore
           persist-credentials: false
 
@@ -151,7 +151,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7399e78c2e838f8ecba3fe8bd0700d475df69c8b
+          ref: bf6887d2eeb2f3fb46af41dd2478e3ea47ddf280
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -670,6 +670,7 @@ jobs:
                 --test playerbots_recovery --test playerbots_recovery_failures \
                 --test playerbots_recovery_casting --test playerbots_recovery_geometry \
                 --test playerbots_orders --test playerbots_imported_fixture --test playerbots_personality \
+                --test playerbots_teardown \
                 --no-fail-fast -- --ignored --test-threads=1
             '
       - name: Upload fixture inputs and Standalone logs
@@ -704,7 +705,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7399e78c2e838f8ecba3fe8bd0700d475df69c8b
+          ref: bf6887d2eeb2f3fb46af41dd2478e3ea47ddf280
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -926,7 +927,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7399e78c2e838f8ecba3fe8bd0700d475df69c8b
+          ref: bf6887d2eeb2f3fb46af41dd2478e3ea47ddf280
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
@@ -1125,7 +1126,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 7399e78c2e838f8ecba3fe8bd0700d475df69c8b
+          ref: bf6887d2eeb2f3fb46af41dd2478e3ea47ddf280
           path: lyracore
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target

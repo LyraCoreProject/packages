@@ -418,6 +418,19 @@ The following rows belong to the Shard. Character deletion and Transfer leave th
 Debug fixture rows hold private setup and evidence. They are excluded from the production row
 contract.
 
+## Turning playerbots off
+
+Run `lyracore packages disable playerbots` with the Realm up, then `lyracore publish` and
+`lyracore packages replay`. Before the move, `disable` runs Core's Package Teardown on every Shard.
+Teardown empties every `pkg_playerbots_*` table and deletes this Package's Package Config. Every bot
+in the roster becomes a Dormant Character: offline, with no live entity, and with its Account and
+Character rows kept. The roster includes bots that crossed from another Shard and bots on Accounts
+made before Package-owned Accounts. Teardown refuses while a bot is crossing between Shards; re-run
+`disable` when the crossing settles.
+
+`lyracore packages enable playerbots` and a publish bring the Package back with empty tables and
+default Config. Populate it again. The old bots stay Dormant, and new bots take new names.
+
 ## Limits
 
 - Movement is a straight line. Bots do not use navigation data.
