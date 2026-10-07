@@ -1,3 +1,5 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Private AreaTrigger staging for durable Transfer cases.
 
 use crate::{
@@ -321,8 +323,7 @@ fn stage_transfer_fixture(
         )?;
     }
 
-    let leader = crate::helpers::live_entity(ctx, leader_guid)?;
-    crate::world::remove_live_character(ctx, leader); // package-api: exempt private fixture models a completed leader Transfer
+    crate::package_fixture::remove_live_character(ctx, leader_guid)?;
     let leader_instance = if route.target_map == 36 {
         DESTINATION_INSTANCE
     } else {

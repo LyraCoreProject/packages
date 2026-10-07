@@ -10,7 +10,6 @@ use super::quest_catalog::{
     ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, CATALOG_REVISION,
     CATALOG_WALK_LIMIT,
 };
-use crate::import_meta::game_import_meta; // package-api: exempt operator fixture refuses imported content before staging
 use crate::{
     game_character_quest, game_corpse_loot, game_creature_loot, game_creature_quest,
     game_creature_spawn, game_creature_spline, game_creature_template, game_faction_template,
@@ -216,18 +215,8 @@ enum FixtureStage {
     Existing,
 }
 
-fn reject_imported_content(ctx: &ReducerContext) -> Result<(), String> {
-    if let Some(import) = ctx.db.game_import_meta().iter().next() {
-        return Err(format!(
-            "quest fixture refuses non-empty import catalogue ({})",
-            import.family
-        ));
-    }
-    Ok(())
-}
-
 fn require_fixture(ctx: &ReducerContext) -> Result<(), String> {
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     let ownership = ctx
         .db
         .pkg_playerbots_quest_fixture_ownership()
@@ -671,7 +660,7 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     if let Some(existing) = ctx
         .db
         .pkg_playerbots_seeded_quest_fixture()
@@ -889,7 +878,7 @@ fn relation_exists(
 }
 
 fn stage_gate(ctx: &ReducerContext, character_guid: u64) -> Result<FixtureStage, String> {
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     if let Some(ownership) = ctx
         .db
         .pkg_playerbots_quest_fixture_ownership()
@@ -1806,7 +1795,7 @@ pub fn playerbots_quest_loop_fixture_set_partition(
 #[reducer]
 pub fn playerbots_quest_loop_fixture_refresh(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     quest_catalog::refresh_catalog(ctx, "unknown");
     if ctx
         .db
@@ -1832,7 +1821,7 @@ pub fn playerbots_quest_loop_fixture_set_simple_gameobject_state(
     state: u8,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     if state > 1 {
         return Err("simple GameObject fixture state must be 0 or 1".to_string());
     }
@@ -1852,7 +1841,7 @@ pub fn playerbots_quest_loop_fixture_add_gameobject_alternative(
     gameobject_entry: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     match gameobject_entry {
         SEEDED_USE_GAMEOBJECT => {
             if ctx
@@ -3080,7 +3069,7 @@ pub fn playerbots_recovery_fixture_arm_gameobject_respawn(
     delay_seconds: u32,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     if !(2..=10).contains(&delay_seconds) {
         return Err("respawn delay must be 2 through 10 seconds".to_string());
     }
@@ -3102,7 +3091,7 @@ pub fn playerbots_recovery_fixture_position_simple_gameobject(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     let character = crate::helpers::live_entity(ctx, character_guid)?;
     let rows = ctx.db.game_gameobject();
     let mut gameobject = rows
@@ -3123,7 +3112,7 @@ pub fn playerbots_recovery_fixture_remove_simple_gameobject(
     ctx: &ReducerContext,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     if ctx
         .db
         .pkg_playerbots_seeded_quest_fixture()
@@ -3148,7 +3137,7 @@ pub fn playerbots_recovery_fixture_restore_simple_gameobject(
     character_guid: u64,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     let retained = ctx
         .db
         .pkg_playerbots_quest_objective()
@@ -3206,7 +3195,7 @@ pub fn playerbots_recovery_fixture_remove_simple_gameobject_and_objective(
     ctx: &ReducerContext,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    reject_imported_content(ctx)?;
+    crate::package_fixture::require_no_imported_content(ctx)?;
     if ctx
         .db
         .game_quest_objective()

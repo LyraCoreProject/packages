@@ -1,3 +1,5 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Private destination content for retained Quest Transfer cases.
 
 use super::decision::{Action, Reason};
@@ -8,8 +10,6 @@ use super::quest_catalog::{
     PlayerbotsQuestCatalog, CATALOG_BLUEPRINT_REVISION, CATALOG_NAME, CATALOG_REVISION,
 };
 use super::runner::ObjectiveKind;
-use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content before staging
-use crate::nav::game_navigation_revision; // package-api: exempt private fixture requires Navigation Inputs staged by the real import reducer
 use crate::{
     game_character_quest, game_creature_quest, game_creature_spawn, game_creature_template,
     game_quest_objective, game_quest_template, game_world_entity,
@@ -31,31 +31,12 @@ fn destination_guid(entry: u32, ordinal: u64) -> u64 {
 
 fn require_private_fixture(ctx: &ReducerContext) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if ctx.db.game_import_meta().iter().next().is_some() {
-        return Err("destination catalogue fixture refuses imported content".to_string());
-    }
-    Ok(())
+    crate::package_fixture::require_no_imported_content(ctx)
 }
 
-fn prepare_private_fixture(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    let imports = ctx.db.game_import_meta();
-    let rows: Vec<_> = imports.iter().take(2).collect();
-    match rows.as_slice() {
-        [] => {}
-        [seed]
-            if seed.family == "weather_seed"
-                && seed.source_sha.is_empty()
-                && seed.file_hash.is_empty()
-                && seed.row_count == 2 =>
-        {
-            // A fresh Module stamps this temporary Core seed. Remove only the exact bootstrap
-            // row, as the other Quest harnesses do, before the unchanged imported-content Gate.
-            imports.family().delete(seed.family.clone());
-        }
-        _ => return Err("destination catalogue fixture refuses imported content".to_string()),
-    }
-    require_private_fixture(ctx)
+/// The revision the real Navigation Inputs import advances. It does not depend on the map.
+fn imported_navigation_revision(ctx: &ReducerContext) -> Option<u64> {
+    crate::nav::inputs(ctx, DESTINATION_MAP).imported_revision
 }
 
 fn quest_template(entry: u32, prerequisite: u32) -> crate::QuestTemplate {
@@ -165,7 +146,7 @@ fn preflight_destination(
     guids: &[u64],
 ) -> Result<(), String> {
     super::quest_catalog::clear_private_fixture_catalog(ctx)?;
-    if ctx.db.game_navigation_revision().id().find(0).is_none() {
+    if imported_navigation_revision(ctx).is_none() {
         return Err("destination Navigation Inputs were not imported".to_string());
     }
     if ctx
@@ -252,8 +233,8 @@ pub fn playerbots_transfer_quest_source_stage(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    prepare_private_fixture(ctx)?;
-    if ctx.db.game_navigation_revision().id().find(0).is_none() {
+    require_private_fixture(ctx)?;
+    if imported_navigation_revision(ctx).is_none() {
         return Err("source Navigation Inputs were not imported".to_string());
     }
     super::quest_catalog_fixture::playerbots_quest_loop_fixture_stage_named(ctx, character_guid)?;
@@ -348,7 +329,7 @@ pub fn playerbots_transfer_destination_catalogue_stage(
     character_guid: u64,
     mode: u8,
 ) -> Result<(), String> {
-    prepare_private_fixture(ctx)?;
+    require_private_fixture(ctx)?;
     if crate::helpers::character_by_guid(ctx, character_guid).is_some()
         || ctx
             .db

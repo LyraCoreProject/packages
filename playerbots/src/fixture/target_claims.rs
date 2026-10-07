@@ -1,10 +1,11 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Target selection through the ordinary Runner on a fresh, private Shard.
 
 use super::super::recovery::Work;
 use super::super::runner::{Controller, RunnerOutcome};
 use super::super::target_claims::{Availability, TargetClaims};
 use super::*;
-use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content
 use std::collections::BTreeSet;
 
 const ENTRY: u32 = 5_098_095;
@@ -55,14 +56,8 @@ pub fn playerbots_fixture_solo_target_claim(
     case: String,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    if ctx
-        .db
-        .game_import_meta()
-        .iter()
-        .take(2)
-        .any(|row| row.family != "weather_seed")
-        || ctx.db.pkg_playerbots_bot().iter().next().is_some()
-    {
+    crate::package_fixture::require_no_imported_content(ctx)?;
+    if ctx.db.pkg_playerbots_bot().iter().next().is_some() {
         return Err("target claim fixture requires a fresh, private Shard".into());
     }
     let population = match case.as_str() {

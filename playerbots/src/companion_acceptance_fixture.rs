@@ -8,7 +8,7 @@
 
 use super::{pkg_playerbots_bot, pkg_playerbots_provisioning, Controller};
 use crate::nav::game_nav_chunk;
-use crate::threat::top_threat_target; // package-api: exempt private observers record authoritative Core threat ordering
+use crate::package_fixture::top_threat_target;
 use crate::{
     game_area_trigger, game_areatrigger_teleport, game_aura, game_character, game_character_quest,
     game_character_shard, game_creature_move_schedule, game_creature_quest, game_creature_spawn,
