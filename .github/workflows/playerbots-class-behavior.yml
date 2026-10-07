@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: 9d9524b33ea55568b3b7675329938de83d72cf3d
+          ref: aa97e268610e6ac5ffd7d16eecfff678f86ee8fb
           path: lyracore
           persist-credentials: false
       - name: Install pinned Rust and SpacetimeDB

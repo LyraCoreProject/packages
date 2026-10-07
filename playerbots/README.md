@@ -3,7 +3,7 @@
 A standing population of session-less Characters, so a small realm still has a party to test content
 with.
 
-A bot is a real Character on a Package-minted Account: a `game_character` row, a live
+A bot is a real Character on a Package-owned Account: a `game_character` row, a live
 `game_world_entity` row with the PLAYER type mask, a spellbook, and durable position. What a bot does
 not have is a Session — nothing calls `player_login` for it. That one difference is the design. The
 bot is durable, so it survives a Gateway restart and a republish. The bot has no Session, so the
