@@ -1,8 +1,10 @@
 name: Core compatibility
 
+# Bot durable and acceptance jobs run on demand: a manual run, or a PR labelled `full-ci`.
 on:
   push:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
 permissions:
@@ -126,6 +128,7 @@ jobs:
             "$GITHUB_WORKSPACE/collection/.github/check-datascripts.sh" "$GITHUB_WORKSPACE/lyracore"
 
   playerbots-durable:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -678,6 +681,7 @@ jobs:
           if-no-files-found: ignore
 
   playerbots-transfer-durable:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 90
@@ -849,6 +853,7 @@ jobs:
           if-no-files-found: error
 
   playerbots-acceptance:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -1090,6 +1095,7 @@ jobs:
 
 
   playerbots-composition-durable:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 120

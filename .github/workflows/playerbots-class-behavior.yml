@@ -1,7 +1,9 @@
 name: Playerbots class behavior
 
+# Bot durable and acceptance jobs run on demand: a manual run, or a PR labelled `full-ci`.
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   push:
     branches: [main]
   workflow_dispatch:
@@ -15,6 +17,7 @@ concurrency:
 
 jobs:
   durable:
+    if: ${{ github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'full-ci') }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
