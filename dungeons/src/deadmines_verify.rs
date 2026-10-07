@@ -1,38 +1,32 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Deadmines verification harness (`debug_reducers` only): stage reducers the durable test
 //! (`module/tests/deadmines_package.rs`) calls in order over the standalone CLI. Every reducer is
 //! argument-free — fixture guids exceed the CLI's safe integer range, so each stage resolves its
 //! own subjects server-side, drives the REAL production path (kill, damage, gameobject use), and
 //! verifies the durable outcome in the same call.
 
-#[cfg(feature = "debug_reducers")]
 use spacetimedb::{reducer, ReducerContext, Table};
 
-#[cfg(feature = "debug_reducers")]
-use crate::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
-#[cfg(feature = "debug_reducers")]
 use super::deadmines::{
     DEFIAS_CANNON, ENCOUNTER_CANNON, ENCOUNTER_GILNID, ENCOUNTER_RHAHKZOR, ENCOUNTER_SMITE,
     ENCOUNTER_SNEED, FACTORY_DOOR, FOUNDRY_DOOR, GILNID, IRON_CLAD_DOOR, MAP_ID, MAST_ROOM_DOOR,
     MR_SMITE, RHAHKZOR, SMITES_CHEST, SMITES_MIGHTY_HAMMER, SMITES_REAVER, SMITE_FIRST_STAND_PCT,
     SMITE_SECOND_STAND_PCT, SNEED, SNEEDS_SHREDDER,
 };
-#[cfg(feature = "debug_reducers")]
+use crate::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
 use crate::{
     game_chat_event, game_creature_spline, game_creature_template, game_encounter_equip,
     game_gameobject, game_gameobject_template, game_instance, game_item_template,
     game_world_entity, GameInstance,
 };
 
-#[cfg(feature = "debug_reducers")]
 const FIXTURE_LOW_BAND: u64 = 0x10_0000;
-#[cfg(feature = "debug_reducers")]
 const DEADMINES_INSTANCE: u64 = 936;
-#[cfg(feature = "debug_reducers")]
 const GO_FIXTURE_BAND: u64 = 0xF11D << 48;
 
 /// Seed a Deadmines fixture instance: doors, cannon, chest, Smite's weapons, the bosses, and one
 /// player. Positions come from the classic-db z2815 spawn rows.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
     install_instance(ctx, MAP_ID, DEADMINES_INSTANCE)?;
@@ -69,7 +63,6 @@ pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Rhahk'Zor's death opens the Factory Door through the production kill path.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_rhahkzor_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, RHAHKZOR)?;
@@ -78,7 +71,6 @@ pub fn debug_deadmines_rhahkzor_falls(ctx: &ReducerContext) -> Result<(), String
 }
 
 /// Destroying Sneed's Shredder ejects Sneed; the Mast Room Door stays shut until Sneed dies.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_shredder_ejects_sneed(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, SNEEDS_SHREDDER)?;
@@ -101,7 +93,6 @@ pub fn debug_deadmines_shredder_ejects_sneed(ctx: &ReducerContext) -> Result<(),
 }
 
 /// Sneed's death opens the Mast Room Door.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_sneed_falls(ctx: &ReducerContext) -> Result<(), String> {
     let sneed = live_boss(ctx, SNEED).ok_or_else(|| "Sneed is not alive to kill".to_string())?;
@@ -115,7 +106,6 @@ pub fn debug_deadmines_sneed_falls(ctx: &ReducerContext) -> Result<(), String> {
 }
 
 /// Gilnid's death opens the Foundry Door.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_gilnid_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, GILNID)?;
@@ -124,7 +114,6 @@ pub fn debug_deadmines_gilnid_falls(ctx: &ReducerContext) -> Result<(), String> 
 }
 
 /// Damage Smite through his 66% threshold: yell, chest run, dual Reavers.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_smite_improvises(ctx: &ReducerContext) -> Result<(), String> {
     damage_smite_to_pct(ctx, 60)?;
@@ -134,7 +123,6 @@ pub fn debug_deadmines_smite_improvises(ctx: &ReducerContext) -> Result<(), Stri
 }
 
 /// Damage Smite through his 33% threshold: yell, second chest run, the two-hand hammer.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_smite_gets_angry(ctx: &ReducerContext) -> Result<(), String> {
     damage_smite_to_pct(ctx, 30)?;
@@ -143,7 +131,6 @@ pub fn debug_deadmines_smite_gets_angry(ctx: &ReducerContext) -> Result<(), Stri
 }
 
 /// Firing the Defias Cannon breaches the Iron Clad Door through the production use path.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_cannon_breaches(ctx: &ReducerContext) -> Result<(), String> {
     let player = fixture_guid(0, 44);
@@ -155,7 +142,6 @@ pub fn debug_deadmines_cannon_breaches(ctx: &ReducerContext) -> Result<(), Strin
 }
 
 /// Smite's death closes his encounter.
-#[cfg(feature = "debug_reducers")]
 #[reducer]
 pub fn debug_deadmines_smite_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, MR_SMITE)?;
@@ -166,7 +152,6 @@ pub fn debug_deadmines_smite_falls(ctx: &ReducerContext) -> Result<(), String> {
 //  Fixture plumbing
 // -------------------------------------------------------------------------------------------
 
-#[cfg(feature = "debug_reducers")]
 fn seed_gameobject(
     ctx: &ReducerContext,
     entry: u32,
@@ -222,7 +207,6 @@ fn seed_gameobject(
 
 /// Clone the seeded starter sword into one of Smite's swap weapons — `equip_swap` only reads the
 /// display id, so everything else may stay the starter's.
-#[cfg(feature = "debug_reducers")]
 fn seed_smite_weapon(
     ctx: &ReducerContext,
     entry: u32,
@@ -245,7 +229,6 @@ fn seed_smite_weapon(
 }
 
 /// Clone a seeded creature template into Sneed's so `spawn_wave` can eject him.
-#[cfg(feature = "debug_reducers")]
 fn seed_sneed_template(ctx: &ReducerContext) -> Result<(), String> {
     let templates = ctx.db.game_creature_template();
     if templates.entry().find(SNEED).is_some() {
@@ -262,7 +245,6 @@ fn seed_sneed_template(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-#[cfg(feature = "debug_reducers")]
 fn kill_fixture_boss(ctx: &ReducerContext, entry: u32) -> Result<(), String> {
     let boss = live_boss(ctx, entry).ok_or_else(|| format!("boss {entry} is not alive"))?;
     let player = fixture_guid(0, 44);
@@ -272,7 +254,6 @@ fn kill_fixture_boss(ctx: &ReducerContext, entry: u32) -> Result<(), String> {
     )
 }
 
-#[cfg(feature = "debug_reducers")]
 fn live_boss(ctx: &ReducerContext, entry: u32) -> Option<crate::WorldEntity> {
     ctx.db
         .game_world_entity()
@@ -281,16 +262,14 @@ fn live_boss(ctx: &ReducerContext, entry: u32) -> Option<crate::WorldEntity> {
         .find(|e| e.instance_id == DEADMINES_INSTANCE && e.entry == entry && !e.dead)
 }
 
-#[cfg(feature = "debug_reducers")]
 fn damage_smite_to_pct(ctx: &ReducerContext, target_pct: u32) -> Result<(), String> {
     let smite = live_boss(ctx, MR_SMITE).ok_or_else(|| "Mr. Smite is not alive".to_string())?;
     let target_health = smite.max_health * target_pct / 100;
     let amount = smite.health.saturating_sub(target_health);
     require(amount > 0, "Smite is already below the target health")?;
-    crate::debug::debug_apply_damage(ctx, smite.guid, amount, fixture_guid(0, 44)) // package-api: exempt no surface path damages a boss
+    crate::package_fixture::apply_damage(ctx, smite.guid, amount, fixture_guid(0, 44))
 }
 
-#[cfg(feature = "debug_reducers")]
 fn door_state(ctx: &ReducerContext, entry: u32) -> Result<u8, String> {
     ctx.db
         .game_gameobject()
@@ -300,12 +279,10 @@ fn door_state(ctx: &ReducerContext, entry: u32) -> Result<u8, String> {
         .ok_or_else(|| format!("fixture gameobject {entry} disappeared"))
 }
 
-#[cfg(feature = "debug_reducers")]
 fn require_door_open(ctx: &ReducerContext, entry: u32, error: &str) -> Result<(), String> {
     require(door_state(ctx, entry)? == DOOR_OPEN_STATE, error)
 }
 
-#[cfg(feature = "debug_reducers")]
 fn require_done(ctx: &ReducerContext, encounter_id: u32, error: &str) -> Result<(), String> {
     require(
         encounter::get_encounter_state(ctx, DEADMINES_INSTANCE, encounter_id) == ENCOUNTER_DONE,
@@ -313,7 +290,6 @@ fn require_done(ctx: &ReducerContext, encounter_id: u32, error: &str) -> Result<
     )
 }
 
-#[cfg(feature = "debug_reducers")]
 fn require_yell_containing(ctx: &ReducerContext, fragment: &str) -> Result<(), String> {
     let smite_guid = fixture_guid(MR_SMITE, 43);
     require(
@@ -325,7 +301,6 @@ fn require_yell_containing(ctx: &ReducerContext, fragment: &str) -> Result<(), S
     )
 }
 
-#[cfg(feature = "debug_reducers")]
 fn require_smite_at_chest(ctx: &ReducerContext) -> Result<(), String> {
     let smite_guid = fixture_guid(MR_SMITE, 43);
     let smite = ctx
@@ -350,7 +325,6 @@ fn require_smite_at_chest(ctx: &ReducerContext) -> Result<(), String> {
     )
 }
 
-#[cfg(feature = "debug_reducers")]
 fn require_smite_equip(
     ctx: &ReducerContext,
     main_hand_item: u32,
@@ -380,7 +354,6 @@ fn require_smite_equip(
     )
 }
 
-#[cfg(feature = "debug_reducers")]
 fn install_instance(ctx: &ReducerContext, map_id: u32, instance_id: u64) -> Result<(), String> {
     let instances = ctx.db.game_instance();
     match instances.instance_id().find(instance_id) {
@@ -403,7 +376,6 @@ fn install_instance(ctx: &ReducerContext, map_id: u32, instance_id: u64) -> Resu
     }
 }
 
-#[cfg(feature = "debug_reducers")]
 fn spawn_source(
     ctx: &ReducerContext,
     entry: u32,
@@ -433,7 +405,6 @@ fn spawn_source(
     Ok(guid)
 }
 
-#[cfg(feature = "debug_reducers")]
 fn spawn_fixture_player(
     ctx: &ReducerContext,
     map_id: u32,
@@ -462,7 +433,6 @@ fn spawn_fixture_player(
     Ok(guid)
 }
 
-#[cfg(feature = "debug_reducers")]
 fn set_fixture_position(
     ctx: &ReducerContext,
     guid: u64,
@@ -486,12 +456,10 @@ fn set_fixture_position(
     Ok(())
 }
 
-#[cfg(feature = "debug_reducers")]
 fn fixture_guid(entry: u32, sequence: u64) -> u64 {
     encounter::wave_guid(entry, FIXTURE_LOW_BAND | sequence)
 }
 
-#[cfg(feature = "debug_reducers")]
 fn require(condition: bool, error: &str) -> Result<(), String> {
     if condition {
         Ok(())

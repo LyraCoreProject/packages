@@ -7,10 +7,10 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_runner, Controller,
 };
 use crate::{
-    game_character, game_creature_move_schedule, game_group, game_group_member,
-    game_group_member_partition, game_group_roster_revision, game_world_entity,
+    game_character, game_group, game_group_member, game_group_member_partition,
+    game_group_roster_revision, game_world_entity,
 };
-use spacetimedb::{reducer, table, Identity, ReducerContext, ScheduleAt, Table, TimeDuration};
+use spacetimedb::{reducer, table, Identity, ReducerContext, Table, TimeDuration};
 
 const DESTINATION_MAP: u32 = 36;
 const DESTINATION_INSTANCE: u64 = 5_098_078;
@@ -468,8 +468,8 @@ pub fn playerbots_transfer_assist_source_stage(
     let retained_before = retained_work(ctx, bot_guid, party.order.group_id)?;
     let leader_source = (leader_body.x, leader_body.y, leader_body.z);
     let priest_source = (priest_body.x, priest_body.y, priest_body.z);
-    crate::world::remove_live_character(ctx, leader_body); // package-api: exempt private fixture declares remote party member
-    crate::world::remove_live_character(ctx, priest_body); // package-api: exempt private fixture declares remote party member
+    crate::package_fixture::remove_live_character(ctx, leader_guid)?;
+    crate::package_fixture::remove_live_character(ctx, priest_guid)?;
     relocate_character(ctx, leader_guid, LEADER_DESTINATION)?;
     relocate_character(ctx, priest_guid, PRIEST_DESTINATION)?;
     let leader_after = relocate_partition(ctx, leader_guid)?;
@@ -591,17 +591,5 @@ pub fn playerbots_transfer_assist_destination_stage(
     super::fixture::playerbots_fixture_freeze(ctx, priest_guid)?;
     relocate_live_character(ctx, leader_guid, LEADER_DESTINATION)?;
     relocate_live_character(ctx, priest_guid, PRIEST_DESTINATION)?;
-    let schedules = ctx.db.game_creature_move_schedule(); // package-api: exempt private fixture declares the next Core movement tick before Transfer
-    let mut ticks: Vec<_> = schedules.iter().take(2).collect();
-    if ticks.len() != 1 || ticks[0].instance_id != u64::MAX {
-        return Err("Assist destination fixture requires one fresh movement tick".to_string());
-    }
-    let at = ctx
-        .timestamp
-        .checked_add(TimeDuration::from_micros(60_000_000))
-        .ok_or("Assist destination movement tick timestamp exhausted")?;
-    let mut tick = ticks.remove(0);
-    tick.scheduled_at = ScheduleAt::Time(at);
-    schedules.scheduled_id().update(tick);
-    Ok(())
+    crate::package_fixture::declare_next_movement_tick(ctx, TimeDuration::from_micros(60_000_000))
 }

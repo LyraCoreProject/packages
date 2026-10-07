@@ -1,3 +1,5 @@
+#![cfg(feature = "debug_reducers")]
+
 //! Deterministic staging for private, per-test durable databases.
 //! Staging replaces shared rotation configuration and is not safe in a shared World Shard.
 
@@ -41,17 +43,7 @@ pub fn playerbots_fixture_class_stage(
     fighting: bool,
 ) -> Result<(), String> {
     crate::helpers::require_operator(ctx)?;
-    use crate::import_meta::game_import_meta; // package-api: exempt private fixture refuses imported content
-    // Family is the primary key, so at most one row can be the built-in weather seed.
-    if ctx
-        .db
-        .game_import_meta()
-        .iter()
-        .take(2)
-        .any(|row| row.family != "weather_seed")
-    {
-        return Err("class fixture requires a private, unimported Shard".into());
-    }
+    crate::package_fixture::require_no_imported_content(ctx)?;
     playerbots_fixture_prepare(ctx)?;
     playerbots_fixture_runner_stage(ctx, guid, false)?;
     let mut strike = ctx
@@ -500,9 +492,7 @@ pub fn playerbots_fixture_orders_remove_member_body(
     {
         return Err("order fixture Character is outside the private role party".to_string());
     }
-    let entity = crate::helpers::live_entity(ctx, character_guid)?;
-    crate::world::remove_live_character(ctx, entity); // package-api: exempt private fixture models logout
-    Ok(())
+    crate::package_fixture::remove_live_character(ctx, character_guid)
 }
 
 /// Change only one private role-fixture enemy to exercise exact-target death and partition Gates.
@@ -1759,15 +1749,7 @@ pub fn playerbots_fixture_companion_client_cast(
     caster_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::gw::gw_cast_at( // package-api: exempt fixture proves client and bot cast Gate parity
-        ctx,
-        crate::SessionActor {
-            guid: caster_guid,
-            ownership: None,
-        },
-        HEAL,
-        target_guid,
-    )
+    crate::package_fixture::client_cast(ctx, caster_guid, HEAL, target_guid)
 }
 
 #[reducer]

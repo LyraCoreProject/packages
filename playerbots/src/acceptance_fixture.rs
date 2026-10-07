@@ -545,8 +545,9 @@ fn apply_incoming_fault(
     row.incoming_purpose = Some(quest.purpose);
     row.incoming_destination = Some(quest.destination);
     let amount = before.health.saturating_sub(1).min(25);
-    let accepted = crate::debug::debug_apply_damage(ctx, row.character_guid, amount, attacker_guid) // package-api: exempt private acceptance fixture applies real Core damage
-        .is_ok();
+    let accepted =
+        crate::package_fixture::apply_damage(ctx, row.character_guid, amount, attacker_guid)
+            .is_ok();
     let Some(after) = ctx.db.game_world_entity().guid().find(row.character_guid) else {
         return;
     };
