@@ -317,11 +317,15 @@ fn verify_legacy_goals_source() {
         git(collection, &["rev-parse", &committed_goals]),
         LEGACY_GOALS_BLOB
     );
-    assert_eq!(
-        git(&package, &["hash-object", "src/goals.rs"]),
-        LEGACY_GOALS_BLOB
-    );
+    let legacy = std::process::Command::new("git")
+        .current_dir(collection)
+        .args(["cat-file", "blob", LEGACY_GOALS_BLOB])
+        .output()
+        .unwrap();
+    assert!(legacy.status.success());
+    let legacy = String::from_utf8(legacy.stdout).unwrap();
     let source = std::fs::read_to_string(package.join("src/goals.rs")).unwrap();
+    assert_eq!(source, without_inline_tests(&legacy));
     let mut remaining = source.as_str();
     for expression in LEGACY_GOALS_EXPRESSIONS {
         let start = remaining
@@ -329,6 +333,25 @@ fn verify_legacy_goals_source() {
             .unwrap_or_else(|| panic!("Legacy comparison expression missing: {expression}"));
         remaining = &remaining[start + expression.len()..];
     }
+}
+
+/// The Legacy source as goals.rs holds it now: its inline test module moved to `goals/tests.rs`,
+/// and the production code before it is byte-identical.
+fn without_inline_tests(legacy: &str) -> String {
+    const INLINE_TESTS: &str = "#[cfg(test)]\nmod tests {\n";
+    let starts: Vec<_> = legacy
+        .match_indices(INLINE_TESTS)
+        .map(|(at, _)| at)
+        .collect();
+    let [start] = starts[..] else {
+        panic!("the Legacy goals.rs must hold exactly one inline test module");
+    };
+    assert_eq!(
+        legacy[start..].find("\n}\n"),
+        Some(legacy.len() - start - 3),
+        "the Legacy inline test module must end the file"
+    );
+    format!("{}#[cfg(test)]\nmod tests;\n", &legacy[..start])
 }
 
 fn record_policy_comparison(node: &Standalone, priest: &str, leader: &str, ally: &str) {
