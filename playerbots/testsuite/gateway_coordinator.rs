@@ -1598,13 +1598,13 @@ fn companion_command_lost_receipt_after_guarantee_reports_unknown_without_reappl
     topology.cli.call(
         topology.node.server(),
         &topology.target,
-        "playerbots_fixture_command_release_receipt",
+        "party_command_fixture_release_receipt",
         &[&topology.target_party.warrior.to_string()],
     );
     topology.cli.call(
         topology.node.server(),
         topology.source(),
-        "playerbots_fixture_command_expire_after_receipt_window",
+        "party_command_fixture_expire_after_receipt_window",
         &[&intent_id.to_string()],
     );
     assert!(poll_until(POLL_TIMEOUT, || {
@@ -1835,7 +1835,7 @@ fn companion_command_capacity_waits_without_ack_then_recovers_or_expires() {
     topology.cli.call(
         topology.node.server(),
         &topology.target,
-        "playerbots_fixture_command_release_receipt",
+        "party_command_fixture_release_receipt",
         &[&topology.target_party.warrior.to_string()],
     );
     assert_eq!(
@@ -1860,7 +1860,7 @@ fn companion_command_capacity_waits_without_ack_then_recovers_or_expires() {
     topology.cli.call(
         topology.node.server(),
         topology.source(),
-        "playerbots_fixture_command_expire",
+        "party_command_fixture_expire",
         &[&expiry_id.to_string()],
     );
     let expired = cached_intent_when(&source, expiry_id, |row| {
