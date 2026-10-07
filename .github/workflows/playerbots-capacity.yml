@@ -106,10 +106,11 @@ jobs:
           sha256sum "$RUNNER_TEMP/movement-baseline.wasm" > "$RUNNER_TEMP/movement-baseline.sha256"
           echo "PLAYERBOTS_MOVEMENT_PRECEDING_WASM=$RUNNER_TEMP/movement-baseline.wasm" >> "$GITHUB_ENV"
       - name: Build the preceding Runner for movement queue migration
+        working-directory: lyracore
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/runner-baseline-target
         run: |
-          ./preceding-runner-collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
+          "$GITHUB_WORKSPACE/preceding-runner-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/lyracore" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/runner-baseline.wasm"
