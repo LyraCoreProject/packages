@@ -30,6 +30,26 @@ jobs:
           ./.github/test-artifact-firewall.sh
           ./.github/check-artifact-firewall.sh
 
+  package-api-exemptions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Check out Packages
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # git grep exits 1 when it finds nothing. A match or an error fails the job.
+      - name: Refuse a Package API exemption in an official Package
+        run: |
+          status=0
+          git grep -n -F 'package-api: exempt' -- '*/*' ':!.*' || status=$?
+          if [ "$status" -ne 1 ]; then
+            echo "An official Package calls only the Package API. Remove each exemption above." >&2
+            exit 1
+          fi
+
   module:
     needs: firewall
     runs-on: ubuntu-latest
