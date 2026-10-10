@@ -19,14 +19,12 @@
 #   3. `lyracore packages check` verifies every committed artifact's Build Identity against this
 #      checkout: source, typings, authoring library and toolchain pins.
 #
-# What this job does NOT do: re-emit a Datascript. That needs a Base Snapshot, which is the
-# Operator's own client-derived data and does not exist on a CI runner — see
-# `docs/agents/cross-repo-cli.md` in LyraCore and `packages check`'s own handling of a missing
-# snapshot. It never writes a regenerated artifact back to this checkout either; a diff here is a
-# failure to fix by hand and re-commit, never something CI commits on the collection's behalf.
+# example-data is also built in a temporary directory against Core's synthetic Base Snapshot.
+# No client-derived Base Snapshot is needed, and no Delta is written into the collection.
 
 set -euo pipefail
 
+collection_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 core_root=${1:-}
 if [[ -z "$core_root" || ! -f "$core_root/module/Cargo.toml" ]]; then
     echo "usage: $0 /path/to/LyraCore" >&2
@@ -58,6 +56,9 @@ echo "reproducible."
 
 echo "== installing the pinned Datascript dependencies and typechecking"
 (cd datascripts && bun install --frozen-lockfile && bun ./node_modules/typescript/bin/tsc --noEmit)
+
+echo "== checking example-data with a synthetic Base Snapshot"
+python3 "$collection_root/.github/check-example-data.py" "$core_root"
 
 echo "== lyracore packages check"
 ./lyracore packages check

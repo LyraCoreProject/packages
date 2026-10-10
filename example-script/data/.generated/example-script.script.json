@@ -1,0 +1,24 @@
+{
+  "kind": "script",
+  "version": 1,
+  "package": "example-script",
+  "source_hash": "24b601f2db72799e6c3879c59b1bfd03d4ee92e10dde5ebc94920fb91cea9f72",
+  "scripts": [
+    {
+      "script_id": 100300,
+      "name": "example-script.welcome",
+      "event": "on_login",
+      "priority": 0,
+      "enabled": true,
+      "source": "local function ____tbl(t)\n    return t\nend\nlocal function script()\n    if event.actor and event.actor.is_player then\n        send_chat(event.actor, \"Welcome from example-script!\")\n    end\nend\nreturn script()\n"
+    },
+    {
+      "script_id": 100301,
+      "name": "example-script.ding",
+      "event": "on_levelup",
+      "priority": 0,
+      "enabled": true,
+      "source": "-- @event on_levelup\n-- @id 100301\n\nif event.actor and event.actor.is_player then\n    send_chat(event.actor, \"Welcome to your new level from example-script!\")\nend\n"
+    }
+  ]
+}

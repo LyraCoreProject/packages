@@ -1,0 +1,16 @@
+{
+  "kind": "script",
+  "version": 1,
+  "package": "example-all",
+  "source_hash": "bd88e41c6f9976c287287db30ed0ce0b07d0b64fca7398d1093f5987dacc9dfb",
+  "scripts": [
+    {
+      "script_id": 100302,
+      "name": "example-all.welcome",
+      "event": "example-all.welcome",
+      "priority": 0,
+      "enabled": true,
+      "source": "-- @event example-all.welcome\n-- @id 100302\n\n-- A positive Script Answer sends the welcome. Zero suppresses it.\nreturn 1\n"
+    }
+  ]
+}

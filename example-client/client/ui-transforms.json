@@ -1,0 +1,7 @@
+[
+  {
+    "path": "Interface/FrameXML/ChatFrame.lua",
+    "after": "function ChatFrame_OnEvent(event)",
+    "insert": "\n\tif event == \"PLAYER_ENTERING_WORLD\" and this == DEFAULT_CHAT_FRAME then\n\t\tthis:AddMessage(\"Welcome from the example-client UI Transform!\")\n\tend\n"
+  }
+]
