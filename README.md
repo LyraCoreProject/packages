@@ -11,6 +11,18 @@ commit. Tags for older API versions stay at their last compatible commit.
 the checkout's `docs/package-api.md`. A missing tag refuses the operation. Each installed Package's
 Provenance Stamp records the exact collection commit it came from.
 
+For a running development Realm:
+
+```bash
+./lyracore packages add example-script
+./lyracore packages apply
+```
+
+`apply` builds missing or stale artifacts, publishes the Module when Rust Packages require it,
+and applies artifacts to the recorded development topology. Pass Shard names to select targets.
+Use `--check` to prepare and inspect without Realm changes. Client content uses `client sync`.
+Update Core to a revision whose CLI provides `packages apply` before following these instructions.
+
 ## Packages
 
 Start with these Reference Packages. Each adds a small welcome at one level of the Package API.

@@ -182,23 +182,11 @@ upstream produced it, so there is no Datascript revision to record. LyraCore#320
 would generate the same artifact through the same runtime path; until it exists, hand-written Lua is
 the supported way to ship a Runtime Script.
 
-**Reconciling an edit.** Editing the file changes nothing by itself. Apply it to every Shard:
-
-```bash
-spacetime call <database> apply_package_deltas '"script"' "$(
-  for f in packages/*/data/.generated/*.json; do jq -c 'select(.kind == "script")' "$f"; done | jq -Rs .
-)"
-```
-
-Two things about that command are load-bearing. The payload is the WHOLE enabled plan, every
-Package's Script Artifact and not just this one: an apply clears the Package script range and
-rewrites it, so naming one Package would delete every other Package's scripts. And each artifact
-travels on ONE line, which is what `jq -c` is for — the file here is pretty-printed because a human
-edits it.
-
-No republish is involved, and none is needed. LyraCore#393 tracks carrying the `script` family
-through `lyracore packages replay`, which would make this one command for the whole realm instead of
-this.
+**Reconciling an edit.** Run `lyracore packages apply` to prepare and apply the whole enabled
+Script Artifact plan to every Shard in your development topology. Pass Shard names to select
+other targets. The command also publishes the Module because this Package contains Rust.
+An apply replaces the Package Script Range, so applying one Package's artifact by itself would
+remove other Packages' Runtime Scripts.
 
 **What a script cannot do.** Nothing new. A Runtime Script sees the curated verb surface the Host
 already offers — `heal`, `send_chat`, `grant_xp`, and the snapshotted Entity Handle fields — and no
@@ -420,8 +408,7 @@ contract.
 
 ## Turning playerbots off
 
-Run `lyracore packages disable playerbots` with the Realm up, then `lyracore publish` and
-`lyracore packages replay`. Before the move, `disable` runs Core's Package Teardown on every Shard.
+Run `lyracore packages disable playerbots` with the Realm up, then `lyracore packages apply`. Before the move, `disable` runs Core's Package Teardown on every Shard.
 Teardown empties every `pkg_playerbots_*` table and deletes this Package's Package Config. Every bot
 in the roster becomes a Dormant Character: offline, with no live entity, and with its Account and
 Character rows kept. The roster includes bots that crossed from another Shard and bots on Accounts
