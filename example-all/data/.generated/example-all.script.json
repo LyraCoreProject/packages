@@ -2,7 +2,7 @@
   "kind": "script",
   "version": 1,
   "package": "example-all",
-  "source_hash": "bd88e41c6f9976c287287db30ed0ce0b07d0b64fca7398d1093f5987dacc9dfb",
+  "source_hash": "da52243f0368fd7089dab7de331069ec91a3d18356c5f6104414ebed5dfe4695",
   "scripts": [
     {
       "script_id": 100302,
@@ -10,7 +10,7 @@
       "event": "example-all.welcome",
       "priority": 0,
       "enabled": true,
-      "source": "-- @event example-all.welcome\n-- @id 100302\n\n-- A positive Script Answer sends the welcome. Zero suppresses it.\nreturn 1\n"
+      "source": "local ____lyracore_handler\nlocal events = { package = { on = function(name, handler) ____lyracore_handler = handler end } }\n-- A positive Script Answer sends the welcome. Zero suppresses it.\nlocal function welcome(event)\n    return 1\nend\n\nevents.package.on(\"welcome\", welcome)\nassert(event.name == \"example-all.welcome\", \"Event Binding does not match the Invocation\")\nreturn ____lyracore_handler(event)\n"
     }
   ]
 }

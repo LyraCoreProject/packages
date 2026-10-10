@@ -1,6 +1,5 @@
--- @event on_levelup
--- @id 100301
-
-if event.actor and event.actor.is_player then
-    send_chat(event.actor, "Welcome to your new level from example-script!")
+local function ding(event)
+    send_chat(event.player, "Welcome to your new level from example-script!")
 end
+
+events.player.onLevelUp(ding)

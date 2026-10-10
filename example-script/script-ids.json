@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "package": "example-script",
+  "ids": {
+    "ding": 100301,
+    "welcome": 100300
+  }
+}
