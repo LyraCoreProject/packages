@@ -16,5 +16,12 @@ its `script.identity` Build Identity sidecar may be committed under a Package's
 names and refuses any other committed file there. `lyracore packages check` verifies the Build
 Identity against the current core checkout.
 
+Runtime Scripts declare a named function that takes its typed event and register it with
+`events.player.onLogin`, another built-in event, or `events.package.on` for a Package Event.
+Each source has one Event Binding. The Runtime Script Toolchain writes stable numeric IDs to the
+Package-root `script-ids.json`; new sources need no `@id` directive. Commit that ledger with the
+sources, Script Artifact and Build Identity. Keep entries for removed sources so later sources
+cannot reuse their IDs.
+
 Pull requests must pass the `module` core-tip compatibility check before merge. Maintainers may use
 their GitHub branch-protection bypass only to recover the repository or repair CI.

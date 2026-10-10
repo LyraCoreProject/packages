@@ -1,11 +1,14 @@
 # Welcome with Runtime Scripts
 
-`welcome.ts` sends one chat line on login. `ding.lua` sends one on level-up. Both use
-`send_chat` on the Character carried by the event. This Package needs no Rust.
+`welcome.ts` registers `welcome` with `events.player.onLogin`. `ding.lua` registers `ding` with
+`events.player.onLevelUp`. Both send one chat line to `event.player`, the Character the typed event
+guarantees. This Package needs no Rust.
 
 Install with `./lyracore packages add example-script`, then apply the committed Script Artifact
-with `./lyracore packages apply` on your development topology. It builds missing or stale artifacts when needed. After editing
-either source, run
-`./lyracore packages build` and commit the Script Artifact and its Build Identity together.
+with `./lyracore packages apply` on your development topology. It builds missing or stale artifacts
+when needed. After editing either source, run `./lyracore packages build`. Commit the sources,
+`script-ids.json`, Script Artifact and its Build Identity together.
 
-The Script IDs are 100300 and 100301. Give copies distinct IDs before installing them together.
+The Runtime Script Toolchain manages IDs in `script-ids.json`. Keep the ledger, including entries
+for removed sources. Each Runtime Script keeps the name `<package>.<file stem>` and its ID when
+you rename its handler. Use `./lyracore packages new NAME` to make a copy with new IDs.

@@ -3,7 +3,8 @@
 This repository is LyraCore's Official Package Collection. Each visible top-level directory is one
 independently installable Package. There is no separate registry or index file.
 
-Each Package API version has a tag, such as `api-v1`. After the compatibility checks pass on
+The typed Runtime Script examples require Package API version 2. Each Package API version has a
+tag, such as `api-v2`. After the compatibility checks pass on
 `main`, CI moves the tag for the checked Core revision's Package API version to that collection
 commit. Tags for older API versions stay at their last compatible commit.
 

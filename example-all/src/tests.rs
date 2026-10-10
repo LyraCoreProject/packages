@@ -1,17 +1,14 @@
 #![cfg(test)]
 
-use crate::package_test::{ask_offline, RuntimeScript};
+use crate::package_test::{ask_artifact_offline, ask_offline};
 
 #[test]
 fn the_script_answer_overrides_config() {
-    let answer = ask_offline(
+    let answer = ask_artifact_offline(
         super::WELCOME_EVENT,
         None,
         None,
-        &[RuntimeScript {
-            name: "example-all.welcome",
-            source: include_str!("../scripts/welcome.lua"),
-        }],
+        include_str!("../data/.generated/example-all.script.json"),
     )
     .unwrap();
     assert_eq!(answer, Some(1.0));
