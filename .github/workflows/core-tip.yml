@@ -30,6 +30,9 @@ jobs:
           ./.github/test-artifact-firewall.sh
           ./.github/check-artifact-firewall.sh
 
+      - name: Test Package API tag publication
+        run: ./.github/test-tag-api-version.sh
+
   package-api-exemptions:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -54,6 +57,8 @@ jobs:
     needs: firewall
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    outputs:
+      package-api-version: ${{ steps.package-api.outputs.version }}
 
     steps:
       - name: Check out Packages
@@ -73,6 +78,17 @@ jobs:
       - name: Install Rust 1.93.0
         run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
 
+      - name: Read the checked Core revision's Package API version
+        id: package-api
+        run: |
+          heading=$(head -n 1 lyracore/docs/package-api.md)
+          version=${heading#\# Package API, version }
+          if [[ "$heading" == "$version" || ! "$version" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Core does not declare a Package API version" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Check Package test formatting, lints and discovery
         run: |
           ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore" \
@@ -87,6 +103,22 @@ jobs:
 
       - name: Compile every Package against the required Core revision
         run: ./collection/.github/check-core-tip.sh "$GITHUB_WORKSPACE/lyracore"
+
+  package-api-tag:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [module, datascripts, package-api-exemptions]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Check out the tested collection
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Move its Package API tag
+        env:
+          PACKAGE_API_VERSION: ${{ needs.module.outputs.package-api-version }}
+        run: ./.github/tag-api-version.sh "$PACKAGE_API_VERSION"
 
   datascripts:
     needs: firewall

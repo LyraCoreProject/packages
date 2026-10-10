@@ -3,8 +3,13 @@
 This repository is LyraCore's Official Package Collection. Each visible top-level directory is one
 independently installable Package. There is no separate registry or index file.
 
-`main` tracks LyraCore `main`. When LyraCore starts publishing releases, this repository will use
-matching tags for compatible Package revisions.
+Each Package API version has a tag, such as `api-v1`. After the compatibility checks pass on
+`main`, CI moves the tag for the checked Core revision's Package API version to that collection
+commit. Tags for older API versions stay at their last compatible commit.
+
+`lyracore packages add <name>` and `lyracore packages update` select the tag from the version in
+the checkout's `docs/package-api.md`. A missing tag refuses the operation. Each installed Package's
+Provenance Stamp records the exact collection commit it came from.
 
 ## Packages
 
@@ -20,7 +25,8 @@ core patch before installing it.
 
 CI installs every Package into a clean checkout of
 [`LyraCoreProject/LyraCore`](https://github.com/LyraCoreProject/LyraCore) and runs the Module library
-tests against core tip. A Package API or schema incompatibility fails the collection build.
+tests against the Core revision pinned in `.github/workflows/core-tip.yml`. A Package API or
+schema incompatibility fails the collection build.
 
 To run the same check locally against a clean LyraCore checkout:
 
@@ -28,7 +34,8 @@ To run the same check locally against a clean LyraCore checkout:
 ./.github/check-core-tip.sh /path/to/LyraCore
 ```
 
-The check refuses a core checkout whose `packages/` directory is not empty.
+The check temporarily links collection Packages into Core. It restores any in-tree Packages with
+matching names when it exits.
 
 ## Contributing
 
