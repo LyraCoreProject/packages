@@ -1,0 +1,4 @@
+## Interface: 11200
+## Title: example-client
+## Notes: A welcome from a client Package.
+example-client.lua

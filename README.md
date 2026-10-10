@@ -13,6 +13,16 @@ Provenance Stamp records the exact collection commit it came from.
 
 ## Packages
 
+Start with these Reference Packages. Each adds a small welcome at one level of the Package API.
+
+| Package | What to read |
+| --- | --- |
+| [`example-script`](example-script/) | TypeScript on login and Lua on level-up, with one chat line each |
+| [`example-client`](example-client/) | An addon and a UI Transform |
+| [`example-data`](example-data/) | A Datascript that clones one spell, with a Delta built locally |
+| [`example-rust`](example-rust/) | A Rust hook, Package Config and a Package test |
+| [`example-all`](example-all/) | Rust asks a Runtime Script, with Package Config as the fallback |
+
 - [`dungeons`](dungeons/) holds scripted dungeon choreography, one submodule per dungeon.
   Deadmines is its first dungeon.
 - [`playerbots`](playerbots/) fields a population of session-less Characters a player can group
