@@ -42,7 +42,7 @@ jobs:
         id: core-ref
         uses: ./collection/.github/actions/core-ref
         with:
-          fallback: 55118071eb69443cffb9739717e1633cad3f3bfa
+          fallback: 6e73c274d7b084c7c0b1842d4a7ae82316952b4a
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
