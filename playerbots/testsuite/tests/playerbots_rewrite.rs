@@ -983,6 +983,14 @@ fn playerbots_core_cast_replacement_finishes_the_original_handle() {
     node.assert_call("playerbots_fixture_cast", &[bot, bot]);
     let original =
         node.query_rows("SELECT scheduled_id FROM game_pending_cast")[0]["scheduled_id"].clone();
+    // Permit a replacement while the original five-second cast is still pending.
+    node.assert_sql(&format!(
+        "DELETE FROM game_spell_cooldown WHERE caster_guid = {bot}"
+    ));
+    assert_eq!(
+        node.query_rows("SELECT scheduled_id FROM game_pending_cast")[0]["scheduled_id"],
+        original
+    );
     node.assert_call("debug_begin_cast", &[bot, "5090100", bot]);
     assert_ne!(
         node.query_rows("SELECT scheduled_id FROM game_pending_cast")[0]["scheduled_id"],

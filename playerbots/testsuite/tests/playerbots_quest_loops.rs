@@ -1619,7 +1619,7 @@ fn playerbots_timed_quest_cast_approaches_before_a_target_moves_beyond_completio
         .unwrap(),
     )
     .unwrap();
-    let cast_updates = serde_json::to_string(&cast_updates).unwrap();
+    let cast_updates_text = serde_json::to_string(&cast_updates).unwrap();
     assert_eq!(spell["range_yd"], "35");
     assert_eq!(spell["cast_time_ms"], "1500");
     assert_eq!(retained["quest_entry"], "7");
@@ -1634,7 +1634,7 @@ fn playerbots_timed_quest_cast_approaches_before_a_target_moves_beyond_completio
         assert_eq!(started_pending.len(), 1, "{started_pending:?}");
         assert_eq!(started_pending[0]["spell_id"], "133");
         assert_eq!(started_pending[0]["target_guid"], CREATURE_6.to_string());
-        assert!(out_of_range_observed, "{cast_updates}");
+        assert!(out_of_range_observed, "{cast_updates_text}");
     }
     assert!(started_pending.is_empty(), "{started_pending:?}");
     assert!(started["chosen"].contains("castingPosition"), "{started:?}");
@@ -1656,14 +1656,27 @@ fn playerbots_timed_quest_cast_approaches_before_a_target_moves_beyond_completio
         "{target_movement:?}"
     );
     assert!(spawn["x"].parse::<f32>().unwrap() > target["x"].parse::<f32>().unwrap());
-    assert!(!cast_updates.contains("outOfRange"), "{cast_updates}");
-    assert!(cast_updates.contains("castResolved"), "{cast_updates}");
-    assert!(actions(&node, &guid).iter().any(|action| {
-        action["kind"].contains("cast")
-            && action["spell_id"] == "133"
-            && action["target_guid"] == CREATURE_6.to_string()
-            && action["outcome"].contains("castResolved")
-    }));
+    assert!(
+        !cast_updates_text.contains("outOfRange"),
+        "{cast_updates_text}"
+    );
+    // A later cast can replace the bounded action row after this completion.
+    assert!(
+        cast_updates.iter().any(|update| {
+            update["pkg_playerbots_action"]["inserts"]
+                .as_array()
+                .is_some_and(|rows| {
+                    rows.iter().any(|action| {
+                        action["character_guid"].as_u64() == Some(guid.parse().unwrap())
+                            && action["kind"].get("cast").is_some()
+                            && action["spell_id"] == 133
+                            && action["target_guid"].as_u64() == Some(CREATURE_6)
+                            && action["outcome"].get("castResolved").is_some()
+                    })
+                })
+        }),
+        "{cast_updates_text}"
+    );
     assert!(first_quest_count(&quest(&node, &guid, 7).unwrap()) > 0);
 }
 
