@@ -98,6 +98,8 @@ fn stage_creature(
         movement_type: 0,
         respawn_secs: 60,
         life_seq: 1,
+        instance_id,
+        source_guid: 0,
     };
     let mut entity =
         crate::package::fixture::build_creature_entity(&spawn, &template, 0, instance_id);
