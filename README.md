@@ -3,9 +3,9 @@
 This repository is LyraCore's Official Package Collection. Each visible top-level directory is one
 independently installable Package. There is no separate registry or index file.
 
-This collection requires Package API version 3. Rust Packages use `actor`, `hooks`, `package`,
-`tables`, and `script_binding`. Core checkouts on version 2 can use `api-v2`. Each Package API version has
-a tag, such as `api-v3`. After the compatibility checks pass on `main`, CI moves the tag for the
+This collection requires Package API version 4. Rust Packages use `actor`, `hooks`, `package`,
+`tables`, and `script_binding`. Core checkouts on version 3 can use `api-v3`. Each Package API version has
+a tag, such as `api-v4`. After the compatibility checks pass on `main`, CI moves the tag for the
 checked Core revision's Package API version to that collection commit. Tags for older API versions stay at their last compatible commit.
 
 `lyracore packages add <name>` and `lyracore packages update` select the tag from the version in
