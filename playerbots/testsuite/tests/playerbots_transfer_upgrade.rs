@@ -392,13 +392,22 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         assert_eq!(after[runner]["movement_due_micros"], i64::MAX.to_string());
         assert_eq!(after[runner]["path_pending"], "false");
     }
+    // The pinned predecessor predates the persisted watched-faction selection.
+    let mut expected_characters = before["character"].clone();
+    for character in expected_characters.as_array_mut().unwrap() {
+        assert!(character
+            .as_object_mut()
+            .unwrap()
+            .insert("watched_faction_index".into(), serde_json::json!("-1"))
+            .is_none());
+    }
+    assert_eq!(expected_characters, after["character"], "character");
     for field in [
         "orders",
         "retained_quest",
         "quests",
         "pending_cast",
         "provisioning",
-        "character",
         "bot_intents",
         "source_escrows",
         "arrivals",
