@@ -3,8 +3,8 @@
 //! Private three-database authority and mirror-failure staging for Gateway Transfer cases.
 
 use super::pkg_playerbots_bot;
-use crate::transfer::game_transfer_in;
-use crate::{
+use crate::tables::game_transfer_in;
+use crate::tables::{
     game_character, game_character_shard, game_group, game_group_member,
     game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
@@ -34,7 +34,7 @@ pub struct PlayerbotsTransferGatewayIdentity {
 /// Record the actual Module identity used by one private Gateway Transfer database.
 #[reducer]
 pub fn playerbots_transfer_gateway_identity_stage(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let identities = ctx.db.pkg_playerbots_transfer_gateway_identity();
     if identities.id().find(0).is_some() {
         return Err("Gateway Transfer identity fixture requires a fresh row".to_string());
@@ -51,8 +51,8 @@ fn partition(
     membership_revision: u64,
     map_id: u32,
     instance_id: u64,
-) -> crate::GroupMemberPartition {
-    crate::GroupMemberPartition {
+) -> crate::tables::GroupMemberPartition {
+    crate::tables::GroupMemberPartition {
         character_guid,
         group_id: GROUP,
         membership_revision,
@@ -60,12 +60,17 @@ fn partition(
         map_id,
         instance_id,
         locator_revision: 1,
-        state: crate::PartyPartitionState::Known,
+        state: crate::tables::PartyPartitionState::Known,
     }
 }
 
-fn locator(character_guid: u64, map_id: u32, instance_id: u64, now: i64) -> crate::CharacterShard {
-    crate::CharacterShard {
+fn locator(
+    character_guid: u64,
+    map_id: u32,
+    instance_id: u64,
+    now: i64,
+) -> crate::tables::CharacterShard {
+    crate::tables::CharacterShard {
         character_guid,
         map_id,
         instance_id,
@@ -86,7 +91,7 @@ struct GatewayParty {
     loot_threshold: u8,
     master_looter_guid: u64,
     member_guids: Vec<u64>,
-    partitions: Vec<crate::GroupMemberPartition>,
+    partitions: Vec<crate::tables::GroupMemberPartition>,
     roster_revision: u64,
 }
 
@@ -156,7 +161,7 @@ fn exact_gateway_party(
             };
             partition.group_id != GROUP
                 || !partition.member_active
-                || partition.state != crate::PartyPartitionState::Known
+                || partition.state != crate::tables::PartyPartitionState::Known
                 || partition.membership_revision != membership_revision
         })
     {
@@ -207,7 +212,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
     destination_map: u32,
     destination_instance: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let character_guids = [companion_guid, leader_guid, priest_guid, mage_guid];
     if character_guids.contains(&0)
         || character_guids
@@ -250,7 +255,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
     }
     let locators = ctx.db.game_character_shard();
 
-    ctx.db.game_group().insert(crate::Group {
+    ctx.db.game_group().insert(crate::tables::Group {
         group_id: GROUP,
         leader_guid,
         loot_method: PARTY_LOOT_METHOD,
@@ -260,28 +265,28 @@ pub fn playerbots_transfer_gateway_realm_stage(
         group_type: 0,
     });
     let members = ctx.db.game_group_member();
-    members.insert(crate::GroupMember {
+    members.insert(crate::tables::GroupMember {
         id: LEADER_MEMBER,
         group_id: GROUP,
         character_guid: leader_guid,
         owner_identity: Identity::ZERO,
         raid_slot: 0,
     });
-    members.insert(crate::GroupMember {
+    members.insert(crate::tables::GroupMember {
         id: PRIEST_MEMBER,
         group_id: GROUP,
         character_guid: priest_guid,
         owner_identity: Identity::ZERO,
         raid_slot: 0,
     });
-    members.insert(crate::GroupMember {
+    members.insert(crate::tables::GroupMember {
         id: MAGE_MEMBER,
         group_id: GROUP,
         character_guid: mage_guid,
         owner_identity: Identity::ZERO,
         raid_slot: 0,
     });
-    members.insert(crate::GroupMember {
+    members.insert(crate::tables::GroupMember {
         id: COMPANION_MEMBER,
         group_id: GROUP,
         character_guid: companion_guid,
@@ -314,7 +319,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
     ));
     ctx.db
         .game_group_roster_revision()
-        .insert(crate::GroupRosterRevision {
+        .insert(crate::tables::GroupRosterRevision {
             group_id: GROUP,
             revision: 1,
             active: true,
@@ -348,7 +353,7 @@ pub fn playerbots_transfer_gateway_realm_stage(
         .filter(|row| {
             (row.map_id, row.instance_id) == (leader.map_id, leader.instance_id)
                 && row.locator_revision == leader.revision
-                && row.state == crate::PartyPartitionState::Known
+                && row.state == crate::tables::PartyPartitionState::Known
         });
     if leader_partition.is_none() {
         return Err("Gateway Transfer fixture did not project its leader crossing".to_string());
@@ -370,7 +375,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
     destination_map: u32,
     destination_instance: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let guids = [companion_guid, leader_guid, priest_guid, mage_guid];
     if guids.contains(&0)
         || guids
@@ -382,7 +387,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
     }
     if [companion_guid, priest_guid, mage_guid]
         .iter()
-        .any(|guid| crate::helpers::character_by_guid(ctx, *guid).is_some())
+        .any(|guid| crate::actor::character_by_guid(ctx, *guid).is_some())
         || ctx.db.game_group().group_id().find(GROUP).is_some()
         || ctx
             .db
@@ -409,7 +414,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
     ctx.db.pkg_playerbots_bot().id().delete(leader.id);
     crate::actor::set_sessionless_action_consent(ctx, leader_guid, true);
 
-    let mut character = crate::helpers::character_by_guid(ctx, leader_guid)
+    let mut character = crate::actor::character_by_guid(ctx, leader_guid)
         .ok_or("Gateway Transfer destination leader Character is absent")?;
     character.map_id = destination_map;
     character.pending_instance_id = destination_instance;
@@ -431,7 +436,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
     entities.guid().update(entity);
-    crate::group::sync_group_mirror(
+    crate::package::fixture::sync_group_mirror(
         ctx,
         GROUP,
         leader_guid,
@@ -439,7 +444,7 @@ pub fn playerbots_transfer_gateway_destination_leader_stage(
         2,
         0,
         vec![leader_guid, companion_guid, priest_guid, mage_guid],
-        crate::SessionActor {
+        crate::package::fixture::SessionActor {
             guid: leader_guid,
             ownership: None,
         },
@@ -484,7 +489,7 @@ fn restage_completed_member_crossing(
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     locators.insert(locator(character_guid, source_map, source_instance, now));
-    crate::package_fixture::record_completed_transfer(
+    crate::package::fixture::record_completed_transfer(
         ctx,
         character_guid,
         destination_map,
@@ -509,7 +514,7 @@ fn restage_completed_member_crossing(
     partition.map_id = settled.map_id;
     partition.instance_id = settled.instance_id;
     partition.locator_revision = settled.revision;
-    partition.state = crate::PartyPartitionState::Known;
+    partition.state = crate::tables::PartyPartitionState::Known;
     partitions.character_guid().update(partition);
     Ok(())
 }
@@ -525,7 +530,7 @@ pub fn playerbots_transfer_gateway_exit_realm_stage(
     priest_guid: u64,
     mage_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let party = exact_gateway_party(ctx, companion_guid, leader_guid, priest_guid, mage_guid)?;
     for (guid, map_id, instance_id, revision) in [
         (companion_guid, 36, 5_098_078, 2),
@@ -550,7 +555,7 @@ pub fn playerbots_transfer_gateway_exit_realm_stage(
             return Err("Gateway exit fixture Realm location changed".to_string());
         }
     }
-    crate::package_fixture::record_completed_transfer(ctx, leader_guid, 0, 0);
+    crate::package::fixture::record_completed_transfer(ctx, leader_guid, 0, 0);
     let settled = ctx
         .db
         .game_character_shard()
@@ -569,7 +574,7 @@ pub fn playerbots_transfer_gateway_exit_realm_stage(
     partition.map_id = settled.map_id;
     partition.instance_id = settled.instance_id;
     partition.locator_revision = settled.revision;
-    partition.state = crate::PartyPartitionState::Known;
+    partition.state = crate::tables::PartyPartitionState::Known;
     partitions.character_guid().update(partition);
     Ok(())
 }
@@ -584,16 +589,16 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     leader_guid: u64,
     priest_guid: u64,
     mage_guid: u64,
-    request_actor: crate::SessionActor,
+    request_actor: crate::package::fixture::SessionActor,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let mut party = exact_gateway_party(ctx, companion_guid, leader_guid, priest_guid, mage_guid)?;
     if request_actor.guid != leader_guid
         || !exact_known_partition(&party, companion_guid, 36, 5_098_078, 2)
         || !exact_known_partition(&party, leader_guid, 36, 5_098_078, 2)
         || !exact_known_partition(&party, priest_guid, 0, 0, 1)
         || !exact_known_partition(&party, mage_guid, 0, 0, 1)
-        || crate::helpers::character_by_guid(ctx, companion_guid).is_some()
+        || crate::actor::character_by_guid(ctx, companion_guid).is_some()
         || ctx
             .db
             .game_world_entity()
@@ -610,7 +615,7 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     {
         return Err("Gateway exit destination is not the exact settled entry source".to_string());
     }
-    let mut leader = crate::helpers::character_by_guid(ctx, leader_guid)
+    let mut leader = crate::actor::character_by_guid(ctx, leader_guid)
         .filter(|row| (row.map_id, row.pending_instance_id) == (36, 5_098_078))
         .ok_or("Gateway exit destination leader Character changed")?;
     if ctx
@@ -637,7 +642,7 @@ pub fn playerbots_transfer_gateway_exit_destination_stage(
     leader_partition.instance_id = 0;
     leader_partition.locator_revision = 3;
     let party_size = party.member_guids.len();
-    crate::group::sync_group_mirror(
+    crate::package::fixture::sync_group_mirror(
         ctx,
         GROUP,
         party.leader_guid,
@@ -669,7 +674,7 @@ pub fn playerbots_transfer_gateway_assist_realm_stage(
     destination_map: u32,
     destination_instance: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let _group = ctx
         .db
         .game_group()
@@ -724,7 +729,7 @@ pub fn playerbots_transfer_gateway_assist_realm_stage(
             };
             !expected.contains(&partition.character_guid)
                 || !partition.member_active
-                || partition.state != crate::PartyPartitionState::Known
+                || partition.state != crate::tables::PartyPartitionState::Known
                 || partition.locator_revision != expected_revision
                 || (partition.map_id, partition.instance_id) != expected_partition
         })
@@ -779,7 +784,7 @@ pub fn playerbots_transfer_gateway_mirror_fault(
     priest_guid: u64,
     mage_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let groups = ctx.db.game_group();
     let mut current = groups
         .group_id()
@@ -835,12 +840,13 @@ pub fn playerbots_transfer_gateway_mirror_fault(
                 && ((partition.map_id == 36
                     && partition.instance_id == 5_098_078
                     && partition.locator_revision == 2
-                    && partition.state == crate::PartyPartitionState::Known)
+                    && partition.state == crate::tables::PartyPartitionState::Known)
                     || arrivals.first().is_some_and(|arrival| {
                         partition.map_id == arrival.source_map_id
                             && partition.instance_id == arrival.source_instance_id
                             && partition.locator_revision == arrival.source_locator_revision
-                            && partition.state == crate::PartyPartitionState::PendingTransfer
+                            && partition.state
+                                == crate::tables::PartyPartitionState::PendingTransfer
                     }))
         });
     if (

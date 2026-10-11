@@ -38,11 +38,16 @@ jobs:
           ref: e134b135099a7d358a0f0fab58654c200602b9b1
           path: baseline
           persist-credentials: false
+      - name: Select the paired Core revision
+        id: core-ref
+        uses: ./collection/.github/actions/core-ref
+        with:
+          fallback: 55118071eb69443cffb9739717e1633cad3f3bfa
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
           # Core supplies the shared private integration fixtures.
-          ref: f91066df4aef5c8d753dbe1d2203c6a669f485fa
+          ref: ${{ steps.core-ref.outputs.ref }}
           path: lyracore
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

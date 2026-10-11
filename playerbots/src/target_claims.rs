@@ -4,7 +4,7 @@ use super::decision::Reason;
 use super::pkg_playerbots_bot;
 use super::recovery::Work;
 use super::runner::{pkg_playerbots_runner, Controller, PlayerbotsRunner, RunnerOutcome};
-use crate::{game_group_member, game_world_entity};
+use crate::tables::{game_group_member, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const OWNER_LIMIT: usize = 16;
@@ -94,7 +94,7 @@ pub(super) fn selected(ctx: &ReducerContext, state: &PlayerbotsRunner) -> Option
         && (owner.map_id, owner.instance_id) == (creature.map_id, creature.instance_id)
         && (attempt.destination.map_id, attempt.destination.instance_id)
             == (owner.map_id, owner.instance_id)
-        && attempt.geometry == crate::nav::inputs(ctx, owner.map_id))
+        && attempt.geometry == crate::actor::movement::inputs(ctx, owner.map_id))
     .then_some(target)
 }
 

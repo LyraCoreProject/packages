@@ -1,0 +1,30 @@
+name: Paired Core revision
+description: Select a same-name Core branch when present, otherwise use the required revision.
+inputs:
+  fallback:
+    description: Core revision required by this collection.
+    required: true
+outputs:
+  ref:
+    description: Exact paired commit or required Core revision.
+    value: ${{ steps.select.outputs.ref }}
+runs:
+  using: composite
+  steps:
+    - id: select
+      shell: bash
+      env:
+        BRANCH: ${{ github.head_ref || github.ref_name }}
+        FALLBACK: ${{ inputs.fallback }}
+      run: |
+        if [ "$BRANCH" = main ]; then
+          echo "ref=$FALLBACK" >> "$GITHUB_OUTPUT"
+        elif paired=$(git ls-remote --exit-code --heads https://github.com/LyraCoreProject/LyraCore "refs/heads/$BRANCH"); then
+          echo "ref=${paired%%[[:space:]]*}" >> "$GITHUB_OUTPUT"
+        else
+          status=$?
+          if [ "$status" -ne 2 ]; then
+            exit "$status"
+          fi
+          echo "ref=$FALLBACK" >> "$GITHUB_OUTPUT"
+        fi

@@ -7,9 +7,9 @@
 //! orders, combat, recovery, AreaTriggers, and Transfer remain on their ordinary owners.
 
 use super::{pkg_playerbots_bot, pkg_playerbots_provisioning, Controller};
-use crate::nav::game_nav_chunk;
-use crate::package_fixture::top_threat_target;
-use crate::{
+use crate::package::fixture::top_threat_target;
+use crate::tables::game_nav_chunk;
+use crate::tables::{
     game_area_trigger, game_areatrigger_teleport, game_aura, game_character, game_character_quest,
     game_character_shard, game_creature_move_schedule, game_creature_quest, game_creature_spawn,
     game_group, game_group_member, game_group_member_partition, game_group_roster_revision,
@@ -287,7 +287,7 @@ crate::game_hook!(on_cast_resolved, fn playerbots_companion_acceptance_observe_r
 });
 
 crate::game_hook!(on_cast_finished, fn playerbots_companion_acceptance_observe_finished_cast(ctx, payload) {
-    if !matches!(&payload.outcome, crate::spell::CastFinish::Resolved) {
+    if !matches!(&payload.outcome, crate::actor::CastFinish::Resolved) {
         return;
     }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
@@ -475,7 +475,7 @@ fn plan(ctx: &ReducerContext) -> Result<CompanionAcceptance, String> {
 }
 
 fn wound_without_moving(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
-    let mut entity = crate::helpers::live_entity(ctx, guid)?;
+    let mut entity = crate::actor::live_entity(ctx, guid)?;
     if entity.dead {
         return Err(format!(
             "companion acceptance cannot wound dead Character {guid}"
@@ -496,7 +496,7 @@ fn wound_without_moving(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
     let health = (entity.max_health.saturating_mul(10) / 100).max(1);
     entity.health = health;
     ctx.db.game_world_entity().guid().update(entity);
-    let wounded = crate::helpers::live_entity(ctx, guid)?;
+    let wounded = crate::actor::live_entity(ctx, guid)?;
     if wounded.health != health
         || (
             wounded.map_id,
@@ -525,7 +525,7 @@ fn clear_fortitude_if_present(ctx: &ReducerContext, guid: u64) -> Result<(), Str
             .any(|aura| aura.spell_id == 1243)
     };
     if has_fortitude() {
-        crate::spell::do_cancel_aura(ctx, guid, 1243)?;
+        crate::package::fixture::do_cancel_aura(ctx, guid, 1243)?;
     }
     if has_fortitude() {
         return Err(format!(
@@ -562,21 +562,23 @@ fn declare_exit_route(ctx: &ReducerContext) -> Result<(), String> {
     {
         return Err("companion acceptance refuses an existing Deadmines exit route".to_string());
     }
-    ctx.db.game_area_trigger().insert(crate::GameAreaTrigger {
-        id: EXIT_TRIGGER,
-        map_id: 36,
-        x: EXIT_SOURCE.0,
-        y: EXIT_SOURCE.1,
-        z: EXIT_SOURCE.2,
-        radius: 6.0,
-        box_length: 0.0,
-        box_width: 0.0,
-        box_height: 0.0,
-        box_yaw: 0.0,
-    });
+    ctx.db
+        .game_area_trigger()
+        .insert(crate::tables::GameAreaTrigger {
+            id: EXIT_TRIGGER,
+            map_id: 36,
+            x: EXIT_SOURCE.0,
+            y: EXIT_SOURCE.1,
+            z: EXIT_SOURCE.2,
+            radius: 6.0,
+            box_length: 0.0,
+            box_width: 0.0,
+            box_height: 0.0,
+            box_yaw: 0.0,
+        });
     ctx.db
         .game_areatrigger_teleport()
-        .insert(crate::AreatriggerTeleport {
+        .insert(crate::tables::AreatriggerTeleport {
             trigger_id: EXIT_TRIGGER,
             target_map: 0,
             x: EXIT_LANDING.0,
@@ -588,8 +590,11 @@ fn declare_exit_route(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-fn realm_partition(character_guid: u64, membership_revision: u64) -> crate::GroupMemberPartition {
-    crate::GroupMemberPartition {
+fn realm_partition(
+    character_guid: u64,
+    membership_revision: u64,
+) -> crate::tables::GroupMemberPartition {
+    crate::tables::GroupMemberPartition {
         character_guid,
         group_id: GROUP,
         membership_revision,
@@ -597,12 +602,12 @@ fn realm_partition(character_guid: u64, membership_revision: u64) -> crate::Grou
         map_id: 0,
         instance_id: 0,
         locator_revision: 1,
-        state: crate::PartyPartitionState::Known,
+        state: crate::tables::PartyPartitionState::Known,
     }
 }
 
-fn realm_locator(character_guid: u64, now: i64) -> crate::CharacterShard {
-    crate::CharacterShard {
+fn realm_locator(character_guid: u64, now: i64) -> crate::tables::CharacterShard {
+    crate::tables::CharacterShard {
         character_guid,
         map_id: 0,
         instance_id: 0,
@@ -628,7 +633,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
     mage_one_guid: u64,
     mage_two_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let guids = [
         leader_guid,
         warrior_guid,
@@ -672,7 +677,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
     {
         return Err("companion acceptance Realm party requires fresh authority rows".to_string());
     }
-    ctx.db.game_group().insert(crate::Group {
+    ctx.db.game_group().insert(crate::tables::Group {
         group_id: GROUP,
         leader_guid,
         loot_method: 0,
@@ -686,7 +691,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
     let locators = ctx.db.game_character_shard();
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     for (guid, membership_revision) in guids.into_iter().zip(MEMBER_IDS) {
-        members.insert(crate::GroupMember {
+        members.insert(crate::tables::GroupMember {
             id: membership_revision,
             group_id: GROUP,
             character_guid: guid,
@@ -698,7 +703,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
     }
     ctx.db
         .game_group_roster_revision()
-        .insert(crate::GroupRosterRevision {
+        .insert(crate::tables::GroupRosterRevision {
             group_id: GROUP,
             revision: 2,
             active: true,
@@ -711,7 +716,7 @@ pub fn playerbots_companion_acceptance_realm_stage(
 pub fn playerbots_companion_acceptance_destination_stage(
     ctx: &ReducerContext,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if ctx.db.game_group().group_id().find(GROUP).is_some()
         || ctx
             .db
@@ -737,7 +742,7 @@ pub fn playerbots_companion_acceptance_destination_stage(
 pub fn playerbots_companion_acceptance_accept_retained_quest(
     ctx: &ReducerContext,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let plan = plan(ctx)?;
     if plan.begun_micros != 0 {
         return Err("companion acceptance refuses Quest setup after begin".to_string());
@@ -768,28 +773,32 @@ pub fn playerbots_companion_acceptance_accept_retained_quest(
     template.src_item = 0;
     template.src_item_count = 0;
     ctx.db.game_quest_template().insert(template);
-    ctx.db.game_quest_objective().insert(crate::QuestObjective {
-        id: RETAINED_OBJECTIVE,
-        quest_entry: RETAINED_QUEST,
-        obj_index: 0,
-        kind: crate::quest::objective_kind::KILL_CREATURE,
-        target_entry: 5_098_003,
-        required_count: 2,
-    });
-    for role in [
-        crate::quest::quest_role::START,
-        crate::quest::quest_role::END,
-    ] {
-        ctx.db.game_creature_quest().insert(crate::CreatureQuest {
-            id: 0,
-            creature_entry: INTERACTION_GIVER_ENTRY,
+    ctx.db
+        .game_quest_objective()
+        .insert(crate::tables::QuestObjective {
+            id: RETAINED_OBJECTIVE,
             quest_entry: RETAINED_QUEST,
-            role,
+            obj_index: 0,
+            kind: crate::actor::objective_kind::KILL_CREATURE,
+            target_entry: 5_098_003,
+            required_count: 2,
         });
+    for role in [
+        crate::actor::quest_role::START,
+        crate::actor::quest_role::END,
+    ] {
+        ctx.db
+            .game_creature_quest()
+            .insert(crate::tables::CreatureQuest {
+                id: 0,
+                creature_entry: INTERACTION_GIVER_ENTRY,
+                quest_entry: RETAINED_QUEST,
+                role,
+            });
     }
     let giver = (0xF130u64 << 48) | (u64::from(INTERACTION_GIVER_ENTRY) << 24) | 1;
-    let bot = crate::helpers::live_entity(ctx, plan.warrior_guid)?;
-    let mut giver_body = crate::helpers::live_entity(ctx, giver)?;
+    let bot = crate::actor::live_entity(ctx, plan.warrior_guid)?;
+    let mut giver_body = crate::actor::live_entity(ctx, giver)?;
     giver_body.map_id = bot.map_id;
     giver_body.instance_id = bot.instance_id;
     giver_body.x = bot.x + 1.0;
@@ -834,8 +843,8 @@ fn verify_bot(ctx: &ReducerContext, guid: u64, class: u8, role: u8) -> Result<()
 
 fn retain_staged_positions(ctx: &ReducerContext, guids: [u64; 5]) -> Result<(), String> {
     for guid in guids {
-        let body = crate::helpers::live_entity(ctx, guid)?;
-        let mut character = crate::helpers::character_by_guid(ctx, guid)
+        let body = crate::actor::live_entity(ctx, guid)?;
+        let mut character = crate::actor::character_by_guid(ctx, guid)
             .ok_or("companion acceptance Character missing")?;
         character.map_id = body.map_id;
         character.pending_instance_id = body.instance_id;
@@ -849,8 +858,8 @@ fn retain_staged_positions(ctx: &ReducerContext, guids: [u64; 5]) -> Result<(), 
 }
 
 fn stage_repair_wall(ctx: &ReducerContext, priest_guid: u64, mage_guid: u64) -> Result<(), String> {
-    let priest = crate::helpers::live_entity(ctx, priest_guid)?;
-    let mut mage = crate::helpers::live_entity(ctx, mage_guid)?;
+    let priest = crate::actor::live_entity(ctx, priest_guid)?;
+    let mut mage = crate::actor::live_entity(ctx, mage_guid)?;
     mage.x = priest.x + 100.0;
     mage.y = priest.y;
     mage.z = priest.z;
@@ -916,7 +925,7 @@ fn stage_repair_wall(ctx: &ReducerContext, priest_guid: u64, mage_guid: u64) -> 
         );
     }
     ctx.db.game_nav_chunk().key().update(chunk);
-    if crate::nav::has_los(
+    if crate::actor::movement::has_los(
         ctx,
         priest.map_id,
         priest.instance_id,
@@ -940,7 +949,7 @@ pub fn playerbots_companion_acceptance_stage(
     mage_two_guid: u64,
     reward_quest: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if ctx.db.pkg_playerbots_companion_acceptance().count() != 0
         || ctx.db.pkg_playerbots_companion_fault().count() != 0
         || ctx.db.pkg_playerbots_companion_combat_receipt().count() != 0
@@ -1022,7 +1031,7 @@ pub fn playerbots_companion_acceptance_stage(
     let mut enemies = Vec::with_capacity(3);
     for entry in 5_098_001u32..=5_098_003 {
         let guid = (0xF130u64 << 48) | (u64::from(entry) << 24) | 1;
-        let enemy = crate::helpers::live_entity(ctx, guid)?;
+        let enemy = crate::actor::live_entity(ctx, guid)?;
         if enemy.entry != entry {
             return Err("companion acceptance pull target identity changed".to_string());
         }
@@ -1094,7 +1103,7 @@ pub fn playerbots_companion_acceptance_stage(
 /// Start the route only after ordinary provisioning and one real Quest reward are durable.
 #[reducer]
 pub fn playerbots_companion_acceptance_begin(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let mut plan = plan(ctx)?;
     if plan.begun_micros != 0 {
         return Err("companion acceptance route already began".to_string());
@@ -1195,7 +1204,7 @@ pub fn playerbots_companion_acceptance_apply_fault(
     ctx: &ReducerContext,
     fault_id: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let plan = plan(ctx)?;
     if plan.begun_micros == 0 {
         return Err("companion acceptance route has not begun".to_string());
@@ -1230,19 +1239,23 @@ pub fn playerbots_companion_acceptance_apply_fault(
             CONTROL_SPELL,
         )?,
         FAULT_DEATH => {
-            let victim = crate::helpers::live_entity(ctx, fault.subject_guid)?;
-            let damage = crate::combat::final_damage(ctx, fault.subject_guid, victim.health);
-            let outcome = crate::combat::apply_hit(
+            let victim = crate::actor::live_entity(ctx, fault.subject_guid)?;
+            let damage =
+                crate::package::fixture::final_damage(ctx, fault.subject_guid, victim.health);
+            let outcome = crate::package::fixture::apply_hit(
                 ctx,
                 fault.target_guid,
                 fault.subject_guid,
                 damage,
-                crate::combat::Hit::weapon(crate::combat::HitSource::MainHand, false),
+                crate::package::fixture::Hit::weapon(
+                    crate::package::fixture::HitSource::MainHand,
+                    false,
+                ),
             );
             if !outcome.killed {
                 return Err("declared companion fault was not lethal".to_string());
             }
-            let dead = crate::helpers::live_entity(ctx, fault.subject_guid)?;
+            let dead = crate::actor::live_entity(ctx, fault.subject_guid)?;
             if !dead.dead
                 || dead.health != 0
                 || dead.player_flags & lyracore_shared::constants::player_flags::GHOST != 0

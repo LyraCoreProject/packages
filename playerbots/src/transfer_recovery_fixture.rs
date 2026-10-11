@@ -3,7 +3,7 @@
 use super::actions::pkg_playerbots_action;
 use super::pkg_playerbots_bot;
 use super::runner::{CompanionTransferPurpose, TransferCheckpoint, TransferPurpose};
-use crate::game_creature_spline;
+use crate::tables::game_creature_spline;
 use spacetimedb::{reducer, ReducerContext};
 
 const STALLED_MICROS: i64 = 30_000_000;
@@ -19,7 +19,7 @@ pub fn playerbots_transfer_recovery_fixture_stage_arrival(
     character_guid: u64,
     member_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -33,7 +33,7 @@ pub fn playerbots_transfer_recovery_fixture_stage_arrival(
             )
         })
         .ok_or("Transfer Recovery fixture requires a Runner owner")?;
-    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    let me = crate::actor::live_entity(ctx, character_guid)?;
     let mut state = super::runner::PlayerbotsRunner::load(ctx, character_guid)
         .ok_or("Transfer Recovery fixture Runner is absent")?;
     let objective = state

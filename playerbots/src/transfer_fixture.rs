@@ -2,7 +2,7 @@
 
 //! Private AreaTrigger staging for durable Transfer cases.
 
-use crate::{
+use crate::tables::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_group, game_group_member,
     game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
@@ -77,21 +77,23 @@ fn declare_route(ctx: &ReducerContext, route: FixtureRoute) -> Result<(), String
             route.trigger
         ));
     }
-    ctx.db.game_area_trigger().insert(crate::GameAreaTrigger {
-        id: route.trigger,
-        map_id: route.source_map,
-        x: route.source.0,
-        y: route.source.1,
-        z: route.source.2,
-        radius: route.radius,
-        box_length: 0.0,
-        box_width: 0.0,
-        box_height: 0.0,
-        box_yaw: 0.0,
-    });
+    ctx.db
+        .game_area_trigger()
+        .insert(crate::tables::GameAreaTrigger {
+            id: route.trigger,
+            map_id: route.source_map,
+            x: route.source.0,
+            y: route.source.1,
+            z: route.source.2,
+            radius: route.radius,
+            box_length: 0.0,
+            box_width: 0.0,
+            box_height: 0.0,
+            box_yaw: 0.0,
+        });
     ctx.db
         .game_areatrigger_teleport()
-        .insert(crate::AreatriggerTeleport {
+        .insert(crate::tables::AreatriggerTeleport {
             trigger_id: route.trigger,
             target_map: route.target_map,
             x: route.landing.0,
@@ -134,7 +136,7 @@ fn place_character(
     landing: (f32, f32, f32, f32),
 ) -> Result<(), String> {
     let mut character =
-        crate::helpers::character_by_guid(ctx, guid).ok_or("Transfer fixture Character missing")?;
+        crate::actor::character_by_guid(ctx, guid).ok_or("Transfer fixture Character missing")?;
     character.map_id = map_id;
     character.pending_instance_id = instance_id;
     character.x = landing.0;
@@ -146,7 +148,7 @@ fn place_character(
 }
 
 fn move_partition(
-    partitions: &mut [crate::group::GroupMemberPartition],
+    partitions: &mut [crate::tables::GroupMemberPartition],
     guid: u64,
     map_id: u32,
     instance_id: u64,
@@ -175,7 +177,7 @@ pub fn playerbots_transfer_fixture_entry_route_stage(
     companion_guid: u64,
     leader_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let group = ctx
         .db
         .game_group()
@@ -188,28 +190,28 @@ pub fn playerbots_transfer_fixture_entry_route_stage(
         .game_group_member()
         .by_group()
         .filter(&GROUP)
-        .take(crate::group::GROUP_MAX_MEMBERS + 1)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
-    if members.len() > crate::group::GROUP_MAX_MEMBERS
+    if members.len() > lyracore_shared::group::GROUP_MAX_MEMBERS
         || !members
             .iter()
             .any(|member| member.character_guid == companion_guid)
     {
         return Err("Transfer entry fixture companion is outside its bounded party".to_string());
     }
-    let companion = crate::helpers::live_entity(ctx, companion_guid)?;
-    let leader = crate::helpers::live_entity(ctx, leader_guid)?;
+    let companion = crate::actor::live_entity(ctx, companion_guid)?;
+    let leader = crate::actor::live_entity(ctx, leader_guid)?;
     if (companion.map_id, companion.instance_id) != (leader.map_id, leader.instance_id) {
         return Err("Transfer entry fixture requires the local command partition".to_string());
     }
     let (route, _) = fixture_route(2)?;
     declare_route(ctx, route)?;
     place_live(ctx, companion_guid, 0, 0, ENTRY_SOURCE)?;
-    let actor = crate::SessionActor {
+    let actor = crate::package::fixture::SessionActor {
         guid: leader_guid,
         ownership: None,
     };
-    crate::package_fixture::admit_to_instance(
+    crate::package::fixture::admit_to_instance(
         ctx,
         group.leader_guid,
         36,
@@ -229,13 +231,13 @@ pub fn playerbots_transfer_fixture_stage(
     leader_guid: u64,
     mode: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     stage_transfer_fixture(
         ctx,
         companion_guid,
         leader_guid,
         mode,
-        crate::SessionActor {
+        crate::package::fixture::SessionActor {
             guid: leader_guid,
             ownership: None,
         },
@@ -249,9 +251,9 @@ pub fn playerbots_transfer_fixture_stage_authenticated(
     companion_guid: u64,
     leader_guid: u64,
     mode: u8,
-    request_actor: crate::SessionActor,
+    request_actor: crate::package::fixture::SessionActor,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if request_actor.guid != leader_guid {
         return Err("Transfer fixture authority does not own the party leader".to_string());
     }
@@ -263,7 +265,7 @@ fn stage_transfer_fixture(
     companion_guid: u64,
     leader_guid: u64,
     mode: u8,
-    request_actor: crate::SessionActor,
+    request_actor: crate::package::fixture::SessionActor,
 ) -> Result<(), String> {
     let (route, declared) = fixture_route(mode)?;
     let group = ctx
@@ -278,9 +280,9 @@ fn stage_transfer_fixture(
         .game_group_member()
         .by_group()
         .filter(&GROUP)
-        .take(crate::group::GROUP_MAX_MEMBERS + 1)
+        .take(lyracore_shared::group::GROUP_MAX_MEMBERS + 1)
         .collect();
-    if members.len() > crate::group::GROUP_MAX_MEMBERS {
+    if members.len() > lyracore_shared::group::GROUP_MAX_MEMBERS {
         return Err("Transfer fixture party exceeds the supported member bound".to_string());
     }
     if !members
@@ -305,7 +307,7 @@ fn stage_transfer_fixture(
     } else {
         leader_guid
     };
-    crate::package_fixture::admit_to_instance(
+    crate::package::fixture::admit_to_instance(
         ctx,
         bound_guid,
         36,
@@ -325,7 +327,7 @@ fn stage_transfer_fixture(
         )?;
     }
 
-    crate::package_fixture::remove_live_character(ctx, leader_guid)?;
+    crate::package::fixture::remove_live_character(ctx, leader_guid)?;
     let leader_instance = if route.target_map == 36 {
         DESTINATION_INSTANCE
     } else {
@@ -373,7 +375,7 @@ fn stage_transfer_fixture(
         .map(|(_, character_guid)| character_guid)
         .collect();
     let raid_slots = vec![0; accepted_members.len()];
-    crate::group::sync_group_mirror(
+    crate::package::fixture::sync_group_mirror(
         ctx,
         GROUP,
         leader_guid,

@@ -1,6 +1,6 @@
 //! Pure, bounded selection from typed Strategies and explicit facts.
 
-use crate::nav::LEG_MAX_EXPANSIONS;
+use crate::actor::movement::LEG_MAX_EXPANSIONS;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Action {

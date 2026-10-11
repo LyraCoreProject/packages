@@ -1,6 +1,6 @@
 //! Bounded action observations. Acceptance never implies damage or quest credit.
 
-use crate::spell::{CastFinish, CastHandle, CastRefusal, CastStart};
+use crate::actor::{CastFinish, CastHandle, CastRefusal, CastStart};
 use spacetimedb::{table, ReducerContext, Table};
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub enum ActionKind {
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
 pub enum ActionOutcome {
-    AttackAccepted(crate::combat::AttackStart),
+    AttackAccepted(crate::actor::AttackStart),
     Completed,
     Movement(MovementObservation),
     CastResolved,
@@ -85,7 +85,7 @@ pub(super) fn attack(
     ctx: &ReducerContext,
     guid: u64,
     target_guid: u64,
-) -> Result<crate::combat::AttackStart, crate::actor::ActionRefusal> {
+) -> Result<crate::actor::AttackStart, crate::actor::ActionRefusal> {
     let result = crate::actor::request_attack(ctx, guid, target_guid);
     let outcome = match &result {
         Ok(accepted) => ActionOutcome::AttackAccepted(*accepted),
@@ -340,16 +340,16 @@ pub(super) fn take_loot(
 pub struct MovementObservation {
     pub map_id: u32,
     pub instance_id: u64,
-    pub destination: crate::nav::RoutePoint,
-    pub route: crate::nav::RouteStep,
+    pub destination: crate::actor::movement::RoutePoint,
+    pub route: crate::actor::movement::RouteStep,
     pub arrived: bool,
     pub last_advance_micros: Option<i64>,
 }
 
 pub(super) fn advanced_on_leg(
-    route: &crate::nav::RouteStep,
-    previous: crate::nav::RoutePoint,
-    current: crate::nav::RoutePoint,
+    route: &crate::actor::movement::RouteStep,
+    previous: crate::actor::movement::RoutePoint,
+    current: crate::actor::movement::RoutePoint,
 ) -> bool {
     let dx = route.endpoint.x - route.from.x;
     let dy = route.endpoint.y - route.from.y;
@@ -371,9 +371,9 @@ pub(super) fn movement(
     guid: u64,
     map_id: u32,
     instance_id: u64,
-    destination: crate::nav::RoutePoint,
+    destination: crate::actor::movement::RoutePoint,
     arrived: bool,
-    route: crate::nav::RouteStep,
+    route: crate::actor::movement::RouteStep,
 ) {
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let mut last_advance_micros = None;

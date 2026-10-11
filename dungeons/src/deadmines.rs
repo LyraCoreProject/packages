@@ -19,8 +19,8 @@
 
 use spacetimedb::ReducerContext;
 
-use crate::encounter::{self, ENCOUNTER_DONE};
-use crate::{game_gameobject, game_world_entity};
+use crate::package::encounter::{self, ENCOUNTER_DONE};
+use crate::tables::{game_gameobject, game_world_entity};
 
 pub(crate) const MAP_ID: u32 = 36;
 
@@ -79,10 +79,10 @@ crate::game_hook!(on_aggro, fn smite_calls_to_arms(ctx, payload) {
     if creature.entry != MR_SMITE || creature.instance_id == 0 {
         return;
     }
-    let _ = crate::chat::apply_send_chat(
+    let _ = crate::actor::send_chat(
         ctx,
         creature,
-        crate::chat::CHAT_YELL,
+        lyracore_shared::chat::broadcast_chat::YELL,
         0,
         SMITE_AGGRO_YELL.to_string(),
     );
@@ -130,10 +130,10 @@ crate::game_hook!(on_hp_threshold, fn smite_changes_weapons(ctx, payload) {
         _ => return,
     };
     if let Some(smite) = ctx.db.game_world_entity().guid().find(payload.creature_guid) {
-        let _ = crate::chat::apply_send_chat(
+        let _ = crate::actor::send_chat(
             ctx,
             smite,
-            crate::chat::CHAT_YELL,
+            lyracore_shared::chat::broadcast_chat::YELL,
             0,
             yell.to_string(),
         );
@@ -192,7 +192,9 @@ fn open_door_logged(ctx: &ReducerContext, go_entry: u32, instance_id: u64) {
 }
 
 fn mark_done(ctx: &ReducerContext, instance_id: u64, encounter_id: u32) {
-    if let Err(error) = encounter::set_encounter_state(ctx, instance_id, encounter_id, ENCOUNTER_DONE) {
+    if let Err(error) =
+        encounter::set_encounter_state(ctx, instance_id, encounter_id, ENCOUNTER_DONE)
+    {
         spacetimedb::log::warn!("deadmines: encounter {encounter_id} state write failed: {error}");
     }
 }

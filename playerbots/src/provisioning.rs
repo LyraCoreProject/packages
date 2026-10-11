@@ -4,7 +4,7 @@
 use super::{
     class, pkg_playerbots_bot, pkg_playerbots_kit, Controller, PlayerbotsBot, ROLE_DPS, ROLE_HEALER,
 };
-use crate::{game_item_instance, game_spell, game_world_entity};
+use crate::tables::{game_item_instance, game_spell, game_world_entity};
 use spacetimedb::{table, ReducerContext, Table};
 
 const PROFILE_REVISION: u32 = 3;

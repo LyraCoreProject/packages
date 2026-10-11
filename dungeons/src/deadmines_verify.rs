@@ -14,8 +14,8 @@ use super::deadmines::{
     MR_SMITE, RHAHKZOR, SMITES_CHEST, SMITES_MIGHTY_HAMMER, SMITES_REAVER, SMITE_FIRST_STAND_PCT,
     SMITE_SECOND_STAND_PCT, SNEED, SNEEDS_SHREDDER,
 };
-use crate::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
-use crate::{
+use crate::package::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
+use crate::tables::{
     game_chat_event, game_creature_spline, game_creature_template, game_encounter_equip,
     game_gameobject, game_gameobject_template, game_instance, game_item_template,
     game_world_entity, GameInstance,
@@ -31,11 +31,27 @@ const GO_FIXTURE_BAND: u64 = 0xF11D << 48;
 pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
     install_instance(ctx, MAP_ID, DEADMINES_INSTANCE)?;
     for (entry, type_id, display_id, x, y, z, orientation) in [
-        (FACTORY_DOOR, 0u8, 394u32, -191.414f32, -457.446f32, 54.4391f32, 1.69297f32),
+        (
+            FACTORY_DOOR,
+            0u8,
+            394u32,
+            -191.414f32,
+            -457.446f32,
+            54.4391f32,
+            1.69297f32,
+        ),
         (MAST_ROOM_DOOR, 0, 394, -290.294, -536.96, 49.4353, 1.55334),
         (FOUNDRY_DOOR, 0, 394, -168.514, -579.861, 19.3159, 3.12412),
         (IRON_CLAD_DOOR, 0, 394, -100.502, -668.771, 7.41049, 1.81514),
-        (DEFIAS_CANNON, 10, 245, -107.562, -659.674, 7.21211, -0.890294),
+        (
+            DEFIAS_CANNON,
+            10,
+            245,
+            -107.562,
+            -659.674,
+            7.21211,
+            -0.890294,
+        ),
         (SMITES_CHEST, 5, 259, 2.69086, -781.633, 9.76985, 2.33874),
     ] {
         seed_gameobject(ctx, entry, type_id, display_id, x, y, z, orientation)?;
@@ -66,15 +82,24 @@ pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
 #[reducer]
 pub fn debug_deadmines_rhahkzor_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, RHAHKZOR)?;
-    require_door_open(ctx, FACTORY_DOOR, "Rhahk'Zor's death did not open the Factory Door")?;
-    require_done(ctx, ENCOUNTER_RHAHKZOR, "Rhahk'Zor encounter state is not Done")
+    require_door_open(
+        ctx,
+        FACTORY_DOOR,
+        "Rhahk'Zor's death did not open the Factory Door",
+    )?;
+    require_done(
+        ctx,
+        ENCOUNTER_RHAHKZOR,
+        "Rhahk'Zor encounter state is not Done",
+    )
 }
 
 /// Destroying Sneed's Shredder ejects Sneed; the Mast Room Door stays shut until Sneed dies.
 #[reducer]
 pub fn debug_deadmines_shredder_ejects_sneed(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, SNEEDS_SHREDDER)?;
-    let sneed = live_boss(ctx, SNEED).ok_or_else(|| "no Sneed came out of the wreck".to_string())?;
+    let sneed =
+        live_boss(ctx, SNEED).ok_or_else(|| "no Sneed came out of the wreck".to_string())?;
     let wreck = fixture_guid(SNEEDS_SHREDDER, 41);
     let wreck = ctx
         .db
@@ -98,10 +123,14 @@ pub fn debug_deadmines_sneed_falls(ctx: &ReducerContext) -> Result<(), String> {
     let sneed = live_boss(ctx, SNEED).ok_or_else(|| "Sneed is not alive to kill".to_string())?;
     let player = fixture_guid(0, 44);
     require(
-        crate::combat::kill_creature(ctx, sneed.guid, Some(player)),
+        crate::package::fixture::kill_creature(ctx, sneed.guid, Some(player)),
         "Sneed did not die",
     )?;
-    require_door_open(ctx, MAST_ROOM_DOOR, "Sneed's death did not open the Mast Room Door")?;
+    require_door_open(
+        ctx,
+        MAST_ROOM_DOOR,
+        "Sneed's death did not open the Mast Room Door",
+    )?;
     require_done(ctx, ENCOUNTER_SNEED, "Sneed encounter state is not Done")
 }
 
@@ -109,7 +138,11 @@ pub fn debug_deadmines_sneed_falls(ctx: &ReducerContext) -> Result<(), String> {
 #[reducer]
 pub fn debug_deadmines_gilnid_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, GILNID)?;
-    require_door_open(ctx, FOUNDRY_DOOR, "Gilnid's death did not open the Foundry Door")?;
+    require_door_open(
+        ctx,
+        FOUNDRY_DOOR,
+        "Gilnid's death did not open the Foundry Door",
+    )?;
     require_done(ctx, ENCOUNTER_GILNID, "Gilnid encounter state is not Done")
 }
 
@@ -136,8 +169,12 @@ pub fn debug_deadmines_cannon_breaches(ctx: &ReducerContext) -> Result<(), Strin
     let player = fixture_guid(0, 44);
     set_fixture_position(ctx, player, -106.5, -659.0, 7.2)?;
     let cannon_guid = GO_FIXTURE_BAND | u64::from(DEFIAS_CANNON);
-    crate::gameobject::apply_use_gameobject(ctx, player, cannon_guid)?;
-    require_door_open(ctx, IRON_CLAD_DOOR, "the cannon did not breach the Iron Clad Door")?;
+    crate::actor::use_gameobject(ctx, player, cannon_guid)?;
+    require_door_open(
+        ctx,
+        IRON_CLAD_DOOR,
+        "the cannon did not breach the Iron Clad Door",
+    )?;
     require_done(ctx, ENCOUNTER_CANNON, "cannon encounter state is not Done")
 }
 
@@ -145,7 +182,11 @@ pub fn debug_deadmines_cannon_breaches(ctx: &ReducerContext) -> Result<(), Strin
 #[reducer]
 pub fn debug_deadmines_smite_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, MR_SMITE)?;
-    require_done(ctx, ENCOUNTER_SMITE, "Mr. Smite encounter state is not Done")
+    require_done(
+        ctx,
+        ENCOUNTER_SMITE,
+        "Mr. Smite encounter state is not Done",
+    )
 }
 
 // -------------------------------------------------------------------------------------------
@@ -164,7 +205,7 @@ fn seed_gameobject(
 ) -> Result<(), String> {
     let templates = ctx.db.game_gameobject_template();
     if templates.entry().find(entry).is_none() {
-        templates.insert(crate::gameobject::GameObjectTemplate {
+        templates.insert(crate::tables::GameObjectTemplate {
             entry,
             type_id,
             display_id,
@@ -182,7 +223,7 @@ fn seed_gameobject(
     let gos = ctx.db.game_gameobject();
     gos.guid().delete(guid);
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(x, y);
-    gos.insert(crate::gameobject::GameObject {
+    gos.insert(crate::tables::GameObject {
         guid,
         template_entry: entry,
         map_id: MAP_ID,
@@ -249,12 +290,12 @@ fn kill_fixture_boss(ctx: &ReducerContext, entry: u32) -> Result<(), String> {
     let boss = live_boss(ctx, entry).ok_or_else(|| format!("boss {entry} is not alive"))?;
     let player = fixture_guid(0, 44);
     require(
-        crate::combat::kill_creature(ctx, boss.guid, Some(player)),
+        crate::package::fixture::kill_creature(ctx, boss.guid, Some(player)),
         "the killing blow did nothing",
     )
 }
 
-fn live_boss(ctx: &ReducerContext, entry: u32) -> Option<crate::WorldEntity> {
+fn live_boss(ctx: &ReducerContext, entry: u32) -> Option<crate::tables::WorldEntity> {
     ctx.db
         .game_world_entity()
         .by_map()
@@ -267,7 +308,7 @@ fn damage_smite_to_pct(ctx: &ReducerContext, target_pct: u32) -> Result<(), Stri
     let target_health = smite.max_health * target_pct / 100;
     let amount = smite.health.saturating_sub(target_health);
     require(amount > 0, "Smite is already below the target health")?;
-    crate::package_fixture::apply_damage(ctx, smite.guid, amount, fixture_guid(0, 44))
+    crate::package::fixture::apply_damage(ctx, smite.guid, amount, fixture_guid(0, 44))
 }
 
 fn door_state(ctx: &ReducerContext, entry: u32) -> Result<u8, String> {
@@ -320,7 +361,11 @@ fn require_smite_at_chest(ctx: &ReducerContext) -> Result<(), String> {
         "Smite did not run to his chest",
     )?;
     require(
-        ctx.db.game_creature_spline().guid().find(smite_guid).is_some(),
+        ctx.db
+            .game_creature_spline()
+            .guid()
+            .find(smite_guid)
+            .is_some(),
         "Smite's chest run emitted no movement spline",
     )
 }

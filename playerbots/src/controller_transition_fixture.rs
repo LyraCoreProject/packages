@@ -1,7 +1,7 @@
 #![cfg(feature = "debug_reducers")]
 
 use super::{pkg_playerbots_bot, pkg_playerbots_runner, Controller};
-use crate::transfer::game_bot_transfer_intent;
+use crate::tables::game_bot_transfer_intent;
 use spacetimedb::{reducer, ReducerContext};
 
 /// Model a populated Legacy roster row on the current schema without using the retired selector.
@@ -11,7 +11,7 @@ pub fn playerbots_controller_transition_fixture_stage_legacy(
     character_guid: u64,
     stale_in_transit: bool,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -35,7 +35,7 @@ pub fn playerbots_controller_transition_fixture_stage_legacy(
             .filter(character_guid)
             .next()
             .is_some()
-        || crate::helpers::character_by_guid(ctx, character_guid).is_none()
+        || crate::actor::character_by_guid(ctx, character_guid).is_none()
     {
         return Err("controller transition fixture refuses Transfer-owned state".to_string());
     }
@@ -43,9 +43,9 @@ pub fn playerbots_controller_transition_fixture_stage_legacy(
     if stale_in_transit {
         // The preceding event transfer removed the live body before leaving this compatibility
         // marker. Use the Core logout path to model that persisted boundary.
-        let body = crate::helpers::live_entity(ctx, character_guid)
+        crate::actor::live_entity(ctx, character_guid)
             .map_err(|_| "controller transition fixture requires a live source body")?;
-        crate::world::remove_live_character(ctx, body);
+        crate::package::fixture::remove_live_character(ctx, character_guid)?;
         super::goals::record_legacy_transfer(
             ctx,
             character_guid,

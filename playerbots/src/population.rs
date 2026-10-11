@@ -1,6 +1,6 @@
 //! Bounded Operator batches across imported starting areas.
 
-use crate::{game_start_position, game_world_entity};
+use crate::tables::{game_start_position, game_world_entity};
 use spacetimedb::{reducer, ReducerContext, Table};
 
 use super::{class, pkg_playerbots_bot, Controller, ROLE_DPS, ROLE_HEALER, ROLE_TANK};
@@ -31,7 +31,7 @@ fn connected_position(
         }
         budget.routes -= 1;
         // A clear direct route remains available after the search allowance is spent.
-        let route = crate::nav::route_path_with_budget(
+        let route = crate::actor::movement::route_path_with_budget(
             ctx,
             map_id,
             0,
@@ -41,14 +41,14 @@ fn connected_position(
             budget.expansions.min(4096),
         );
         budget.expansions = budget.expansions.saturating_sub(route.step.expansions);
-        if route.step.status != crate::nav::RouteStatus::Complete
+        if route.step.status != crate::actor::movement::RouteStatus::Complete
             || route.step.clipping.is_some()
             || route.points.is_empty()
         {
             return None;
         }
         for point in route.points {
-            if !crate::nav::route_segment_clear(ctx, map_id, 0, at, point) {
+            if !crate::actor::movement::route_segment_clear(ctx, map_id, 0, at, point) {
                 return None;
             }
             at = point;
@@ -97,7 +97,7 @@ pub fn playerbots_spawn_starting_area(
     count: u32,
     controller: Controller,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     super::capacity::require_capacity(ctx)?;
     if !(1..=50).contains(&count) {
         return Err("starting-area batches must contain 1 through 50 bots".to_string());
@@ -106,7 +106,7 @@ pub fn playerbots_spawn_starting_area(
         return Err("starting-area bots require Cohort or Frozen control".to_string());
     }
     let area = starting_area(&area)?;
-    if !crate::nav::inputs(ctx, area.map_id).navigation_enabled {
+    if !crate::actor::movement::inputs(ctx, area.map_id).navigation_enabled {
         return Err("starting-area bots require enabled navigation".to_string());
     }
     super::ensure_defaults(ctx);
@@ -134,10 +134,10 @@ pub fn playerbots_spawn_starting_area(
             .find_map(|attempt| {
                 let (dx, dy) = starting_offset(ordinal * 100 + attempt);
                 let (x, y) = (start.x + dx, start.y + dy);
-                let z = crate::terrain::ground_z(ctx, area.map_id, x, y)?;
+                let z = crate::actor::movement::ground_z(ctx, area.map_id, x, y)?;
                 if !(z.is_finite()
-                    && crate::terrain::zone_id_at(ctx, area.map_id, x, y) == Some(area.zone_id)
-                    && crate::nav::walkable(ctx, area.map_id, x, y) == Some(true))
+                    && crate::actor::movement::zone_id_at(ctx, area.map_id, x, y) == Some(area.zone_id)
+                    && crate::actor::movement::walkable(ctx, area.map_id, x, y) == Some(true))
                 {
                     return None;
                 }

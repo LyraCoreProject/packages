@@ -10,14 +10,14 @@ pub use super::class_behavior::RoleReadError;
 pub(super) struct Party {
     pub group_id: u64,
     pub leader_guid: u64,
-    pub leader: Option<crate::group::PartyUnitFacts>,
-    pub members: Vec<crate::group::PartyMemberFacts>,
-    pub enemies: Vec<crate::group::PartyEnemyFacts>,
+    pub leader: Option<crate::actor::PartyUnitFacts>,
+    pub members: Vec<crate::actor::PartyMemberFacts>,
+    pub enemies: Vec<crate::actor::PartyEnemyFacts>,
     pub fight_constraint: Option<u64>,
 }
 
 impl Party {
-    pub fn leader_partition(&self) -> Option<crate::group::PartyPartitionFacts> {
+    pub fn leader_partition(&self) -> Option<crate::actor::PartyPartitionFacts> {
         self.members
             .iter()
             .find(|member| member.character_guid == self.leader_guid)
@@ -26,7 +26,7 @@ impl Party {
                     member
                         .unit
                         .as_ref()
-                        .map(|unit| crate::group::PartyPartitionFacts {
+                        .map(|unit| crate::actor::PartyPartitionFacts {
                             map_id: unit.map_id,
                             instance_id: unit.instance_id,
                             locator_revision: 0,
@@ -47,7 +47,7 @@ impl Party {
 pub(super) fn human_led_party(
     ctx: &ReducerContext,
     character_guid: u64,
-) -> Result<Option<Party>, crate::group::PartyFactsUnavailable> {
+) -> Result<Option<Party>, crate::actor::PartyFactsUnavailable> {
     party(ctx, character_guid, true)
 }
 
@@ -55,8 +55,8 @@ pub(super) fn party(
     ctx: &ReducerContext,
     character_guid: u64,
     require_human_leader: bool,
-) -> Result<Option<Party>, crate::group::PartyFactsUnavailable> {
-    let Some(facts) = crate::group::party_facts(ctx, character_guid)? else {
+) -> Result<Option<Party>, crate::actor::PartyFactsUnavailable> {
+    let Some(facts) = crate::actor::party_facts(ctx, character_guid)? else {
         return Ok(None);
     };
     if require_human_leader
@@ -85,7 +85,7 @@ pub(super) fn party(
     }))
 }
 
-fn distance_sq(me: &crate::WorldEntity, unit: &crate::group::PartyUnitFacts) -> f32 {
+fn distance_sq(me: &crate::tables::WorldEntity, unit: &crate::actor::PartyUnitFacts) -> f32 {
     (me.x - unit.x).powi(2) + (me.y - unit.y).powi(2) + (me.z - unit.z).powi(2)
 }
 
@@ -98,7 +98,7 @@ fn node(action: Action, reason: Reason, priority: i32, objective: u64) -> Action
 fn follow(
     party: &Party,
     member_guid: Option<u64>,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     objective: u64,
 ) -> ActionNode {
     let Some((member_guid, member)) = member_guid.and_then(|guid| {
@@ -126,11 +126,11 @@ fn follow(
 
 fn fight_target<'a>(
     party: &'a Party,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     role: u8,
     retained: Option<u64>,
-) -> Option<&'a crate::group::PartyEnemyFacts> {
-    let eligible = |enemy: &&crate::group::PartyEnemyFacts| {
+) -> Option<&'a crate::actor::PartyEnemyFacts> {
+    let eligible = |enemy: &&crate::actor::PartyEnemyFacts| {
         enemy.control.is_none()
             && (enemy.map_id, enemy.instance_id) == (me.map_id, me.instance_id)
             && enemy.health > 0
@@ -174,7 +174,7 @@ pub(super) struct CompanionSelection {
 pub(super) fn strategy(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: &Party,
     follow_member_guid: Option<u64>,
     survival_permits_healing: bool,

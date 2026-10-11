@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::package_test::{
+use crate::package::test::{
     ask_offline, code_of, read_scanned, shape_of, EntityView, RuntimeScript,
 };
 
@@ -349,12 +349,12 @@ fn a_hostile_rotation_target_requires_live_target_ownership() {
 
 #[test]
 fn an_eligible_corpse_is_considered_for_loot() {
-    assert!(crate::loot::corpse_eligible_for_access(&[11, 17, 23], 17));
+    assert!(crate::actor::corpse_eligible_for_access(&[11, 17, 23], 17));
 }
 
 #[test]
 fn a_foreign_corpse_is_skipped_before_loot_work() {
-    assert!(!crate::loot::corpse_eligible_for_access(&[11, 23], 17));
+    assert!(!crate::actor::corpse_eligible_for_access(&[11, 23], 17));
 }
 
 #[test]
@@ -513,7 +513,7 @@ fn an_elite_is_never_grind_bait_however_low_it_is() {
 
 // ---- what a bot can finish -----------------------------------------------------------------
 
-use crate::quest::objective_kind::{
+use crate::actor::objective_kind::{
     COLLECT_ITEM, EXPLORE_AREATRIGGER, KILL_CREATURE, USE_GAMEOBJECT,
 };
 

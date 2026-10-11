@@ -1,7 +1,7 @@
 //! Authenticated companion orders and their runner-facing policy.
 
 use super::{pkg_playerbots_bot, Controller};
-use crate::{game_world_entity, WorldEntity};
+use crate::tables::{game_world_entity, WorldEntity};
 use spacetimedb::{table, ReducerContext, Table};
 
 pub(crate) const FOLLOW: u8 = 0;

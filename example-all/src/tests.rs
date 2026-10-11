@@ -1,6 +1,6 @@
 #![cfg(test)]
 
-use crate::package_test::{ask_artifact_offline, ask_offline};
+use crate::package::test::{ask_artifact_offline, ask_offline};
 
 #[test]
 fn the_script_answer_overrides_config() {

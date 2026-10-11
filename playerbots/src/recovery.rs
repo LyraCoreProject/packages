@@ -3,7 +3,7 @@
 use super::actions::{self, ActionKind, ActionOutcome};
 use super::decision::{Action, Candidate, CastAction, MoveTarget, QuestInteraction, Reason};
 use super::runner::{Destination, ObjectiveKind, PlayerbotsRunner, Running};
-use crate::{game_aura, game_creature_spline, game_gameobject, game_world_entity};
+use crate::tables::{game_aura, game_creature_spline, game_gameobject, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const CHANGE_APPROACH_MICROS: i64 = 10_000_000;
@@ -58,13 +58,13 @@ pub struct Attempt {
     pub work: Work,
     pub reason: Reason,
     pub destination: Destination,
-    pub geometry: crate::nav::NavigationInputs,
+    pub geometry: crate::actor::movement::NavigationInputs,
     pub objective: u64,
     pub last_observed_micros: i64,
     pub stalled_micros: i64,
     pub target_health: Option<u32>,
     pub position: Option<Approach>,
-    pub route: Option<crate::nav::RouteStep>,
+    pub route: Option<crate::actor::movement::RouteStep>,
     pub last_movement: Option<ObservedMovement>,
     pub deferred_until_micros: Option<i64>,
 }
@@ -72,7 +72,7 @@ pub struct Attempt {
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
 pub struct ObservedMovement {
     pub started_micros: i64,
-    pub position: crate::nav::RoutePoint,
+    pub position: crate::actor::movement::RoutePoint,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -152,7 +152,7 @@ pub(super) fn work(purpose: Candidate) -> Option<Work> {
 
 fn destination(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     state: &PlayerbotsRunner,
     work: Work,
 ) -> Option<Destination> {
@@ -174,7 +174,7 @@ fn destination(
             x,
             y,
             z,
-            geometry_revision: crate::nav::coverage_generation(ctx, me.map_id),
+            geometry_revision: crate::actor::movement::coverage_generation(ctx, me.map_id),
         })
     } else if let Work::AreaTrigger(trigger) = work {
         crate::actor::area_trigger_route(ctx, trigger).map(|route| Destination {
@@ -183,7 +183,7 @@ fn destination(
             x: route.source_x,
             y: route.source_y,
             z: route.source_z,
-            geometry_revision: crate::nav::coverage_generation(ctx, route.source_map),
+            geometry_revision: crate::actor::movement::coverage_generation(ctx, route.source_map),
         })
     } else if matches!(work, Work::Destination(_)) {
         state
@@ -198,11 +198,11 @@ fn destination(
 /// Only observed advancement along the retained Core leg counts. An emitted leg has no progress yet.
 fn movement_progress(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     state: &PlayerbotsRunner,
     previous: Option<&ObservedMovement>,
     last_observed_micros: i64,
-) -> Option<(crate::nav::RouteStep, ObservedMovement, bool)> {
+) -> Option<(crate::actor::movement::RouteStep, ObservedMovement, bool)> {
     let foreground = state.foreground.as_ref()?;
     if foreground.generation != state.generation
         || (foreground.map_id, foreground.instance_id) != (me.map_id, me.instance_id)
@@ -363,7 +363,7 @@ impl Recovery {
     pub(super) fn active_quest_creature(
         &self,
         ctx: &ReducerContext,
-        me: &crate::WorldEntity,
+        me: &crate::tables::WorldEntity,
         objective: u64,
     ) -> Option<u64> {
         let active = self.active?;
@@ -383,7 +383,7 @@ impl Recovery {
         })?;
         ((attempt.destination.map_id, attempt.destination.instance_id)
             == (me.map_id, me.instance_id)
-            && attempt.geometry == crate::nav::inputs(ctx, me.map_id))
+            && attempt.geometry == crate::actor::movement::inputs(ctx, me.map_id))
         .then_some(target)
     }
 
@@ -391,11 +391,11 @@ impl Recovery {
     pub(super) fn observe(
         &mut self,
         ctx: &ReducerContext,
-        me: &crate::WorldEntity,
+        me: &crate::tables::WorldEntity,
         state: &mut PlayerbotsRunner,
         now: i64,
     ) -> Option<Deferral> {
-        let geometry = crate::nav::inputs(ctx, me.map_id);
+        let geometry = crate::actor::movement::inputs(ctx, me.map_id);
         let quest_objective = state
             .objective
             .as_ref()
@@ -479,12 +479,12 @@ impl Recovery {
         let fight_ended = matches!((attempt.work, health), (Work::Fight(_), Some(0)));
         let quest_effect = match (attempt.reason, attempt.work, health) {
             (Reason::Quest, Work::Fight(target), Some(0)) => {
-                let recipients = crate::loot::corpse_eligible_recipients(ctx, target);
-                crate::loot::corpse_eligible_for_access(&recipients, me.guid)
+                let recipients = crate::actor::corpse_eligible_recipients(ctx, target);
+                crate::actor::corpse_eligible_for_access(&recipients, me.guid)
             }
             (Reason::Quest, Work::Fight(target), Some(_)) if health_progress => matches!(
-                crate::loot::tag::live_loot_tag_eligibility(ctx, target, me.guid),
-                crate::loot::tag::LiveLootTagEligibility::Available
+                crate::actor::live_loot_tag_eligibility(ctx, target, me.guid),
+                crate::actor::LiveLootTagEligibility::Available
             ),
             (Reason::Quest, Work::Fight(_), _) => false,
             _ => true,
@@ -575,7 +575,10 @@ impl Recovery {
                 missing_coverage: attempt.geometry.navigation_enabled
                     && attempt.geometry.coverage_enabled
                     && attempt.route.as_ref().is_some_and(|route| {
-                        matches!(route.coverage, crate::nav::CoverageEvidence::Unknown)
+                        matches!(
+                            route.coverage,
+                            crate::actor::movement::CoverageEvidence::Unknown
+                        )
                     }),
             });
         }
@@ -622,7 +625,7 @@ impl Recovery {
     pub(super) fn select(
         &mut self,
         ctx: &ReducerContext,
-        me: &crate::WorldEntity,
+        me: &crate::tables::WorldEntity,
         state: &PlayerbotsRunner,
         candidate: Candidate,
         purpose: Candidate,
@@ -651,7 +654,7 @@ impl Recovery {
                 work,
                 reason: purpose.id.reason,
                 destination,
-                geometry: crate::nav::inputs(ctx, me.map_id),
+                geometry: crate::actor::movement::inputs(ctx, me.map_id),
                 objective: purpose.id.objective,
                 last_observed_micros: now,
                 stalled_micros: 0,
@@ -759,7 +762,7 @@ mod tests {
                 z: 0.0,
                 geometry_revision: None,
             },
-            geometry: crate::nav::NavigationInputs {
+            geometry: crate::actor::movement::NavigationInputs {
                 imported_revision: None,
                 navigation_enabled: true,
                 collision_enabled: false,
@@ -824,14 +827,14 @@ mod tests {
 
     #[test]
     fn progress_along_a_partial_leg_counts_once_even_when_it_moves_away_from_the_goal() {
-        let route = crate::nav::RouteStep {
+        let route = crate::actor::movement::RouteStep {
             from: (10.0, 0.0).into(),
             endpoint: (5.0, 0.0).into(),
             first_waypoint: Some((0.0, 0.0).into()),
-            status: crate::nav::RouteStatus::Partial,
+            status: crate::actor::movement::RouteStatus::Partial,
             expansions: 4096,
             clipping: None,
-            coverage: crate::nav::CoverageEvidence::Unknown,
+            coverage: crate::actor::movement::CoverageEvidence::Unknown,
         };
         assert!(actions::advanced_on_leg(
             &route,

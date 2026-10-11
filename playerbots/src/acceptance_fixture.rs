@@ -16,11 +16,11 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_runner, ActionKind, ActionOutcome, Controller, Failure,
     ObjectiveKind, PlayerbotsBot, RunnerOutcome,
 };
-use crate::nav::{game_nav_chunk, game_navigation_revision};
-use crate::{
+use crate::tables::{
     game_character_quest, game_corpse_loot, game_creature_spawn, game_creature_template,
     game_graveyard, game_item_instance, game_quest_template, game_world_entity,
 };
+use crate::tables::{game_nav_chunk, game_navigation_revision};
 use spacetimedb::{reducer, table, ReducerContext, Table, Timestamp};
 
 const PLAN_REVISION: &str = "playerbots-acceptance-seed-plan-v1";
@@ -546,7 +546,7 @@ fn apply_incoming_fault(
     row.incoming_destination = Some(quest.destination);
     let amount = before.health.saturating_sub(1).min(25);
     let accepted =
-        crate::package_fixture::apply_damage(ctx, row.character_guid, amount, attacker_guid)
+        crate::package::fixture::apply_damage(ctx, row.character_guid, amount, attacker_guid)
             .is_ok();
     let Some(after) = ctx.db.game_world_entity().guid().find(row.character_guid) else {
         return;
@@ -585,15 +585,19 @@ fn apply_lethal_fault(
     row.lethal_objective_identity_before = Some(quest.objective_identity);
     row.lethal_purpose = Some(quest.purpose);
     row.lethal_destination = Some(quest.destination);
-    let (amount, _) =
-        crate::combat::fold_incoming_damage(ctx, attacker_guid, row.character_guid, 10_000);
-    let damage = crate::combat::final_damage(ctx, row.character_guid, amount);
-    let outcome = crate::combat::apply_hit(
+    let (amount, _) = crate::package::fixture::fold_incoming_damage(
+        ctx,
+        attacker_guid,
+        row.character_guid,
+        10_000,
+    );
+    let damage = crate::package::fixture::final_damage(ctx, row.character_guid, amount);
+    let outcome = crate::package::fixture::apply_hit(
         ctx,
         attacker_guid,
         row.character_guid,
         damage,
-        crate::combat::Hit::weapon(crate::combat::HitSource::MainHand, false),
+        crate::package::fixture::Hit::weapon(crate::package::fixture::HitSource::MainHand, false),
     );
     let Some(after) = ctx.db.game_world_entity().guid().find(row.character_guid) else {
         return;
@@ -696,12 +700,12 @@ fn fill_inventory_fault(
     row.purpose_before_fill = Some(quest.purpose);
     row.destination_before_fill = Some(quest.destination);
     for _ in 0..64 {
-        if !crate::items::has_free_slot(ctx, row.character_guid) {
+        if !crate::actor::has_free_slot(ctx, row.character_guid) {
             row.fill_applied_micros = Some(now);
             return;
         }
         if let Err(error) =
-            crate::items::grant_item(ctx, row.character_guid, INVENTORY_FAULT_FILLER, 1)
+            crate::package::fixture::grant_item(ctx, row.character_guid, INVENTORY_FAULT_FILLER, 1)
         {
             row.fill_error = Some(error);
             return;
@@ -745,7 +749,7 @@ fn record_inventory_refusal(
     if loot.len() == 1 {
         row.refused_loot_slot = Some(loot[0].slot);
     }
-    row.item_count_at_refusal = Some(crate::items::item_count(
+    row.item_count_at_refusal = Some(crate::actor::item_count(
         ctx,
         row.character_guid,
         row.item_entry,
@@ -782,7 +786,7 @@ fn release_inventory_space(ctx: &ReducerContext, row: &mut AcceptanceInventoryFa
         return;
     };
     ctx.db.game_item_instance().guid().delete(filler.guid);
-    if crate::items::has_free_slot(ctx, row.character_guid) {
+    if crate::actor::has_free_slot(ctx, row.character_guid) {
         row.space_released_micros = Some(now);
     } else {
         row.space_release_error = Some("one inventory slot did not become available".to_string());
@@ -798,7 +802,7 @@ fn record_inventory_resume(
     else {
         return false;
     };
-    let item_count = crate::items::item_count(ctx, row.character_guid, row.item_entry);
+    let item_count = crate::actor::item_count(ctx, row.character_guid, row.item_entry);
     if action.quest_entry != row.quest_entry
         || !matches!(action.outcome, ActionOutcome::Completed)
         || item_count == 0
@@ -821,7 +825,7 @@ fn record_inventory_resume(
 
 fn advance_inventory_fault(ctx: &ReducerContext, mut row: AcceptanceInventoryFault, now: i64) {
     if row.fill_attempted_micros.is_none() {
-        let item_count = crate::items::item_count(ctx, row.character_guid, row.item_entry);
+        let item_count = crate::actor::item_count(ctx, row.character_guid, row.item_entry);
         if item_count == 0 {
             if let Some(quest) = acceptance_quest_state(ctx, row.character_guid, row.quest_entry) {
                 fill_inventory_fault(ctx, &mut row, now, item_count, quest);
@@ -940,7 +944,7 @@ fn arm_missing_target_fault(
     row.respawn_due_micros = Some(respawn_due);
     spawn.respawn_at = Timestamp::from_micros_since_unix_epoch(respawn_due);
     spawns.guid().update(spawn);
-    crate::creatures::despawn_creature_entity(ctx, row.target_guid);
+    crate::package::fixture::despawn_creature_entity(ctx, row.target_guid);
     if ctx
         .db
         .game_world_entity()
@@ -1147,7 +1151,7 @@ fn replace_local_navigation(
         for y in cell_y.saturating_sub(1)..=cell_y.saturating_add(1).min(1023) {
             let key = lyracore_shared::terrain::cell_key(entity.map_id, x, y);
             chunks.key().delete(key);
-            chunks.insert(crate::nav::NavChunk {
+            chunks.insert(crate::tables::NavChunk {
                 key,
                 map_id: entity.map_id,
                 cell_x: x,
@@ -1166,7 +1170,7 @@ fn replace_local_navigation(
             keys.push(key);
         }
     }
-    crate::nav::record_change(ctx)?;
+    crate::package::fixture::record_navigation_change(ctx)?;
     Ok(keys)
 }
 
@@ -1662,7 +1666,7 @@ pub fn playerbots_acceptance_resolve_seed_plan(
     ctx: &ReducerContext,
     seed: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let plan = seed_plan(seed)?;
     let rows = ctx.db.pkg_playerbots_acceptance_seed_plan();
     match rows.seed().find(seed) {
@@ -1704,7 +1708,7 @@ fn prepare_inventory_fault(ctx: &ReducerContext, character_guid: u64) -> Result<
     for filler in fillers {
         items.guid().delete(filler.guid);
     }
-    if !crate::items::has_free_slot(ctx, character_guid) {
+    if !crate::actor::has_free_slot(ctx, character_guid) {
         return Err("acceptance inventory setup did not restore a free slot".to_string());
     }
     Ok(())
@@ -2086,7 +2090,7 @@ fn stage_journey_for(
 /// transaction. The caller selects Cohort control only after it reads the saved manifest.
 #[reducer]
 pub fn playerbots_acceptance_stage_journey(ctx: &ReducerContext, seed: u64) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let plan = seed_plan(seed)?;
     let journeys = ctx.db.pkg_playerbots_acceptance_journey();
     let mut existing = journeys.iter().take(2);
@@ -2128,7 +2132,7 @@ pub fn playerbots_acceptance_begin_journey(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let journeys = ctx.db.pkg_playerbots_acceptance_journey();
     let mut journey = journeys
         .character_guid()
@@ -2168,7 +2172,7 @@ fn stage_level_gap_sources(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(Vec<u64>, Vec<u64>), String> {
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let templates = ctx.db.game_creature_template();
     let mut template = templates
         .entry()
@@ -2206,7 +2210,7 @@ fn stage_level_gap_sources(
                 character.y - 25.0 + (offset / 11) as f32 * 10.0,
             )
         };
-        let spawn = crate::CreatureSpawn {
+        let spawn = crate::tables::CreatureSpawn {
             guid,
             entry: LEVEL_GAP_SOURCE_ENTRY,
             map_id: character.map_id,
@@ -2214,13 +2218,13 @@ fn stage_level_gap_sources(
             y,
             z: character.z,
             orientation: 0.0,
-            respawn_at: crate::creatures::timer_never(ctx),
-            despawn_at: crate::creatures::timer_never(ctx),
+            respawn_at: crate::package::fixture::timer_never(ctx),
+            despawn_at: crate::package::fixture::timer_never(ctx),
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
         };
-        let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+        let mut entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         if offset < LEVEL_GAP_LONG_SOURCE_COUNT {
             entity.health = 20;
             entity.max_health = 20;
@@ -2229,14 +2233,14 @@ fn stage_level_gap_sources(
         spawns.guid().delete(guid);
         spawns.insert(spawn);
         entities.guid().delete(guid);
-        crate::creatures::insert_creature_entity(ctx, entity);
+        crate::package::fixture::insert_creature_entity(ctx, entity);
         source_guids.push(guid);
     }
     Ok((source_guids, long_source_guids))
 }
 
 fn stage_level_gap_history(ctx: &ReducerContext, character_guid: u64) -> Result<(), String> {
-    let owner_identity = crate::helpers::live_entity(ctx, character_guid)?.owner_identity;
+    let owner_identity = crate::actor::live_entity(ctx, character_guid)?.owner_identity;
     let quests = ctx.db.game_character_quest();
     for quest_entry in [783, 7, 5261, 33, 18, 3903, 3904, 3905] {
         for row in quests
@@ -2246,7 +2250,7 @@ fn stage_level_gap_history(ctx: &ReducerContext, character_guid: u64) -> Result<
         {
             quests.id().delete(row.id);
         }
-        quests.insert(crate::CharacterQuest {
+        quests.insert(crate::tables::CharacterQuest {
             id: 0,
             character_guid,
             owner_identity,
@@ -2261,7 +2265,7 @@ fn stage_level_gap_history(ctx: &ReducerContext, character_guid: u64) -> Result<
 }
 
 fn stage_level_gap_graveyard(ctx: &ReducerContext, character_guid: u64) -> Result<(), String> {
-    let entity = crate::helpers::live_entity(ctx, character_guid)?;
+    let entity = crate::actor::live_entity(ctx, character_guid)?;
     let graveyards = ctx.db.game_graveyard();
     let mut graveyard = graveyards
         .id()
@@ -2279,7 +2283,7 @@ fn stage_level_gap_graveyard(ctx: &ReducerContext, character_guid: u64) -> Resul
 /// Stage the source-derived level-seven boundary without granting XP or changing level after start.
 #[reducer]
 pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if ctx.db.pkg_playerbots_bot().iter().next().is_some()
         || ctx
             .db
@@ -2321,7 +2325,7 @@ pub fn playerbots_acceptance_stage_level_gap(ctx: &ReducerContext) -> Result<(),
     if catalog.min_level != LEVEL_GAP_REQUIRED_LEVEL {
         return Err("level-gap catalog did not retain the source requirement".to_string());
     }
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     super::runner::playerbots_select_controller(ctx, character_guid, Controller::Frozen)?;
     ctx.db
         .pkg_playerbots_acceptance_level_gap()
@@ -2460,7 +2464,7 @@ pub fn playerbots_acceptance_begin_level_gap(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let rows = ctx.db.pkg_playerbots_acceptance_level_gap();
     let mut fixture = rows
         .character_guid()
