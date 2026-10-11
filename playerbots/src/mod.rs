@@ -44,11 +44,11 @@ mod acceptance_fixture;
 #[cfg(feature = "debug_reducers")]
 pub(crate) use acceptance_fixture::*;
 #[cfg(feature = "debug_reducers")]
+mod fixture;
+#[cfg(feature = "debug_reducers")]
 mod imported_fixture;
 #[cfg(feature = "debug_reducers")]
 mod load_fixture;
-#[cfg(feature = "debug_reducers")]
-mod fixture;
 mod spell_ranks;
 #[cfg(feature = "debug_reducers")]
 mod transfer_assist_fixture;
@@ -58,9 +58,9 @@ pub(crate) use transfer_assist_fixture::{
     sweep_transfer_pkg_playerbots_transfer_assist_source,
 };
 #[cfg(feature = "debug_reducers")]
-mod transfer_orders_fixture;
+mod action_lifecycle_fixture;
 #[cfg(feature = "debug_reducers")]
-mod transfer_recovery_fixture;
+mod companion_acceptance_fixture;
 #[cfg(feature = "debug_reducers")]
 mod quest_catalog_fixture;
 #[cfg(feature = "debug_reducers")]
@@ -68,20 +68,19 @@ mod transfer_destination_fixture;
 #[cfg(feature = "debug_reducers")]
 mod transfer_fixture;
 #[cfg(feature = "debug_reducers")]
-mod transfer_lifecycle_fixture;
-#[cfg(feature = "debug_reducers")]
 mod transfer_gateway_fixture;
 #[cfg(feature = "debug_reducers")]
-mod action_lifecycle_fixture;
+mod transfer_lifecycle_fixture;
 #[cfg(feature = "debug_reducers")]
-mod companion_acceptance_fixture;
+mod transfer_orders_fixture;
+#[cfg(feature = "debug_reducers")]
+mod transfer_recovery_fixture;
 #[cfg(feature = "debug_reducers")]
 pub(crate) use companion_acceptance_fixture::{
     playerbots_companion_acceptance_observe_damage,
     playerbots_companion_acceptance_observe_finished_cast,
     playerbots_companion_acceptance_observe_resolved_cast,
-    playerbots_companion_acceptance_observe_tick,
-    sweep_delete_pkg_playerbots_companion_acceptance,
+    playerbots_companion_acceptance_observe_tick, sweep_delete_pkg_playerbots_companion_acceptance,
     sweep_delete_pkg_playerbots_companion_cast_receipt,
     sweep_delete_pkg_playerbots_companion_combat_receipt,
     sweep_delete_pkg_playerbots_companion_fault,
@@ -96,13 +95,13 @@ pub(crate) use companion_acceptance_fixture::{
 };
 #[cfg(feature = "debug_reducers")]
 mod controller_transition_fixture;
-#[cfg(feature = "debug_reducers")]
-pub(crate) use quest_catalog_fixture::*;
 pub(crate) use goals::*;
 pub(crate) use orders::*;
+#[cfg(feature = "debug_reducers")]
+pub(crate) use quest_catalog_fixture::*;
 
-use crate::package_config::game_package_config;
-use crate::{game_character, game_world_entity};
+use crate::tables::game_package_config;
+use crate::tables::{game_character, game_world_entity};
 
 /// The Package Config namespace and the Package name the Trust Review prints.
 pub(crate) const PACKAGE: &str = "playerbots";
@@ -444,7 +443,7 @@ fn config_parsed<T: std::str::FromStr>(ctx: &ReducerContext, key: &str, fallback
 pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
     crate::actor::reconcile_starter_role_spell_levels(ctx);
     for (key, value) in CONFIG_DEFAULTS {
-        crate::package_config::ensure_package_config_default(ctx, PACKAGE, key, value);
+        crate::package::ensure_config_default(ctx, PACKAGE, key, value);
     }
     quest_catalog::ensure_catalog(ctx);
     if config_value(ctx, "class_defaults_revision").is_none() {
@@ -454,12 +453,7 @@ pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
             seed_class_role_data(ctx);
         }
     }
-    crate::package_config::ensure_package_config_default(
-        ctx,
-        PACKAGE,
-        "class_defaults_revision",
-        "1",
-    );
+    crate::package::ensure_config_default(ctx, PACKAGE, "class_defaults_revision", "1");
 }
 
 type RotationSeed = (u8, u8, u8, u32, u8, u8);
@@ -768,8 +762,8 @@ fn spawn_one(
     let (x, y, z) = at;
     let name = first_free_name(ctx, name_stem)
         .ok_or_else(|| format!("no free bot name left for stem '{name_stem}'"))?;
-    let guid = crate::package_account::create_package_character(ctx, PACKAGE, &name, race, class)?;
-    crate::stats::set_character_level(ctx, guid, level as u32)?;
+    let guid = crate::package::create_character(ctx, PACKAGE, &name, race, class)?;
+    crate::package::character::set_character_level(ctx, guid, level as u32)?;
 
     // The Character was created at its class start position; move it to where the Operator asked
     // for it, and make that its home so a logout-equivalent never drags it back. Read after
@@ -789,7 +783,7 @@ fn spawn_one(
     character.home_z = z;
     let character = chars.guid().update(character);
     let account_id = character.account_id;
-    let entity = crate::creatures::build_player_entity(ctx, &character, Identity::ZERO);
+    let entity = crate::package::character::build_player_entity(ctx, &character, Identity::ZERO);
     ctx.db.game_world_entity().insert(entity);
 
     let (flee_at_pct, heal_at_pct) = role_personality_defaults(role);
@@ -886,7 +880,7 @@ fn spawn_spot(ctx: &ReducerContext, at: (f32, f32, f32), index: usize) -> (f32, 
     (
         x,
         y,
-        crate::terrain::snap_z(ctx, SPAWN_MAP_ID, 0, x, y, at.2),
+        crate::actor::movement::snap_z(ctx, SPAWN_MAP_ID, 0, x, y, at.2),
     )
 }
 
@@ -921,7 +915,7 @@ pub fn playerbots_spawn(
     y: f32,
     z: f32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     ensure_defaults(ctx);
     let level = spawn_level(ctx);
     let stems = NAME_STEMS;
@@ -950,7 +944,7 @@ pub fn playerbots_spawn_role(
     z: f32,
     role: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     ensure_defaults(ctx);
     let class = default_class_for_role(role).ok_or_else(|| cannot_fill_role_message(0, role))?;
     spawn_batch(ctx, count, (x, y, z), class, role, role_name_stem(role))
@@ -968,7 +962,7 @@ pub fn playerbots_spawn_class_role(
     class: u8,
     role: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     ensure_defaults(ctx);
     spawn_batch(ctx, count, (x, y, z), class, role, role_name_stem(role))
 }
@@ -989,7 +983,7 @@ crate::game_package_characters!(fn playerbots_characters(ctx) {
 /// sweeps, so there is one delete path and nothing to keep in step with it.
 #[reducer]
 pub fn playerbots_despawn_all(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let guids: Vec<u64> = ctx
         .db
         .pkg_playerbots_bot()
@@ -999,8 +993,8 @@ pub fn playerbots_despawn_all(ctx: &ReducerContext) -> Result<(), String> {
     for guid in guids {
         // A bot in a party must leave it first: the cascade deletes the Character, and a member row
         // pointing at a Character that no longer exists is a party the survivors cannot dissolve.
-        let _ = crate::group::leave_group_for(ctx, guid);
-        crate::world::cascade_delete_character(ctx, guid);
+        let _ = crate::actor::leave_group_for(ctx, guid);
+        crate::package::character::cascade_delete_character(ctx, guid);
     }
     Ok(())
 }
@@ -1017,7 +1011,7 @@ pub(crate) fn populate_shortfall(existing: usize, target: usize) -> usize {
 /// on publish — a realm gets bots when its Operator asks for them.
 #[reducer]
 pub fn playerbots_populate(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     ensure_defaults(ctx);
     let target = config_parsed::<usize>(ctx, "population_count", 0);
     let existing = ctx.db.pkg_playerbots_bot().count() as usize;

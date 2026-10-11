@@ -1,4 +1,4 @@
-use crate::{game_config, game_start_position, game_world_entity};
+use crate::tables::{game_config, game_start_position, game_world_entity};
 use spacetimedb::{reducer, table, ReducerContext, SpacetimeType, Table};
 
 use super::{pkg_playerbots_bot, Controller};
@@ -29,7 +29,7 @@ pub struct ImportedFixture {
     pub bots: Vec<ImportedBot>,
     pub source_revision: String,
     pub dump_sha256: String,
-    pub navigation: crate::nav::NavigationInputs,
+    pub navigation: crate::actor::movement::NavigationInputs,
     pub staged_micros: i64,
     pub started_micros: Option<i64>,
 }
@@ -38,7 +38,7 @@ fn imported_inputs(
     ctx: &ReducerContext,
     source_revision: &str,
     dump_sha256: &str,
-) -> Result<crate::nav::NavigationInputs, String> {
+) -> Result<crate::actor::movement::NavigationInputs, String> {
     for (value, length) in [(source_revision, 40), (dump_sha256, 64)] {
         if value.len() != length || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err("imported fixture needs exact source and dump identities".to_string());
@@ -63,7 +63,7 @@ fn imported_inputs(
             return Err(format!("imported fixture has different {family} inputs"));
         }
     }
-    let navigation = crate::nav::inputs(ctx, 0);
+    let navigation = crate::actor::movement::inputs(ctx, 0);
     if !navigation.navigation_enabled
         || !navigation.collision_enabled
         || !navigation.coverage_enabled
@@ -89,7 +89,7 @@ pub fn playerbots_imported_stage(
     source_revision: String,
     dump_sha256: String,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if !(1..=30).contains(&seed) {
         return Err("imported fixture needs seed 1 through 30".to_string());
     }
@@ -131,12 +131,12 @@ pub fn playerbots_imported_stage(
             }
             let spot = super::spawn_spot(ctx, (start.x, start.y, start.z), candidate_index);
             candidate_index += 1;
-            let ground = crate::terrain::ground_z(ctx, start.map_id, spot.0, spot.1);
+            let ground = crate::actor::movement::ground_z(ctx, start.map_id, spot.0, spot.1);
             let separated = bots
                 .iter()
                 .all(|bot| (bot.x - spot.0).hypot(bot.y - spot.1) > IMPORTED_SPOT_CLEARANCE_YD);
             if ground.is_some_and(f32::is_finite)
-                && crate::nav::walkable(ctx, start.map_id, spot.0, spot.1) == Some(true)
+                && crate::actor::movement::walkable(ctx, start.map_id, spot.0, spot.1) == Some(true)
                 && spot.2.is_finite()
                 && separated
             {
@@ -196,7 +196,7 @@ pub fn playerbots_imported_stage(
 pub fn playerbots_fixture_imported_staged(ctx: &ReducerContext) -> Result<(), String> {
     use super::runner::pkg_playerbots_runner;
 
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let fixture = ctx
         .db
         .pkg_playerbots_imported_fixture()
@@ -207,7 +207,7 @@ pub fn playerbots_fixture_imported_staged(ctx: &ReducerContext) -> Result<(), St
         || fixture.bots.len() != IMPORTED_BOT_COUNT
         || ctx.db.pkg_playerbots_bot().count() as usize != IMPORTED_BOT_COUNT
         || ctx.db.pkg_playerbots_runner().count() as usize != IMPORTED_BOT_COUNT
-        || crate::nav::inputs(ctx, 0) != fixture.navigation
+        || crate::actor::movement::inputs(ctx, 0) != fixture.navigation
     {
         return Err("imported fixture is not an exact parked roster".to_string());
     }
@@ -252,9 +252,10 @@ pub fn playerbots_fixture_imported_staged(ctx: &ReducerContext) -> Result<(), St
             || staged.first_due_offset_micros != expected_offset
             || runner.objective.is_some()
             || runner.foreground.is_some()
-            || !crate::terrain::ground_z(ctx, staged.map_id, staged.x, staged.y)
+            || !crate::actor::movement::ground_z(ctx, staged.map_id, staged.x, staged.y)
                 .is_some_and(f32::is_finite)
-            || crate::nav::walkable(ctx, staged.map_id, staged.x, staged.y) != Some(true)
+            || crate::actor::movement::walkable(ctx, staged.map_id, staged.x, staged.y)
+                != Some(true)
         {
             return Err(format!(
                 "imported bot {index} differs from its parked manifest"
@@ -267,7 +268,7 @@ pub fn playerbots_fixture_imported_staged(ctx: &ReducerContext) -> Result<(), St
 /// Start the complete roster once. The ordinary scheduler owns all later progression.
 #[reducer]
 pub fn playerbots_imported_begin(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let mut fixture = ctx
         .db
         .pkg_playerbots_imported_fixture()

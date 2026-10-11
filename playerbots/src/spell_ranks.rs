@@ -1,6 +1,6 @@
 //! Rank selection for the spell families named by a kit or rotation.
 
-use crate::game_spell_chain;
+use crate::tables::game_spell_chain;
 use spacetimedb::ReducerContext;
 
 const FAMILY_LIMIT: usize = 16;
@@ -32,6 +32,6 @@ pub(super) fn highest_known(ctx: &ReducerContext, guid: u64, spell: u32) -> Resu
     Ok(family(ctx, spell)?
         .into_iter()
         .rev()
-        .find(|rank| crate::spell::knows_spell(ctx, guid, *rank))
+        .find(|rank| crate::actor::knows_spell(ctx, guid, *rank))
         .unwrap_or(spell))
 }

@@ -1,10 +1,11 @@
-use crate::package_config::{ensure_package_config_default, game_package_config};
+use crate::package::ensure_config_default;
+use crate::tables::game_package_config;
 
 const PACKAGE: &str = "example-all";
 const WELCOME_EVENT: &str = "example-all.welcome";
 
 crate::game_hook!(on_login, fn example_all_on_login(ctx, payload) {
-    ensure_package_config_default(ctx, PACKAGE, "welcome", "true");
+    ensure_config_default(ctx, PACKAGE, "welcome", "true");
     let fallback = ctx.db.game_package_config().by_package_key()
         .filter((PACKAGE, "welcome")).next().map(|row| row.value);
     let answer = crate::script_binding::ask(ctx, WELCOME_EVENT, payload.character_guid, 0);

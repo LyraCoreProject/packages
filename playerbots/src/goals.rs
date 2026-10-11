@@ -8,8 +8,8 @@ use super::{
     pkg_playerbots_rotation, PlayerbotsBot, PlayerbotsGoal, PlayerbotsPersonality,
     PlayerbotsRotation, ROLE_HEALER, ROLE_TANK,
 };
-use crate::transfer::game_bot_transfer_intent;
-use crate::{
+use crate::tables::game_bot_transfer_intent;
+use crate::tables::{
     game_character, game_character_quest, game_corpse_loot, game_creature_loot,
     game_creature_quest, game_creature_spline, game_creature_template, game_group,
     game_group_member, game_melee_attack, game_quest_event_requirement, game_quest_objective,
@@ -160,8 +160,8 @@ pub(super) fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
         me.max_health,
         flee_threshold(ctx, &me, personality.flee_at_pct),
     ) {
-        if let Some(cast) = crate::spell::pending_cast(ctx, me.guid) {
-            crate::spell::cancel_cast_attempt(ctx, me.guid, cast.scheduled_id);
+        if let Some(cast) = crate::actor::pending_cast(ctx, me.guid) {
+            crate::actor::cancel_cast_attempt(ctx, me.guid, cast.scheduled_id);
         }
         let _ = crate::actor::stop_attack(ctx, me.guid);
         walk_toward(ctx, &me, (bot.home_x, bot.home_y, bot.home_z), 0.0, true);
@@ -169,14 +169,14 @@ pub(super) fn think(ctx: &ReducerContext, bot: &PlayerbotsBot, now: i64) {
         return;
     }
 
-    if crate::spell::pending_cast(ctx, me.guid).is_some() {
+    if crate::actor::pending_cast(ctx, me.guid).is_some() {
         return;
     }
 
     let party = party_of(ctx, bot.character_guid);
     let leader = party
         .as_ref()
-        .and_then(|party| crate::helpers::live_entity(ctx, party.leader_guid).ok());
+        .and_then(|party| crate::actor::live_entity(ctx, party.leader_guid).ok());
     match &leader {
         // A leader who has crossed into an instance on THIS Shard is followed before anything
         // else: a bot left outside is a bot fighting nothing, next to nobody.
@@ -278,7 +278,12 @@ pub(crate) fn death_step(dead: bool, ghost: bool) -> DeathStep {
 ///
 /// Runs for every bot, grouped or not. A bot in a party used to lie dead for the rest of its life,
 /// which read as a wipe the party could not recover from.
-fn get_back_up(ctx: &ReducerContext, me: &crate::WorldEntity, bot: &PlayerbotsBot, now: i64) {
+fn get_back_up(
+    ctx: &ReducerContext,
+    me: &crate::tables::WorldEntity,
+    bot: &PlayerbotsBot,
+    now: i64,
+) {
     use lyracore_shared::constants::player_flags;
     let step = death_step(me.dead, me.player_flags & player_flags::GHOST != 0);
     let outcome = match step {
@@ -311,7 +316,7 @@ fn get_back_up(ctx: &ReducerContext, me: &crate::WorldEntity, bot: &PlayerbotsBo
 /// entity. A real player clears it by logging in; a bot never logs in, so a stale `true` would make
 /// the next rebuild — an ordinary Shard arrival — put a living bot back in the world as a corpse.
 fn clear_pending_ghost(ctx: &ReducerContext, character_guid: u64) {
-    let Some(mut character) = crate::helpers::character_by_guid(ctx, character_guid) else {
+    let Some(mut character) = crate::actor::character_by_guid(ctx, character_guid) else {
         return;
     };
     if !character.pending_ghost {
@@ -529,34 +534,15 @@ pub(crate) fn may_rebuild(
         && (goal_kind != Some(goal::IN_TRANSIT) || in_transit_for_micros >= IN_TRANSIT_WAIT_MICROS)
 }
 
-/// This bot's live entity, rebuilt from its durable Character row when it has none.
-///
-/// That rebuild IS the arrival. A Transfer carries the Character row and every registered transfer
-/// arm across the Shard boundary; it does not carry a `game_world_entity`, and nothing on the far
-/// side re-spawns one. Until this runs the arriving bot is durable but not in the world.
-///
-/// Two states deliberately produce no body:
-///
-/// - The bot is escrowed mid-Transfer. [`crate::helpers::character_by_guid`] is the in-transit
-///   fence, so the durable row simply does not answer, and a bot half-way across a boundary is not
-///   rebuilt on the Shard it is leaving.
-/// - This Shard retains a durable Transfer Intent. The Gateway reads the Character row to decide
-///   where the crossing goes, so putting a body back before exact completion would move the bot out
-///   from under its own Intent.
-///
-/// A REBUILT GHOST STAYS A GHOST. `build_player_entity` always builds alive, and a released ghost
-/// loses its body whenever the graveyard it released to is on another map — a death in a dungeon
-/// resolves to a graveyard outside it, and the cross-map placement despawns the entity. Rebuilding
-/// that bot alive would hand it a free full-health resurrection on the spot, with its corpse left
-/// behind and its death never resolved. `pending_instance_id`'s sibling carry column,
-/// `pending_ghost`, is what the Character row remembers instead, and re-applying it here is the same
-/// thing `player_login` does at the same point of the same rebuild.
+/// Restore this bot's body after its Legacy Transfer wait and durable Transfer Intent permit it.
+/// Core observes the Character's Transfer fence, restores ghost state, and removes any movement
+/// leg from before the crossing.
 pub(super) fn body(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
     now: i64,
-) -> Option<crate::WorldEntity> {
-    if let Ok(me) = crate::helpers::live_entity(ctx, bot.character_guid) {
+) -> Option<crate::tables::WorldEntity> {
+    if let Ok(me) = crate::actor::live_entity(ctx, bot.character_guid) {
         return Some(me);
     }
     let current = goal_of(ctx, bot.character_guid);
@@ -574,31 +560,14 @@ pub(super) fn body(
     ) {
         return None;
     }
-    let character = crate::helpers::character_by_guid(ctx, bot.character_guid)?;
-    let mut entity =
-        crate::creatures::build_player_entity(ctx, &character, spacetimedb::Identity::ZERO);
-    if character.pending_ghost {
-        let (dead, health, player_flags, unit_bytes_1) =
-            crate::world::ghost_restored_fields(entity.player_flags, entity.unit_bytes_1);
-        entity.dead = dead;
-        entity.health = health;
-        entity.player_flags = player_flags;
-        entity.unit_bytes_1 = unit_bytes_1;
-    }
-    ctx.db.game_world_entity().insert(entity);
-    // A leg thrown before the crossing would interpolate the arrival straight back across the map
-    // it just left.
-    ctx.db
-        .game_creature_spline()
-        .guid()
-        .delete(bot.character_guid);
+    let entity = crate::actor::restore_sessionless_body(ctx, bot.character_guid)?;
     spacetimedb::log::info!(
         "playerbots: bot {} is in the world on map {} instance {}",
         bot.character_guid,
-        character.map_id,
-        character.pending_instance_id
+        entity.map_id,
+        entity.instance_id
     );
-    crate::helpers::live_entity(ctx, bot.character_guid).ok()
+    Some(entity)
 }
 
 // ---- personality: the row, or a Runtime Script that overrides it -------------------------------
@@ -635,7 +604,7 @@ pub(crate) fn threshold_from(answer: Option<f64>, row_pct: u8) -> u8 {
 }
 
 /// Where this bot breaks off, asked of its Runtime Scripts once per think.
-fn flee_threshold(ctx: &ReducerContext, me: &crate::WorldEntity, row_pct: u8) -> u8 {
+fn flee_threshold(ctx: &ReducerContext, me: &crate::tables::WorldEntity, row_pct: u8) -> u8 {
     let engaged = ctx
         .db
         .game_melee_attack()
@@ -655,7 +624,7 @@ fn flee_threshold(ctx: &ReducerContext, me: &crate::WorldEntity, row_pct: u8) ->
 /// share that makes somebody worth healing who was not before.
 fn heal_threshold(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     row_pct: u8,
 ) -> u8 {
@@ -777,7 +746,7 @@ pub(crate) fn leaves_the_party(
 }
 
 /// Does anybody else in this party hold a quest this bot is still working?
-fn shares_quest_work(ctx: &ReducerContext, me: &crate::WorldEntity, party: &Party) -> bool {
+fn shares_quest_work(ctx: &ReducerContext, me: &crate::tables::WorldEntity, party: &Party) -> bool {
     let mine = active_quest_entries(ctx, me.guid);
     party
         .members
@@ -812,7 +781,7 @@ fn holds_one_of(ctx: &ReducerContext, character_guid: u64, entries: &[u32]) -> b
 /// mirror push contradicts. Repeating the decision costs one refused op — the Intent is picked up in
 /// well under a second, and the core refuses a leave for a Character in no party — so the tick or
 /// two before the roster catches up needs no latch of its own.
-fn part_ways(ctx: &ReducerContext, me: &crate::WorldEntity) {
+fn part_ways(ctx: &ReducerContext, me: &crate::tables::WorldEntity) {
     // ponytail: a Gateway that never picks the Intent up leaves this deciding, and saying so, once
     // a second. If that ever shows up in a log, put the decision on the invite-scan window rather
     // than adding a column to remember it.
@@ -821,17 +790,17 @@ fn part_ways(ctx: &ReducerContext, me: &crate::WorldEntity) {
          still shares",
         me.guid
     );
-    crate::group::emit_bot_leave_intent(ctx, me.guid);
+    crate::actor::emit_bot_leave_intent(ctx, me.guid);
 }
 
 /// What the scan knows about one entity in sight. The three reads are indexed but not free, which
 /// is why the caller only asks about players.
 fn neighbour_facts(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     my_race: u8,
     my_quests: &[u32],
-    other: &crate::WorldEntity,
+    other: &crate::tables::WorldEntity,
 ) -> Neighbour {
     Neighbour {
         guid: other.guid,
@@ -840,7 +809,7 @@ fn neighbour_facts(
         distance_yd: distance_2d(me.x, me.y, other.x, other.y),
         // `character_by_guid` is the in-transit fence, so a Character half-way across a Shard
         // boundary answers nothing and is not invited.
-        same_team: crate::helpers::character_by_guid(ctx, other.guid)
+        same_team: crate::actor::character_by_guid(ctx, other.guid)
             .is_some_and(|character| lyracore_shared::faction::same_team(my_race, character.race)),
         grouped: ctx
             .db
@@ -863,15 +832,15 @@ fn neighbour_facts(
 /// With no eligible neighbour this reads a handful of rows and changes nothing.
 fn invite_a_fellow_quester(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    active: &[&crate::CharacterQuest],
-    sight: &[crate::WorldEntity],
+    me: &crate::tables::WorldEntity,
+    active: &[&crate::tables::CharacterQuest],
+    sight: &[crate::tables::WorldEntity],
     now: i64,
 ) {
     if active.is_empty() || !invite_scan_is_open(me.guid, now) {
         return;
     }
-    let Some(inviter) = crate::helpers::character_by_guid(ctx, me.guid) else {
+    let Some(inviter) = crate::actor::character_by_guid(ctx, me.guid) else {
         return;
     };
     let my_quests: Vec<u32> = active.iter().map(|cq| cq.quest_entry).collect();
@@ -889,13 +858,13 @@ fn invite_a_fellow_quester(
     };
     // Named, not numbered: this line is the only record a serendipity invite was ever decided, and
     // a wall of 15-digit guids is not a record anyone can read.
-    let fellow_name = crate::helpers::character_by_guid(ctx, fellow.guid)
+    let fellow_name = crate::actor::character_by_guid(ctx, fellow.guid)
         .map_or_else(|| fellow.guid.to_string(), |character| character.name);
     spacetimedb::log::info!(
         "playerbots: {} invites {fellow_name} — both are working a quest the other holds",
         inviter.name
     );
-    crate::group::emit_bot_invite_intent(ctx, me.guid, fellow.guid);
+    crate::actor::emit_bot_invite_intent(ctx, me.guid, fellow.guid);
 }
 
 // ---- crossing a Shard boundary -------------------------------------------------------------------
@@ -977,9 +946,9 @@ fn live_target_is_available_to(
 fn live_target_is_available(
     ctx: &ReducerContext,
     character_guid: u64,
-    target: &crate::WorldEntity,
+    target: &crate::tables::WorldEntity,
 ) -> bool {
-    let entitlement = crate::loot::death_entitlement(
+    let entitlement = crate::actor::death_entitlement(
         ctx,
         target.guid,
         target.x,
@@ -1002,7 +971,7 @@ fn current_melee_target(
     character_guid: u64,
     target_guid: u64,
 ) -> Option<u64> {
-    let Ok(target) = crate::helpers::live_entity(ctx, target_guid) else {
+    let Ok(target) = crate::actor::live_entity(ctx, target_guid) else {
         return Some(target_guid);
     };
     if live_target_is_available(ctx, character_guid, &target) {
@@ -1016,7 +985,7 @@ fn current_melee_target(
 /// or on somebody in its party nearby.
 fn combat_target(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
 ) -> Option<u64> {
     let melee = ctx.db.game_melee_attack();
@@ -1027,7 +996,7 @@ fn combat_target(
     }
     let party_guids: &[u64] = party.map(|p| p.members.as_slice()).unwrap_or(&[]);
     for candidate in
-        crate::helpers::entities_near(ctx, me.map_id, me.instance_id, me.x, me.y, ASSIST_RADIUS_YD)
+        crate::actor::entities_near(ctx, me.map_id, me.instance_id, me.x, me.y, ASSIST_RADIUS_YD)
     {
         if candidate.is_player() || candidate.dead || candidate.owner_guid != 0 {
             continue;
@@ -1056,7 +1025,7 @@ pub(crate) fn closes_to_melee(role: u8, in_a_party: bool) -> bool {
 
 fn fight(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     party: Option<&Party>,
     personality: &PlayerbotsPersonality,
@@ -1066,7 +1035,7 @@ fn fight(
         let _ = super::actions::attack(ctx, me.guid, target);
         // Nothing chases for a PLAYER-typed entity, so a bot that pulled from range would stand
         // there swinging at nothing. Close first, cast second.
-        if let Ok(enemy) = crate::helpers::live_entity(ctx, target) {
+        if let Ok(enemy) = crate::actor::live_entity(ctx, target) {
             if distance_2d(me.x, me.y, enemy.x, enemy.y) > MELEE_RANGE_YD {
                 walk_toward(ctx, me, (enemy.x, enemy.y, enemy.z), MELEE_RANGE_YD, true);
             }
@@ -1080,7 +1049,7 @@ fn fight(
 /// are all the cast core's answers — a Refusal here just means the next row gets its turn.
 fn cast_rotation(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     party: Option<&Party>,
     personality: &PlayerbotsPersonality,
@@ -1109,7 +1078,7 @@ fn cast_rotation(
             continue;
         };
         let Some(cast_at) = available_rotation_target(selected, |target_guid| {
-            crate::helpers::live_entity(ctx, target_guid)
+            crate::actor::live_entity(ctx, target_guid)
                 .is_ok_and(|target| live_target_is_available(ctx, me.guid, &target))
         }) else {
             continue;
@@ -1145,7 +1114,7 @@ fn available_rotation_target(
 /// per row.
 fn rotation_target(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     heal_at_pct: u8,
     row: &PlayerbotsRotation,
@@ -1153,7 +1122,7 @@ fn rotation_target(
 ) -> Option<RotationTarget> {
     match row.condition {
         cond::ALWAYS => Some(RotationTarget::Hostile(current_target)),
-        cond::SELF_MISSING_AURA => (!crate::spell::has_aura(ctx, me.guid, row.spell_id))
+        cond::SELF_MISSING_AURA => (!crate::actor::has_aura(ctx, me.guid, row.spell_id))
             .then_some(RotationTarget::Friendly(me.guid)),
         cond::ENEMY_ON_ALLY => enemy_on_ally(ctx, me, party).map(RotationTarget::Hostile),
         cond::ALLY_HP_BELOW_PCT => {
@@ -1183,20 +1152,20 @@ fn rotation_target(
 /// in the list: a healer is a party member too.
 fn party_entities(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
-) -> Vec<crate::WorldEntity> {
+) -> Vec<crate::tables::WorldEntity> {
     let Some(party) = party else {
-        return crate::helpers::live_entity(ctx, me.guid)
+        return crate::actor::live_entity(ctx, me.guid)
             .into_iter()
             .collect();
     };
     party
         .members
         .iter()
-        .filter_map(|guid| crate::helpers::live_entity(ctx, *guid).ok())
+        .filter_map(|guid| crate::actor::live_entity(ctx, *guid).ok())
         .filter(|entity| {
-            !entity.dead && crate::helpers::in_same_partition(entity, me.map_id, me.instance_id)
+            !entity.dead && crate::actor::in_same_partition(entity, me.map_id, me.instance_id)
         })
         .collect()
 }
@@ -1204,7 +1173,7 @@ fn party_entities(
 /// A hostile unit swinging at somebody in the party who is not this bot — the peel target.
 fn enemy_on_ally(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
 ) -> Option<u64> {
     let allies: Vec<u64> = party_entities(ctx, me, party)
@@ -1228,7 +1197,7 @@ fn enemy_on_ally(
 /// with one cast spends it where it counts.
 fn lowest_hurt_ally(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     threshold_pct: u8,
 ) -> Option<u64> {
@@ -1247,13 +1216,13 @@ fn lowest_hurt_ally(
 
 fn ally_missing_aura(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     spell_id: u32,
 ) -> Option<u64> {
     party_entities(ctx, me, party)
         .into_iter()
-        .find(|entity| !crate::spell::has_aura(ctx, entity.guid, spell_id))
+        .find(|entity| !crate::actor::has_aura(ctx, entity.guid, spell_id))
         .map(|entity| entity.guid)
 }
 
@@ -1281,7 +1250,11 @@ fn tank_target(ctx: &ReducerContext, party: Option<&Party>) -> Option<u64> {
 }
 
 /// How many distinct hostile units the party currently holds threat on.
-fn engaged_enemies(ctx: &ReducerContext, me: &crate::WorldEntity, party: Option<&Party>) -> usize {
+fn engaged_enemies(
+    ctx: &ReducerContext,
+    me: &crate::tables::WorldEntity,
+    party: Option<&Party>,
+) -> usize {
     let threat = ctx.db.game_threat();
     let mut seen: Vec<u64> = Vec::new();
     for entity in party_entities(ctx, me, party) {
@@ -1305,7 +1278,7 @@ fn engaged_enemies(ctx: &ReducerContext, me: &crate::WorldEntity, party: Option<
 /// same question — literally the same function — and `crate::actor::accept_quest` stays the
 /// authority that answers it for real. This only decides whether the walk is worth taking.
 ///
-/// `crate::quest::accept_gates` IS the core's Gate: level, race, class, the previous step in the
+/// `crate::actor::quest_acceptance` IS the core's Gate: level, race, class, the previous step in the
 /// chain, and whether the bot already holds the quest, in the order `apply_accept_quest` applies
 /// them. Nothing on this side re-states any of it, so there is nothing left to drift.
 ///
@@ -1315,15 +1288,15 @@ fn engaged_enemies(ctx: &ReducerContext, me: &crate::WorldEntity, party: Option<
 /// order the core's order.
 fn worth_the_walk(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    tmpl: &crate::QuestTemplate,
+    me: &crate::tables::WorldEntity,
+    tmpl: &crate::tables::QuestTemplate,
 ) -> Result<(), String> {
     // The `Ok` payload is the log row the accept would reset in place rather than duplicate.
     // Selection only needs to know that no Gate refused.
-    let _resettable_row = crate::quest::accept_gates(ctx, me, tmpl)?;
+    let _resettable_row = crate::actor::quest_acceptance(ctx, me, tmpl)?;
     if bag_can_take_the_quest_item(
         tmpl.src_item != 0,
-        crate::items::has_free_slot(ctx, me.guid),
+        crate::actor::has_free_slot(ctx, me.guid),
     ) {
         return Ok(());
     }
@@ -1348,8 +1321,8 @@ pub(crate) fn bag_can_take_the_quest_item(hands_over_an_item: bool, bag_has_room
 
 /// Every row in this bot's quest log, oldest first. Read once per tick: the work to do and the
 /// room-to-take-another decision both ask the same rows.
-fn quest_log(ctx: &ReducerContext, character_guid: u64) -> Vec<crate::CharacterQuest> {
-    let mut rows: Vec<crate::CharacterQuest> = ctx
+fn quest_log(ctx: &ReducerContext, character_guid: u64) -> Vec<crate::tables::CharacterQuest> {
+    let mut rows: Vec<crate::tables::CharacterQuest> = ctx
         .db
         .game_character_quest()
         .by_character()
@@ -1409,7 +1382,7 @@ impl QuestStep {
 #[allow(clippy::too_many_arguments)] // one tick of one loop, and every argument is one of its inputs
 fn quest(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
     engaged: Option<u64>,
@@ -1427,10 +1400,10 @@ fn quest(
         return Some(goal::QUEST_TRAVEL);
     }
     let sight =
-        crate::helpers::entities_near(ctx, me.map_id, me.instance_id, me.x, me.y, QUEST_SIGHT_YD);
+        crate::actor::entities_near(ctx, me.map_id, me.instance_id, me.x, me.y, QUEST_SIGHT_YD);
 
     let log = quest_log(ctx, me.guid);
-    let active: Vec<&crate::CharacterQuest> = log
+    let active: Vec<&crate::tables::CharacterQuest> = log
         .iter()
         .filter(|row| !row.rewarded && !row.failed)
         .collect();
@@ -1466,12 +1439,12 @@ fn quest(
 #[allow(clippy::too_many_arguments)] // one decision, and every argument is one of its inputs
 fn decide_quest(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
     engaged: Option<u64>,
-    active: &[&crate::CharacterQuest],
-    sight: &[crate::WorldEntity],
+    active: &[&crate::tables::CharacterQuest],
+    sight: &[crate::tables::WorldEntity],
     now: i64,
 ) -> Option<QuestStep> {
     // Already swinging at something. Whether that is quest work is the bot's to say; anything else
@@ -1503,11 +1476,11 @@ fn decide_quest(
 /// itself while grinding stays grinding, which the goal row is what remembers.
 fn engaged_reason(
     ctx: &ReducerContext,
-    active: &[&crate::CharacterQuest],
+    active: &[&crate::tables::CharacterQuest],
     target: u64,
     held: Option<u8>,
 ) -> Option<QuestStep> {
-    let entry = crate::helpers::live_entity(ctx, target).ok()?.entry;
+    let entry = crate::actor::live_entity(ctx, target).ok()?.entry;
     if active
         .iter()
         .any(|cq| kill_target_entry(ctx, cq) == Some(entry))
@@ -1527,13 +1500,13 @@ fn held_kind(ctx: &ReducerContext, character_guid: u64) -> Option<u8> {
 /// Deliberately NOT a completeness test. `apply_turn_in_quest` owns completeness and answers a
 /// COLLECT objective out of the live bag; this only decides whether there is still hunting to do,
 /// which is what stops a bot culling wolves forever after the second one.
-fn kill_target_entry(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> Option<u32> {
+fn kill_target_entry(ctx: &ReducerContext, cq: &crate::tables::CharacterQuest) -> Option<u32> {
     ctx.db
         .game_quest_objective()
         .by_quest()
         .filter(&cq.quest_entry)
         .find(|obj| {
-            obj.kind == crate::quest::objective_kind::KILL_CREATURE
+            obj.kind == crate::actor::objective_kind::KILL_CREATURE
                 && cq.counts.get(obj.obj_index as usize).copied().unwrap_or(0) < obj.required_count
         })
         .map(|obj| obj.target_entry)
@@ -1546,13 +1519,13 @@ fn kill_target_entry(ctx: &ReducerContext, cq: &crate::CharacterQuest) -> Option
 /// movement leg and a failed Durable Request each time. `apply_turn_in_quest` remains the
 /// authority; this only decides whether the walk is worth taking, exactly like [`worth_the_walk`].
 ///
-/// Two questions, and the core owns one of them. `crate::quest::quest_is_complete` answers the
+/// Two questions, and the core owns one of them. `crate::actor::quest_complete` answers the
 /// objectives — and it answers ONLY those, deliberately, so the deadline is this caller's to ask
 /// and is asked first. A quest past its deadline is refused as expired; the sweep that flips the
 /// row runs on its own clock, so between the deadline and the sweep the row still reads active, and
 /// a bot that trusted `failed` alone would set off for a Refusal in that window.
-fn turn_in_ready(ctx: &ReducerContext, cq: &crate::CharacterQuest, now: i64) -> bool {
-    expired_quest_can_wait(cq.deadline_micros, now) && crate::quest::quest_is_complete(ctx, cq)
+fn turn_in_ready(ctx: &ReducerContext, cq: &crate::tables::CharacterQuest, now: i64) -> bool {
+    expired_quest_can_wait(cq.deadline_micros, now) && crate::actor::quest_complete(ctx, cq)
 }
 
 /// Is this quest still inside its own time limit? `0` is untimed, which is nearly every quest.
@@ -1573,7 +1546,7 @@ pub(crate) fn expired_quest_can_wait(deadline_micros: i64, now: i64) -> bool {
 /// Stops at the count the objective asks for. Past that the extras satisfy nothing and are not
 /// even handed back by the turn-in, which removes exactly `required_count`; they would sit in the
 /// bag for the rest of the bot's life.
-fn wanted_items(ctx: &ReducerContext, active: &[&crate::CharacterQuest]) -> Vec<u32> {
+fn wanted_items(ctx: &ReducerContext, active: &[&crate::tables::CharacterQuest]) -> Vec<u32> {
     let mut wanted = Vec::new();
     for cq in active {
         for obj in ctx
@@ -1581,9 +1554,9 @@ fn wanted_items(ctx: &ReducerContext, active: &[&crate::CharacterQuest]) -> Vec<
             .game_quest_objective()
             .by_quest()
             .filter(&cq.quest_entry)
-            .filter(|obj| obj.kind == crate::quest::objective_kind::COLLECT_ITEM)
+            .filter(|obj| obj.kind == crate::actor::objective_kind::COLLECT_ITEM)
         {
-            let have = crate::items::item_count(ctx, cq.character_guid, obj.target_entry);
+            let have = crate::actor::item_count(ctx, cq.character_guid, obj.target_entry);
             if have < obj.required_count && !wanted.contains(&obj.target_entry) {
                 wanted.push(obj.target_entry);
             }
@@ -1607,11 +1580,11 @@ fn wanted_items(ctx: &ReducerContext, active: &[&crate::CharacterQuest]) -> Vec<
 #[allow(clippy::too_many_arguments)] // one quest's next step, and every argument is one of its inputs
 fn work_quest(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
-    cq: &crate::CharacterQuest,
-    sight: &[crate::WorldEntity],
+    cq: &crate::tables::CharacterQuest,
+    sight: &[crate::tables::WorldEntity],
     now: i64,
     stuck: bool,
 ) -> Option<QuestStep> {
@@ -1628,7 +1601,7 @@ fn work_quest(
     if !turn_in_ready(ctx, cq, now) {
         return None;
     }
-    if !crate::items::has_free_slot(ctx, me.guid) && !has_collect_objective(ctx, cq.quest_entry) {
+    if !crate::actor::has_free_slot(ctx, me.guid) && !has_collect_objective(ctx, cq.quest_entry) {
         return None;
     }
     hand_it_back(ctx, me, bot, cq.quest_entry, sight, stuck)
@@ -1641,7 +1614,7 @@ fn has_collect_objective(ctx: &ReducerContext, quest_entry: u32) -> bool {
         .game_quest_objective()
         .by_quest()
         .filter(&quest_entry)
-        .any(|obj| obj.kind == crate::quest::objective_kind::COLLECT_ITEM)
+        .any(|obj| obj.kind == crate::actor::objective_kind::COLLECT_ITEM)
 }
 
 /// Carry a ready quest back. The ender in sight is walked to and asked; no ender in sight means the
@@ -1657,17 +1630,17 @@ fn has_collect_objective(ctx: &ReducerContext, quest_entry: u32) -> bool {
 /// the stall clock — and `stuck` stops it making the same trip again after that clock has run.
 fn hand_it_back(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     quest_entry: u32,
-    sight: &[crate::WorldEntity],
+    sight: &[crate::tables::WorldEntity],
     stuck: bool,
 ) -> Option<QuestStep> {
     let ender = nearest(me, sight, |e| {
         !e.is_player()
             && !e.dead
             && talkable(me, e)
-            && offers(ctx, e.entry, quest_entry, crate::quest::quest_role::END)
+            && offers(ctx, e.entry, quest_entry, crate::actor::quest_role::END)
     });
     let Some(ender) = ender else {
         if stuck {
@@ -1733,9 +1706,9 @@ fn hand_it_back(
 /// of them instead of reaching either. The nearest giver stays the nearest as the bot closes on it.
 fn take_a_quest(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
-    sight: &[crate::WorldEntity],
+    sight: &[crate::tables::WorldEntity],
     now: i64,
 ) -> Option<QuestStep> {
     let reach = entries_within_reach(ctx, me, bot);
@@ -1786,11 +1759,11 @@ fn take_a_quest(
 /// bot that takes fewer quests is a bot that quests less, while a bot that takes more is the loop.
 fn open_quests_of(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     entry: u32,
     reach: &std::collections::BTreeSet<u32>,
 ) -> Vec<u32> {
-    let mut open: Vec<u32> = offered_by(ctx, entry, crate::quest::quest_role::START)
+    let mut open: Vec<u32> = offered_by(ctx, entry, crate::actor::quest_role::START)
         .into_iter()
         .filter(|quest_entry| workable(ctx, *quest_entry))
         .filter(|quest_entry| within_reach(ctx, *quest_entry, reach))
@@ -1815,10 +1788,10 @@ fn open_quests_of(
 /// can work a quest on, as a set so `within_reach` is one lookup per entry.
 fn entries_within_reach(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
 ) -> std::collections::BTreeSet<u32> {
-    crate::helpers::entities_near(
+    crate::actor::entities_near(
         ctx,
         me.map_id,
         me.instance_id,
@@ -1850,14 +1823,14 @@ fn within_reach(
         .filter(&quest_entry)
     {
         match obj.kind {
-            crate::quest::objective_kind::KILL_CREATURE => kill_targets.push(obj.target_entry),
-            crate::quest::objective_kind::COLLECT_ITEM => collect_items.push(obj.target_entry),
+            crate::actor::objective_kind::KILL_CREATURE => kill_targets.push(obj.target_entry),
+            crate::actor::objective_kind::COLLECT_ITEM => collect_items.push(obj.target_entry),
             _ => {}
         }
     }
     let ender_in_reach = reach
         .iter()
-        .any(|entry| offers(ctx, *entry, quest_entry, crate::quest::quest_role::END));
+        .any(|entry| offers(ctx, *entry, quest_entry, crate::actor::quest_role::END));
     quest_in_reach(
         &kill_targets,
         &collect_items,
@@ -1916,8 +1889,8 @@ pub(crate) fn objectives_are_workable(kinds: &[u8], needs_event_credit: bool) ->
         || kinds.iter().any(|kind| {
             matches!(
                 *kind,
-                crate::quest::objective_kind::KILL_CREATURE
-                    | crate::quest::objective_kind::COLLECT_ITEM
+                crate::actor::objective_kind::KILL_CREATURE
+                    | crate::actor::objective_kind::COLLECT_ITEM
             )
         })
 }
@@ -1927,7 +1900,7 @@ const GRIND_LEVEL_REACH: u32 = 3;
 
 /// Is this creature worth a `bot_level` bot's time, and survivable by it?
 ///
-/// The low end is `crate::xp::xp_for_kill`, the core's own grey clamp: a creature that pays no
+/// The low end is `crate::actor::xp_for_kill`, the core's own grey clamp: a creature that pays no
 /// experience is a creature there is no reason to fight. The high end is [`GRIND_LEVEL_REACH`], and
 /// elites are out whatever their level — a bot whose personality never lets it flee will otherwise
 /// walk into the nearest elite, die, resurrect, walk back into it, and spend its life doing that.
@@ -1935,7 +1908,7 @@ const GRIND_LEVEL_REACH: u32 = 3;
 pub(crate) fn worth_grinding(bot_level: u32, victim_level: u32, elite: bool) -> bool {
     !elite
         && victim_level <= bot_level + GRIND_LEVEL_REACH
-        && crate::xp::xp_for_kill(victim_level, bot_level) > 0
+        && crate::actor::xp_for_kill(victim_level, bot_level) > 0
 }
 
 /// Is this creature an elite? The one place the core spells the elite ranks out is the kill-XP
@@ -1945,15 +1918,15 @@ fn is_elite(ctx: &ReducerContext, entry: u32) -> bool {
         .game_creature_template()
         .entry()
         .find(entry)
-        .is_some_and(|template| crate::xp::rank_xp_multiplier(template.rank) > 1)
+        .is_some_and(|template| crate::actor::rank_xp_multiplier(template.rank) > 1)
 }
 
 /// The shared suitability policy for a fight chosen only for experience. Callers retain ownership
 /// of their spatial budget, home leash, target rotation, and current-work exclusion.
 pub(super) fn grind_target_is_worthwhile(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    target: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
+    target: &crate::tables::WorldEntity,
 ) -> bool {
     !target.is_player()
         && !target.dead
@@ -1976,21 +1949,21 @@ fn has_quest_relation(ctx: &ReducerContext, creature_entry: u32) -> bool {
 /// Kill something for the experience. What a bot does when no quest it can take is on offer and
 /// nothing it holds can be worked — a bot standing still in a field reads as broken.
 ///
-/// `crate::faction::is_friendly` is the same predicate the attack core's own gate uses, so a bot
+/// `crate::actor::is_friendly` is the same predicate the attack core's own gate uses, so a bot
 /// picks exactly the targets a player could: hostile and neutral, never green. [`worth_grinding`]
 /// narrows that to the ones it can actually beat. With nothing in the band in sight the bot goes
 /// back to wandering, which is the right answer — a bot that stands still reads as broken, but a
 /// bot that throws itself at a level 60 elite reads as broken faster.
 fn grind(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     bot: &PlayerbotsBot,
     personality: &PlayerbotsPersonality,
-    sight: &[crate::WorldEntity],
+    sight: &[crate::tables::WorldEntity],
 ) -> Option<QuestStep> {
     let victim = pick_near(me, sight, pick_salt(ctx, me.guid), |target| {
         grind_target_is_worthwhile(ctx, me, target)
-            && !crate::faction::is_friendly(ctx, me.faction_template, target.faction_template)
+            && !crate::actor::is_friendly(ctx, me.faction_template, target.faction_template)
             && live_target_is_available(ctx, me.guid, target)
     })?;
     fight(ctx, me, bot, None, personality, victim.guid);
@@ -2007,16 +1980,16 @@ fn grind(
 /// slot against its own looting.
 fn take_what_the_kill_left(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    sight: &[crate::WorldEntity],
+    me: &crate::tables::WorldEntity,
+    sight: &[crate::tables::WorldEntity],
     wanted: &[u32],
 ) {
     for corpse in sight
         .iter()
         .filter(|e| e.dead && !e.is_player() && distance_2d(me.x, me.y, e.x, e.y) <= LOOT_RANGE_YD)
     {
-        let recipients = crate::loot::corpse_eligible_recipients(ctx, corpse.guid);
-        if !crate::loot::corpse_eligible_for_access(&recipients, me.guid) {
+        let recipients = crate::actor::corpse_eligible_recipients(ctx, corpse.guid);
+        if !crate::actor::corpse_eligible_for_access(&recipients, me.guid) {
             continue;
         }
         let result = loot_eligible_corpse(
@@ -2034,7 +2007,7 @@ fn take_what_the_kill_left(
                         .collect()
                 }
             },
-            || crate::items::has_free_slot(ctx, me.guid),
+            || crate::actor::has_free_slot(ctx, me.guid),
             |action| match action {
                 CorpseLootAction::Money => crate::actor::loot_money(ctx, me.guid, corpse.guid),
                 CorpseLootAction::Item(slot) => {
@@ -2111,27 +2084,30 @@ fn offers(ctx: &ReducerContext, entry: u32, quest_entry: u32, role: u8) -> bool 
 
 /// The closest entity in `sight` that `wanted` accepts.
 fn nearest<'a>(
-    me: &crate::WorldEntity,
-    sight: &'a [crate::WorldEntity],
-    mut wanted: impl FnMut(&crate::WorldEntity) -> bool,
-) -> Option<&'a crate::WorldEntity> {
+    me: &crate::tables::WorldEntity,
+    sight: &'a [crate::tables::WorldEntity],
+    mut wanted: impl FnMut(&crate::tables::WorldEntity) -> bool,
+) -> Option<&'a crate::tables::WorldEntity> {
     sight
         .iter()
         .filter(|e| e.guid != me.guid && wanted(e))
-        .fold(None, |best: Option<(&crate::WorldEntity, f32)>, e| {
-            let d = distance_2d(me.x, me.y, e.x, e.y);
-            match best {
-                Some((_, bd)) if bd <= d => best,
-                _ => Some((e, d)),
-            }
-        })
+        .fold(
+            None,
+            |best: Option<(&crate::tables::WorldEntity, f32)>, e| {
+                let d = distance_2d(me.x, me.y, e.x, e.y);
+                match best {
+                    Some((_, bd)) if bd <= d => best,
+                    _ => Some((e, d)),
+                }
+            },
+        )
         .map(|(e, _)| e)
 }
 
 /// A giver or ender a bot can talk to from the ground it walks on. The core's accept and turn-in
 /// gates measure the full 3D distance (10 yd), while the walk only closes the 2D gap, so a
 /// creature on an upper floor or a ledge would be walked to and then refused every tick.
-fn talkable(me: &crate::WorldEntity, e: &crate::WorldEntity) -> bool {
+fn talkable(me: &crate::tables::WorldEntity, e: &crate::tables::WorldEntity) -> bool {
     (e.z - me.z).abs() <= INTERACT_RANGE_YD
 }
 
@@ -2144,12 +2120,12 @@ pub(super) const PICK_AMONG_NEAREST: usize = 3;
 /// bot's guid mixed with the time window, so two bots on the same spot choose differently and one
 /// bot keeps its choice for a few seconds rather than flipping every tick.
 fn pick_near<'a>(
-    me: &crate::WorldEntity,
-    sight: &'a [crate::WorldEntity],
+    me: &crate::tables::WorldEntity,
+    sight: &'a [crate::tables::WorldEntity],
     salt: u64,
-    mut wanted: impl FnMut(&crate::WorldEntity) -> bool,
-) -> Option<&'a crate::WorldEntity> {
-    let mut candidates: Vec<(&crate::WorldEntity, f32)> = sight
+    mut wanted: impl FnMut(&crate::tables::WorldEntity) -> bool,
+) -> Option<&'a crate::tables::WorldEntity> {
+    let mut candidates: Vec<(&crate::tables::WorldEntity, f32)> = sight
         .iter()
         .filter(|e| e.guid != me.guid && wanted(e))
         .map(|e| (e, distance_2d(me.x, me.y, e.x, e.y)))
@@ -2184,23 +2160,23 @@ pub(super) fn pick_salt(ctx: &ReducerContext, character_guid: u64) -> u64 {
 /// handles that case through its typed AreaTrigger path before legacy goals run.
 fn follow_across_partitions(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    leader: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
+    leader: &crate::tables::WorldEntity,
 ) -> bool {
-    if crate::helpers::in_same_partition(leader, me.map_id, me.instance_id) {
+    if crate::actor::in_same_partition(leader, me.map_id, me.instance_id) {
         return false;
     }
     let _ = crate::actor::stop_attack(ctx, me.guid);
     // A leg that was playing on the old map would interpolate the bot across the world.
     ctx.db.game_creature_spline().guid().delete(me.guid);
-    let Ok(mut moved) = crate::helpers::live_entity(ctx, me.guid) else {
+    let Ok(mut moved) = crate::actor::live_entity(ctx, me.guid) else {
         return false;
     };
     moved.map_id = leader.map_id;
     moved.instance_id = leader.instance_id;
     place(&mut moved, leader.x, leader.y, leader.z);
     ctx.db.game_world_entity().guid().update(moved);
-    if let Some(mut character) = crate::helpers::character_by_guid(ctx, me.guid) {
+    if let Some(mut character) = crate::actor::character_by_guid(ctx, me.guid) {
         character.map_id = leader.map_id;
         character.x = leader.x;
         character.y = leader.y;
@@ -2210,8 +2186,8 @@ fn follow_across_partitions(
     true
 }
 
-fn follow_leader(ctx: &ReducerContext, me: &crate::WorldEntity, leader_guid: u64) {
-    let Ok(leader) = crate::helpers::live_entity(ctx, leader_guid) else {
+fn follow_leader(ctx: &ReducerContext, me: &crate::tables::WorldEntity, leader_guid: u64) {
+    let Ok(leader) = crate::actor::live_entity(ctx, leader_guid) else {
         return;
     };
     if distance_2d(me.x, me.y, leader.x, leader.y) <= FOLLOW_RANGE_YD {
@@ -2228,7 +2204,7 @@ fn follow_leader(ctx: &ReducerContext, me: &crate::WorldEntity, leader_guid: u64
 
 /// An ungrouped bot mills about near its home point, so a realm with bots in it looks inhabited
 /// rather than staged.
-fn wander(ctx: &ReducerContext, me: &crate::WorldEntity, bot: &PlayerbotsBot) {
+fn wander(ctx: &ReducerContext, me: &crate::tables::WorldEntity, bot: &PlayerbotsBot) {
     let window = ctx.timestamp.to_micros_since_unix_epoch() / WANDER_LEG_MICROS;
     let (dx, dy) = wander_offset(bot.character_guid, window);
     let dest = (bot.home_x + dx, bot.home_y + dy, bot.home_z);
@@ -2259,7 +2235,7 @@ pub(crate) fn wander_offset(character_guid: u64, window: i64) -> (f32, f32) {
 /// writes, so the Gateway relays it through the one movement path it already has.
 pub(super) fn walk_toward(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     dest: (f32, f32, f32),
     stand_off: f32,
     run: bool,
@@ -2271,7 +2247,7 @@ pub(super) fn walk_toward(
     };
     let full = distance_2d(me.x, me.y, dest.0, dest.1);
     let step = step_length(full, stand_off, speed, THINK_INTERVAL_MICROS);
-    let route = crate::nav::route_step(
+    let route = crate::actor::movement::route_step(
         ctx,
         me.map_id,
         me.instance_id,
@@ -2297,12 +2273,12 @@ pub(super) fn walk_toward(
     }
     // The creature leg, verbatim: the core snaps the landing to the ground, relays the spline, and
     // its advance pass glides the row along it tick by tick. The bot does not jump to the leg end.
-    let Ok(mut mover) = crate::helpers::live_entity(ctx, me.guid) else {
+    let Ok(mut mover) = crate::actor::live_entity(ctx, me.guid) else {
         return;
     };
     mover.orientation = (ly - me.y).atan2(lx - me.x);
     let now_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
-    crate::creatures::tick::emit_creature_leg(
+    crate::actor::movement::emit_creature_leg(
         ctx,
         mover,
         (lx, ly),
@@ -2328,7 +2304,7 @@ pub(crate) fn step_length(distance: f32, stand_off: f32, speed: f32, interval_mi
 
 /// Write a position and everything the spatial indexes derive from it. One place, so a move can
 /// never leave the grid columns naming a cell the entity is no longer in.
-fn place(entity: &mut crate::WorldEntity, x: f32, y: f32, z: f32) {
+fn place(entity: &mut crate::tables::WorldEntity, x: f32, y: f32, z: f32) {
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(x, y);
     entity.x = x;
     entity.y = y;

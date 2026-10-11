@@ -10,7 +10,7 @@ use super::quest_catalog::{
     ObjectiveExecutor, PlayerbotsCatalogObjective, PlayerbotsCatalogQuest, CATALOG_REVISION,
     CATALOG_WALK_LIMIT,
 };
-use crate::{
+use crate::tables::{
     game_character_quest, game_corpse_loot, game_creature_loot, game_creature_quest,
     game_creature_spawn, game_creature_spline, game_creature_template, game_faction_template,
     game_gameobject, game_gameobject_loot, game_gameobject_quest, game_gameobject_template,
@@ -153,7 +153,7 @@ crate::game_hook!(on_loot, fn playerbots_quest_fixture_looted(ctx, payload) {
         return;
     }
     let rows = ctx.db.pkg_playerbots_quest_loot_receipt_fixture();
-    let carried_count = crate::items::item_count(ctx, payload.looter_guid, payload.item_entry);
+    let carried_count = crate::actor::item_count(ctx, payload.looter_guid, payload.item_entry);
     if let Some(mut row) = rows.character_guid().find(payload.looter_guid) {
         row.received_count = row.received_count.saturating_add(payload.count);
         row.peak_carried_count = row.peak_carried_count.max(carried_count);
@@ -216,7 +216,7 @@ enum FixtureStage {
 }
 
 fn require_fixture(ctx: &ReducerContext) -> Result<(), String> {
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     let ownership = ctx
         .db
         .pkg_playerbots_quest_fixture_ownership()
@@ -236,7 +236,7 @@ pub fn playerbots_recovery_fixture_block_quest_target(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let target = ctx
         .db
@@ -245,9 +245,9 @@ pub fn playerbots_recovery_fixture_block_quest_target(
         .find(creature_guid(6))
         .ok_or("quest target missing")?;
     super::fixture::playerbots_fixture_position(ctx, character_guid, target.x - 3.0)?;
-    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    let me = crate::actor::live_entity(ctx, character_guid)?;
     block_navigation(ctx, &me)?;
-    if crate::nav::has_los(
+    if crate::actor::movement::has_los(
         ctx,
         me.map_id,
         me.instance_id,
@@ -259,15 +259,15 @@ pub fn playerbots_recovery_fixture_block_quest_target(
     super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
 }
 
-fn block_navigation(ctx: &ReducerContext, me: &crate::WorldEntity) -> Result<(), String> {
+fn block_navigation(ctx: &ReducerContext, me: &crate::tables::WorldEntity) -> Result<(), String> {
     let cx = lyracore_shared::terrain::cell_index(me.x).ok_or("fixture off grid")?;
     let cy = lyracore_shared::terrain::cell_index(me.y).ok_or("fixture off grid")?;
-    use crate::nav::game_nav_chunk;
+    use crate::tables::game_nav_chunk;
     for x in cx.saturating_sub(1)..=cx.saturating_add(1).min(1023) {
         for y in cy.saturating_sub(1)..=cy.saturating_add(1).min(1023) {
             let key = lyracore_shared::terrain::cell_key(me.map_id, x, y);
             ctx.db.game_nav_chunk().key().delete(key);
-            ctx.db.game_nav_chunk().insert(crate::nav::NavChunk {
+            ctx.db.game_nav_chunk().insert(crate::tables::NavChunk {
                 key,
                 map_id: me.map_id,
                 cell_x: x,
@@ -287,11 +287,11 @@ pub fn playerbots_recovery_fixture_partial_route(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     super::fixture::playerbots_fixture_partial_route(ctx, character_guid)?;
-    let me = crate::helpers::live_entity(ctx, character_guid)?;
-    use crate::nav::game_nav_chunk;
+    let me = crate::actor::live_entity(ctx, character_guid)?;
+    use crate::tables::game_nav_chunk;
     let mut chunks = std::collections::BTreeMap::new();
     for x in -16..=8 {
         for y in -16..=16 {
@@ -307,7 +307,7 @@ pub fn playerbots_recovery_fixture_partial_route(
                     .game_nav_chunk()
                     .key()
                     .find(key)
-                    .unwrap_or(crate::nav::NavChunk {
+                    .unwrap_or(crate::tables::NavChunk {
                         key,
                         map_id: me.map_id,
                         cell_x: cx,
@@ -336,9 +336,9 @@ pub fn playerbots_recovery_fixture_block_companion(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
-    let me = crate::helpers::live_entity(ctx, character_guid)?;
+    let me = crate::actor::live_entity(ctx, character_guid)?;
     block_navigation(ctx, &me)?;
     super::fixture::playerbots_fixture_runner_select_cohort(ctx, character_guid)
 }
@@ -348,7 +348,7 @@ pub fn playerbots_recovery_fixture_pass_and_park_movement(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
     use super::runner::pkg_playerbots_movement;
@@ -365,7 +365,7 @@ pub fn playerbots_recovery_fixture_exhaust_attempt(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     use super::runner::pkg_playerbots_runner;
     let rows = ctx.db.pkg_playerbots_runner();
@@ -390,7 +390,7 @@ pub fn playerbots_recovery_fixture_expire_destinations(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     use super::runner::pkg_playerbots_runner;
     let rows = ctx.db.pkg_playerbots_runner();
@@ -413,7 +413,7 @@ pub fn playerbots_recovery_fixture_keep_two_quest_targets(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let fixture = ctx
         .db
@@ -453,7 +453,7 @@ pub fn playerbots_recovery_fixture_expire_quest_target(
     character_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     use super::runner::pkg_playerbots_runner;
     let rows = ctx.db.pkg_playerbots_runner();
@@ -538,7 +538,7 @@ fn insert_alternative_gameobject(ctx: &ReducerContext, entry: u32) -> Result<u64
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(x, y);
     let rows = ctx.db.game_gameobject();
     rows.guid().delete(guid);
-    rows.insert(crate::GameObject {
+    rows.insert(crate::tables::GameObject {
         guid,
         template_entry: original.template_entry,
         map_id: original.map_id,
@@ -602,7 +602,7 @@ pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
     // The pinned ClassicDB spell_template row supplies the gameplay fields below. The dump omits
     // auxiliary DBC rows for CastTimeIndex 16, RangeIndex 4, and DurationIndex 0, so this private
     // fixture declares 1500ms, 30yd, and 0ms for those three values.
-    ctx.db.game_spell().insert(crate::spell::Spell {
+    ctx.db.game_spell().insert(crate::tables::Spell {
         spell_id: LOOPBACK_SMITE,
         name: "Smite".to_string(),
         power_type: 0,
@@ -631,7 +631,7 @@ pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
     });
     ctx.db
         .game_spell_effect()
-        .insert(crate::spell::SpellEffect {
+        .insert(crate::tables::SpellEffect {
             id: 2_340,
             spell_id: LOOPBACK_SMITE,
             effect_index: 0,
@@ -659,8 +659,8 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if let Some(existing) = ctx
         .db
         .pkg_playerbots_seeded_quest_fixture()
@@ -749,7 +749,7 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
     insert_gameobject(
         ctx,
         SEEDED_USE_GAMEOBJECT,
-        crate::gameobject::go_type::GOOBER,
+        crate::actor::go_type::GOOBER,
         0,
         destination.map_id,
         destination.instance_id,
@@ -757,50 +757,54 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
         destination.y,
         destination.z,
     );
-    ctx.db.game_quest_template().insert(crate::QuestTemplate {
-        entry: SEEDED_USE_QUEST,
-        min_level: 1,
-        quest_level: 1,
-        title: "Loopback simple GameObject".to_string(),
-        reward_money: 3,
-        reward_xp: 5,
-        prev_quest_id: 0,
-        required_races: 77,
-        required_classes: 0,
-        zone_or_sort: 9,
-        rew_rep_faction_1: 0,
-        rew_rep_value_1: 0,
-        rew_rep_faction_2: 0,
-        rew_rep_value_2: 0,
-        src_item: 0,
-        src_item_count: 0,
-        repeatable: false,
-        next_quest_id: 0,
-        limit_time: 0,
-        reward_money_max_level: 0,
-        quest_type: 0,
-    });
+    ctx.db
+        .game_quest_template()
+        .insert(crate::tables::QuestTemplate {
+            entry: SEEDED_USE_QUEST,
+            min_level: 1,
+            quest_level: 1,
+            title: "Loopback simple GameObject".to_string(),
+            reward_money: 3,
+            reward_xp: 5,
+            prev_quest_id: 0,
+            required_races: 77,
+            required_classes: 0,
+            zone_or_sort: 9,
+            rew_rep_faction_1: 0,
+            rew_rep_value_1: 0,
+            rew_rep_faction_2: 0,
+            rew_rep_value_2: 0,
+            src_item: 0,
+            src_item_count: 0,
+            repeatable: false,
+            next_quest_id: 0,
+            limit_time: 0,
+            reward_money_max_level: 0,
+            quest_type: 0,
+        });
     for (id, role) in [
-        (SEEDED_USE_RELATION_START, crate::quest::quest_role::START),
-        (SEEDED_USE_RELATION_END, crate::quest::quest_role::END),
+        (SEEDED_USE_RELATION_START, crate::actor::quest_role::START),
+        (SEEDED_USE_RELATION_END, crate::actor::quest_role::END),
     ] {
         ctx.db
             .game_gameobject_quest()
-            .insert(crate::GameObjectQuest {
+            .insert(crate::tables::GameObjectQuest {
                 id,
                 go_entry: SEEDED_USE_GAMEOBJECT,
                 quest_entry: SEEDED_USE_QUEST,
                 role,
             });
     }
-    ctx.db.game_quest_objective().insert(crate::QuestObjective {
-        id: SEEDED_USE_OBJECTIVE,
-        quest_entry: SEEDED_USE_QUEST,
-        obj_index: 0,
-        kind: crate::quest::objective_kind::USE_GAMEOBJECT,
-        target_entry: SEEDED_USE_GAMEOBJECT,
-        required_count: 1,
-    });
+    ctx.db
+        .game_quest_objective()
+        .insert(crate::tables::QuestObjective {
+            id: SEEDED_USE_OBJECTIVE,
+            quest_entry: SEEDED_USE_QUEST,
+            obj_index: 0,
+            kind: crate::actor::objective_kind::USE_GAMEOBJECT,
+            target_entry: SEEDED_USE_GAMEOBJECT,
+            required_count: 1,
+        });
     quest_catalog::ensure_catalog(ctx);
     ctx.db
         .pkg_playerbots_catalog_quest()
@@ -878,7 +882,7 @@ fn relation_exists(
 }
 
 fn stage_gate(ctx: &ReducerContext, character_guid: u64) -> Result<FixtureStage, String> {
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if let Some(ownership) = ctx
         .db
         .pkg_playerbots_quest_fixture_ownership()
@@ -1010,8 +1014,8 @@ fn stage_gate(ctx: &ReducerContext, character_guid: u64) -> Result<FixtureStage,
             return Err(format!("quest fixture quest {quest_entry} already exists"));
         }
         for (entry, role) in [
-            (start, crate::quest::quest_role::START),
-            (actual_ender, crate::quest::quest_role::END),
+            (start, crate::actor::quest_role::START),
+            (actual_ender, crate::actor::quest_role::END),
         ] {
             let kind = if matches!(entry, 55 | 56) {
                 CatalogEntityKind::GameObject
@@ -1114,23 +1118,26 @@ fn insert_creature(ctx: &ReducerContext, entry: u32, x: f32, y: f32, z: f32) -> 
     template.faction_template = 14;
     let template = ctx.db.game_creature_template().insert(template);
     let guid = creature_guid(entry);
-    let spawn = ctx.db.game_creature_spawn().insert(crate::CreatureSpawn {
-        guid,
-        entry,
-        map_id: 0,
-        x,
-        y,
-        z,
-        orientation: 0.0,
-        respawn_at: crate::creatures::timer_never(ctx),
-        despawn_at: crate::creatures::timer_never(ctx),
-        movement_type: 0,
-        respawn_secs: 60,
-        life_seq: 1,
-    });
-    crate::creatures::insert_creature_entity(
+    let spawn = ctx
+        .db
+        .game_creature_spawn()
+        .insert(crate::tables::CreatureSpawn {
+            guid,
+            entry,
+            map_id: 0,
+            x,
+            y,
+            z,
+            orientation: 0.0,
+            respawn_at: crate::package::fixture::timer_never(ctx),
+            despawn_at: crate::package::fixture::timer_never(ctx),
+            movement_type: 0,
+            respawn_secs: 60,
+            life_seq: 1,
+        });
+    crate::package::fixture::insert_creature_entity(
         ctx,
-        crate::creatures::build_creature_entity(&spawn, &template, 0, 0),
+        crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0),
     );
     Ok(())
 }
@@ -1148,7 +1155,7 @@ fn insert_gameobject(
 ) {
     ctx.db
         .game_gameobject_template()
-        .insert(crate::GameObjectTemplate {
+        .insert(crate::tables::GameObjectTemplate {
             entry,
             type_id,
             display_id: 259,
@@ -1162,7 +1169,7 @@ fn insert_gameobject(
             size: 1.0,
         });
     let guid = gameobject_guid(entry);
-    ctx.db.game_gameobject().insert(crate::GameObject {
+    ctx.db.game_gameobject().insert(crate::tables::GameObject {
         guid,
         template_entry: entry,
         map_id,
@@ -1207,29 +1214,31 @@ fn insert_quest(
     start: u32,
     actual_ender: u32,
 ) {
-    ctx.db.game_quest_template().insert(crate::QuestTemplate {
-        entry,
-        min_level,
-        quest_level: min_level.max(1),
-        title: format!("Catalog quest {entry}"),
-        reward_money: 1,
-        reward_xp: 1,
-        prev_quest_id: prerequisite,
-        required_races: 77,
-        required_classes: 0,
-        zone_or_sort: if entry >= 40 && entry < 100 { 12 } else { 9 },
-        rew_rep_faction_1: 0,
-        rew_rep_value_1: 0,
-        rew_rep_faction_2: 0,
-        rew_rep_value_2: 0,
-        src_item: if entry == 3905 { 11125 } else { 0 },
-        src_item_count: if entry == 3905 { 1 } else { 0 },
-        repeatable: false,
-        next_quest_id: if entry == 783 { 7 } else { 0 },
-        limit_time: 0,
-        reward_money_max_level: 0,
-        quest_type: 0,
-    });
+    ctx.db
+        .game_quest_template()
+        .insert(crate::tables::QuestTemplate {
+            entry,
+            min_level,
+            quest_level: min_level.max(1),
+            title: format!("Catalog quest {entry}"),
+            reward_money: 1,
+            reward_xp: 1,
+            prev_quest_id: prerequisite,
+            required_races: 77,
+            required_classes: 0,
+            zone_or_sort: if entry >= 40 && entry < 100 { 12 } else { 9 },
+            rew_rep_faction_1: 0,
+            rew_rep_value_1: 0,
+            rew_rep_faction_2: 0,
+            rew_rep_value_2: 0,
+            src_item: if entry == 3905 { 11125 } else { 0 },
+            src_item_count: if entry == 3905 { 1 } else { 0 },
+            repeatable: false,
+            next_quest_id: if entry == 783 { 7 } else { 0 },
+            limit_time: 0,
+            reward_money_max_level: 0,
+            quest_type: 0,
+        });
     let start_kind = if matches!(start, 55 | 56) {
         CatalogEntityKind::GameObject
     } else {
@@ -1245,14 +1254,14 @@ fn insert_quest(
         start_kind,
         start,
         entry,
-        crate::quest::quest_role::START,
+        crate::actor::quest_role::START,
     );
     insert_relation(
         ctx,
         end_kind,
         actual_ender,
         entry,
-        crate::quest::quest_role::END,
+        crate::actor::quest_role::END,
     );
 }
 
@@ -1268,7 +1277,7 @@ fn insert_relation(
             let table = ctx.db.game_creature_quest();
             let id = relation_id(quest_entry, role);
             table.id().delete(id);
-            table.insert(crate::CreatureQuest {
+            table.insert(crate::tables::CreatureQuest {
                 id,
                 creature_entry: entry,
                 quest_entry,
@@ -1279,7 +1288,7 @@ fn insert_relation(
             let table = ctx.db.game_gameobject_quest();
             let id = relation_id(quest_entry, role);
             table.id().delete(id);
-            table.insert(crate::GameObjectQuest {
+            table.insert(crate::tables::GameObjectQuest {
                 id,
                 go_entry: entry,
                 quest_entry,
@@ -1299,14 +1308,16 @@ fn insert_objective(
 ) {
     let id = objective_id(quest_entry, index);
     ctx.db.game_quest_objective().id().delete(id);
-    ctx.db.game_quest_objective().insert(crate::QuestObjective {
-        id,
-        quest_entry,
-        obj_index: index,
-        kind,
-        target_entry,
-        required_count,
-    });
+    ctx.db
+        .game_quest_objective()
+        .insert(crate::tables::QuestObjective {
+            id,
+            quest_entry,
+            obj_index: index,
+            kind,
+            target_entry,
+            required_count,
+        });
 }
 
 fn reward_prerequisite(ctx: &ReducerContext, guid: u64, quest_entry: u32) -> Result<(), String> {
@@ -1327,16 +1338,18 @@ fn reward_prerequisite(ctx: &ReducerContext, guid: u64, quest_entry: u32) -> Res
         .find(guid)
         .ok_or("Character missing")?
         .owner_identity;
-    ctx.db.game_character_quest().insert(crate::CharacterQuest {
-        id: 0, // Core allocates per-Character quest-log ids.
-        character_guid: guid,
-        owner_identity,
-        quest_entry,
-        counts: Vec::new(),
-        rewarded: true,
-        deadline_micros: 0,
-        failed: false,
-    });
+    ctx.db
+        .game_character_quest()
+        .insert(crate::tables::CharacterQuest {
+            id: 0, // Core allocates per-Character quest-log ids.
+            character_guid: guid,
+            owner_identity,
+            quest_entry,
+            counts: Vec::new(),
+            rewarded: true,
+            deadline_micros: 0,
+            failed: false,
+        });
     Ok(())
 }
 
@@ -1345,7 +1358,7 @@ pub fn playerbots_quest_fixture_stage(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if stage_gate(ctx, character_guid)? == FixtureStage::Existing {
         return Ok(());
     }
@@ -1393,7 +1406,7 @@ pub fn playerbots_quest_fixture_stage(
     insert_gameobject(
         ctx,
         55,
-        crate::gameobject::go_type::QUESTGIVER,
+        crate::actor::go_type::QUESTGIVER,
         0,
         character.map_id,
         character.instance_id,
@@ -1404,7 +1417,7 @@ pub fn playerbots_quest_fixture_stage(
     insert_gameobject(
         ctx,
         56,
-        crate::gameobject::go_type::QUESTGIVER,
+        crate::actor::go_type::QUESTGIVER,
         0,
         character.map_id,
         character.instance_id,
@@ -1415,7 +1428,7 @@ pub fn playerbots_quest_fixture_stage(
     insert_gameobject(
         ctx,
         CHEST_ENTRY,
-        crate::gameobject::go_type::CHEST,
+        crate::actor::go_type::CHEST,
         CHEST_LOOT,
         character.map_id,
         character.instance_id,
@@ -1427,11 +1440,11 @@ pub fn playerbots_quest_fixture_stage(
         insert_quest(ctx, quest, min_level, prerequisite, start, actual_ender);
     }
     for (quest, kind, target, count) in [
-        (7, crate::quest::objective_kind::KILL_CREATURE, 6, 10),
-        (33, crate::quest::objective_kind::COLLECT_ITEM, 750, 8),
-        (18, crate::quest::objective_kind::COLLECT_ITEM, 752, 12),
-        (3904, crate::quest::objective_kind::COLLECT_ITEM, 11119, 8),
-        (3905, crate::quest::objective_kind::COLLECT_ITEM, 11125, 1),
+        (7, crate::actor::objective_kind::KILL_CREATURE, 6, 10),
+        (33, crate::actor::objective_kind::COLLECT_ITEM, 750, 8),
+        (18, crate::actor::objective_kind::COLLECT_ITEM, 752, 12),
+        (3904, crate::actor::objective_kind::COLLECT_ITEM, 11119, 8),
+        (3905, crate::actor::objective_kind::COLLECT_ITEM, 11125, 1),
     ] {
         insert_objective(ctx, quest, 0, kind, target, count);
     }
@@ -1439,7 +1452,7 @@ pub fn playerbots_quest_fixture_stage(
     for (source, item) in [(299, 750), (69, 750), (38, 752)] {
         let id = creature_loot_id(source);
         creature_loot.id().delete(id);
-        creature_loot.insert(crate::CreatureLoot {
+        creature_loot.insert(crate::tables::CreatureLoot {
             id,
             creature_entry: source,
             item_entry: item,
@@ -1451,7 +1464,7 @@ pub fn playerbots_quest_fixture_stage(
     }
     let gameobject_loot = ctx.db.game_gameobject_loot();
     gameobject_loot.id().delete(GAMEOBJECT_LOOT_ID);
-    gameobject_loot.insert(crate::GameObjectLoot {
+    gameobject_loot.insert(crate::tables::GameObjectLoot {
         id: GAMEOBJECT_LOOT_ID,
         loot_id: CHEST_LOOT,
         item_entry: 11119,
@@ -1471,7 +1484,7 @@ pub fn playerbots_quest_loop_fixture_stage_named(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     stage_named_with_rotation(ctx, character_guid, 0).map(|_| ())
 }
 
@@ -1482,7 +1495,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
     ctx: &ReducerContext,
     excluded_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let primary = ctx
         .db
@@ -1507,10 +1520,10 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
     if subjects.len() != DISPERSION_POPULATION {
         return Err("dispersion fixture requires exactly 25 subjects".to_string());
     }
-    if crate::group::group_of(ctx, excluded_guid).is_some()
+    if crate::actor::group_of(ctx, excluded_guid).is_some()
         || subjects
             .iter()
-            .any(|guid| crate::group::group_of(ctx, *guid).is_some())
+            .any(|guid| crate::actor::group_of(ctx, *guid).is_some())
     {
         return Err("dispersion fixture Characters must be ungrouped".to_string());
     }
@@ -1534,7 +1547,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
             .pkg_playerbots_provisioning()
             .character_guid()
             .update(provisioning);
-        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        let mut entity = crate::actor::live_entity(ctx, guid)?;
         entity.x = giver.x;
         entity.y = giver.y;
         entity.z = giver.z;
@@ -1544,7 +1557,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
         entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
         ctx.db.game_world_entity().guid().update(entity);
         playerbots_quest_fixture_admit_accept(ctx, guid, 7)?;
-        let mut entity = crate::helpers::live_entity(ctx, guid)?;
+        let mut entity = crate::actor::live_entity(ctx, guid)?;
         entity.x = selection_x;
         entity.y = primary.y;
         entity.z = primary.z;
@@ -1567,7 +1580,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
         ctx.db.pkg_playerbots_bot().id().update(bot);
         super::fixture::playerbots_fixture_runner_select_cohort(ctx, guid)?;
     }
-    let mut excluded = crate::helpers::live_entity(ctx, excluded_guid)?;
+    let mut excluded = crate::actor::live_entity(ctx, excluded_guid)?;
     excluded.x = primary.x;
     excluded.y = primary.y;
     excluded.z = primary.z;
@@ -1585,7 +1598,7 @@ pub fn playerbots_quest_loop_fixture_pass_dispersion(
     ctx: &ReducerContext,
     excluded_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let mut subjects: Vec<_> = ctx
         .db
@@ -1683,7 +1696,7 @@ pub(super) fn stage_named_with_rotation(
         let guid = creature_guid(6).saturating_add(offset);
         let x = character.x + 160.0 + offset as f32 * 0.4;
         let y = character.y + (offset % 2) as f32 * 0.4;
-        let spawn = crate::CreatureSpawn {
+        let spawn = crate::tables::CreatureSpawn {
             guid,
             entry: 6,
             map_id: character.map_id,
@@ -1691,17 +1704,17 @@ pub(super) fn stage_named_with_rotation(
             y,
             z: character.z,
             orientation: 0.0,
-            respawn_at: crate::creatures::timer_never(ctx),
-            despawn_at: crate::creatures::timer_never(ctx),
+            respawn_at: crate::package::fixture::timer_never(ctx),
+            despawn_at: crate::package::fixture::timer_never(ctx),
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
         };
-        let entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+        let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         spawns.guid().delete(guid);
         spawns.insert(spawn);
         entities.guid().delete(guid);
-        crate::creatures::insert_creature_entity(ctx, entity);
+        crate::package::fixture::insert_creature_entity(ctx, entity);
         inserted_sources.push(guid);
     }
     let fixtures = ctx.db.pkg_playerbots_quest_loop_fixture();
@@ -1728,7 +1741,7 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     if ctx
         .db
@@ -1739,7 +1752,7 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
     {
         return Err("named quest-loop fixture is absent".to_string());
     }
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let templates = ctx.db.game_creature_template();
     let mut template = templates
         .entry()
@@ -1754,7 +1767,7 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
     for offset in 0..SEARCH_LIMIT_ROWS {
         let guid =
             (0xF130u64 << 48) | (u64::from(SEARCH_LIMIT_ENTRY) << 24) | offset.saturating_add(1);
-        let spawn = crate::CreatureSpawn {
+        let spawn = crate::tables::CreatureSpawn {
             guid,
             entry: SEARCH_LIMIT_ENTRY,
             map_id: character.map_id,
@@ -1762,17 +1775,17 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
             y: character.y + 90.0,
             z: character.z,
             orientation: 0.0,
-            respawn_at: crate::creatures::timer_never(ctx),
-            despawn_at: crate::creatures::timer_never(ctx),
+            respawn_at: crate::package::fixture::timer_never(ctx),
+            despawn_at: crate::package::fixture::timer_never(ctx),
             movement_type: 0,
             respawn_secs: 0,
             life_seq: 1,
         };
-        let entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+        let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         spawns.guid().delete(guid);
         spawns.insert(spawn);
         entities.guid().delete(guid);
-        crate::creatures::insert_creature_entity(ctx, entity);
+        crate::package::fixture::insert_creature_entity(ctx, entity);
     }
     Ok(())
 }
@@ -1783,9 +1796,9 @@ pub fn playerbots_quest_loop_fixture_set_partition(
     character_guid: u64,
     instance_id: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
-    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    let mut character = crate::actor::live_entity(ctx, character_guid)?;
     character.instance_id = instance_id;
     ctx.db.game_creature_spline().guid().delete(character_guid);
     ctx.db.game_world_entity().guid().update(character);
@@ -1794,8 +1807,8 @@ pub fn playerbots_quest_loop_fixture_set_partition(
 
 #[reducer]
 pub fn playerbots_quest_loop_fixture_refresh(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     quest_catalog::refresh_catalog(ctx, "unknown");
     if ctx
         .db
@@ -1820,8 +1833,8 @@ pub fn playerbots_quest_loop_fixture_set_simple_gameobject_state(
     ctx: &ReducerContext,
     state: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if state > 1 {
         return Err("simple GameObject fixture state must be 0 or 1".to_string());
     }
@@ -1840,8 +1853,8 @@ pub fn playerbots_quest_loop_fixture_add_gameobject_alternative(
     ctx: &ReducerContext,
     gameobject_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     match gameobject_entry {
         SEEDED_USE_GAMEOBJECT => {
             if ctx
@@ -1868,7 +1881,7 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let retained = ctx
         .db
@@ -1883,7 +1896,7 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
         .target
         .source
         .ok_or("retained creature-loot source is absent")?;
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let template = ctx
         .db
         .game_creature_template()
@@ -1894,7 +1907,7 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
     let entities = ctx.db.game_world_entity();
     for offset in 10..19u64 {
         let guid = creature_guid(source.entry).saturating_add(offset);
-        let spawn = crate::CreatureSpawn {
+        let spawn = crate::tables::CreatureSpawn {
             guid,
             entry: source.entry,
             map_id: character.map_id,
@@ -1902,19 +1915,19 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
             y: character.y,
             z: character.z,
             orientation: 0.0,
-            respawn_at: crate::creatures::timer_never(ctx),
-            despawn_at: crate::creatures::timer_never(ctx),
+            respawn_at: crate::package::fixture::timer_never(ctx),
+            despawn_at: crate::package::fixture::timer_never(ctx),
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
         };
-        let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+        let mut entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         entity.health = 0;
         entity.dead = true;
         spawns.guid().delete(guid);
         spawns.insert(spawn);
         entities.guid().delete(guid);
-        crate::creatures::insert_creature_entity(ctx, entity);
+        crate::package::fixture::insert_creature_entity(ctx, entity);
     }
     Ok(())
 }
@@ -1936,7 +1949,7 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit_with_live_alternative(
         .target
         .source
         .ok_or("retained creature-loot source is absent")?;
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let template = ctx
         .db
         .game_creature_template()
@@ -1965,24 +1978,27 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit_with_live_alternative(
     {
         return Err("alternate creature-loot source is occupied".to_string());
     }
-    crate::creatures::despawn_creature_entity(ctx, source.guid);
-    let spawn = ctx.db.game_creature_spawn().insert(crate::CreatureSpawn {
-        guid: alternative_guid,
-        entry: source.entry,
-        map_id: character.map_id,
-        x: character.x + 2.0,
-        y: character.y,
-        z: character.z,
-        orientation: source_spawn.orientation,
-        respawn_at: crate::creatures::timer_never(ctx),
-        despawn_at: crate::creatures::timer_never(ctx),
-        movement_type: source_spawn.movement_type,
-        respawn_secs: source_spawn.respawn_secs,
-        life_seq: source_spawn.life_seq,
-    });
-    crate::creatures::insert_creature_entity(
+    crate::package::fixture::despawn_creature_entity(ctx, source.guid);
+    let spawn = ctx
+        .db
+        .game_creature_spawn()
+        .insert(crate::tables::CreatureSpawn {
+            guid: alternative_guid,
+            entry: source.entry,
+            map_id: character.map_id,
+            x: character.x + 2.0,
+            y: character.y,
+            z: character.z,
+            orientation: source_spawn.orientation,
+            respawn_at: crate::package::fixture::timer_never(ctx),
+            despawn_at: crate::package::fixture::timer_never(ctx),
+            movement_type: source_spawn.movement_type,
+            respawn_secs: source_spawn.respawn_secs,
+            life_seq: source_spawn.life_seq,
+        });
+    crate::package::fixture::insert_creature_entity(
         ctx,
-        crate::creatures::build_creature_entity(&spawn, &template, 0, 0),
+        crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0),
     );
     Ok(())
 }
@@ -1993,7 +2009,7 @@ pub fn playerbots_quest_fixture_admit_accept(
     character_guid: u64,
     quest_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let prerequisite = ctx
         .db
@@ -2034,7 +2050,7 @@ pub fn playerbots_quest_fixture_turn_in(
     character_guid: u64,
     quest_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let admission = quest_catalog::admit_held(ctx, character_guid, quest_entry).map_err(
         |refusal| match refusal {
@@ -2059,9 +2075,9 @@ pub fn playerbots_quest_fixture_kill(
     character_guid: u64,
     creature_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let target =
         match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
             super::quest_loop::LiveCreatureTarget::Found(target) => target,
@@ -2077,14 +2093,15 @@ pub fn playerbots_quest_fixture_kill(
             }
         };
     super::actions::attack(ctx, character_guid, target.guid).map_err(String::from)?;
-    let (amount, _) = crate::combat::fold_incoming_damage(ctx, character_guid, target.guid, 10_000);
-    let damage = crate::combat::final_damage(ctx, target.guid, amount);
-    let outcome = crate::combat::apply_hit(
+    let (amount, _) =
+        crate::package::fixture::fold_incoming_damage(ctx, character_guid, target.guid, 10_000);
+    let damage = crate::package::fixture::final_damage(ctx, target.guid, amount);
+    let outcome = crate::package::fixture::apply_hit(
         ctx,
         character_guid,
         target.guid,
         damage,
-        crate::combat::Hit::weapon(crate::combat::HitSource::MainHand, false),
+        crate::package::fixture::Hit::weapon(crate::package::fixture::HitSource::MainHand, false),
     );
     if outcome.killed {
         Ok(())
@@ -2099,7 +2116,7 @@ pub fn playerbots_quest_fixture_take_creature_loot(
     character_guid: u64,
     creature_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let guid = creature_guid(creature_entry);
     super::actions::open_creature_loot(ctx, character_guid, guid, 33).map_err(String::from)?;
@@ -2126,7 +2143,7 @@ pub fn playerbots_quest_fixture_use_gameobject(
     gameobject_entry: u32,
     take_loot: bool,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let guid = gameobject_guid(gameobject_entry);
     super::actions::use_gameobject(ctx, character_guid, guid, DIRECT_GO_QUEST)
@@ -2155,7 +2172,7 @@ pub fn playerbots_quest_fixture_fill_inventory(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let source_entry = ctx
         .db
@@ -2174,10 +2191,10 @@ pub fn playerbots_quest_fixture_fill_inventory(
     filler.max_stack = 1;
     templates.entry().update(filler);
     for _ in 0..64 {
-        if !crate::items::has_free_slot(ctx, character_guid) {
+        if !crate::actor::has_free_slot(ctx, character_guid) {
             return Ok(());
         }
-        crate::items::grant_item(ctx, character_guid, INVENTORY_FILLER, 1)?;
+        crate::package::fixture::grant_item(ctx, character_guid, INVENTORY_FILLER, 1)?;
     }
     Err("fixture did not fill bounded inventory space".to_string())
 }
@@ -2187,7 +2204,7 @@ pub fn playerbots_quest_fixture_try_take_gameobject_loot(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let guid = gameobject_guid(CHEST_ENTRY);
     let slot = ctx
@@ -2211,7 +2228,7 @@ pub fn playerbots_quest_fixture_clear_filler_and_take_gameobject_loot(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let items = ctx.db.game_item_instance();
     for item in items
@@ -2246,7 +2263,7 @@ pub fn playerbots_quest_fixture_try_use_gameobject(
     character_guid: u64,
     gameobject_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let _ = super::actions::use_gameobject(
         ctx,
@@ -2262,7 +2279,7 @@ pub fn playerbots_quest_fixture_direct_gameobject(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     reward_prerequisite(ctx, character_guid, 3903)?;
     let templates = ctx.db.game_gameobject_template();
@@ -2270,14 +2287,14 @@ pub fn playerbots_quest_fixture_direct_gameobject(
         .entry()
         .find(CHEST_ENTRY)
         .ok_or("GameObject template missing")?;
-    template.type_id = crate::gameobject::go_type::GOOBER;
+    template.type_id = crate::actor::go_type::GOOBER;
     template.data1 = 0;
     templates.entry().update(template);
     insert_objective(
         ctx,
         DIRECT_GO_QUEST,
         0,
-        crate::quest::objective_kind::USE_GAMEOBJECT,
+        crate::actor::objective_kind::USE_GAMEOBJECT,
         CHEST_ENTRY,
         1,
     );
@@ -2302,10 +2319,10 @@ pub fn playerbots_quest_fixture_mixed_unsupported(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     reward_prerequisite(ctx, character_guid, 783)?;
-    insert_objective(ctx, 7, 1, crate::quest::objective_kind::KILL_CREATURE, 6, 1);
+    insert_objective(ctx, 7, 1, crate::actor::objective_kind::KILL_CREATURE, 6, 1);
     quest_catalog::refresh_catalog(ctx, "unknown");
     let catalog = ctx.db.pkg_playerbots_catalog_objective();
     let id = (u64::from(7u32) << 8) | 1;
@@ -2336,14 +2353,14 @@ pub fn playerbots_quest_fixture_mixed_progress(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     reward_prerequisite(ctx, character_guid, 783)?;
     insert_objective(
         ctx,
         7,
         0,
-        crate::quest::objective_kind::COLLECT_ITEM,
+        crate::actor::objective_kind::COLLECT_ITEM,
         750,
         8,
     );
@@ -2351,13 +2368,13 @@ pub fn playerbots_quest_fixture_mixed_progress(
         ctx,
         7,
         1,
-        crate::quest::objective_kind::COLLECT_ITEM,
+        crate::actor::objective_kind::COLLECT_ITEM,
         752,
         12,
     );
-    insert_objective(ctx, 7, 2, crate::quest::objective_kind::KILL_CREATURE, 6, 1);
-    crate::items::grant_item(ctx, character_guid, 750, 8)?;
-    crate::items::grant_item(ctx, character_guid, 752, 12)?;
+    insert_objective(ctx, 7, 2, crate::actor::objective_kind::KILL_CREATURE, 6, 1);
+    crate::package::fixture::grant_item(ctx, character_guid, 750, 8)?;
+    crate::package::fixture::grant_item(ctx, character_guid, 752, 12)?;
     let items = ctx.db.game_item_instance();
     let mut banked = items
         .by_owner_guid()
@@ -2424,7 +2441,7 @@ pub fn playerbots_quest_fixture_unsupported(
     character_guid: u64,
     unsupported_kind: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     if unsupported_kind == 4 {
         reward_prerequisite(ctx, character_guid, 3903)?;
@@ -2468,7 +2485,7 @@ pub fn playerbots_quest_fixture_level_admission(
     level: u32,
     quest_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let rows = ctx.db.game_world_entity();
     let mut character = rows
@@ -2497,7 +2514,7 @@ pub fn playerbots_quest_fixture_held_becomes_unsupported(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let alternative = quest_catalog::admit_available(ctx, character_guid, 5261).map_err(
         |refusal| match refusal {
@@ -2567,7 +2584,7 @@ pub fn playerbots_quest_fixture_active_log_overflow(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let quests = ctx.db.game_character_quest();
     let exemplar = quests
@@ -2575,7 +2592,7 @@ pub fn playerbots_quest_fixture_active_log_overflow(
         .filter((character_guid, false, false))
         .next()
         .ok_or("active fixture quest missing")?;
-    for offset in 0..crate::quest::MAX_QUEST_LOG_SIZE {
+    for offset in 0..crate::actor::MAX_QUEST_LOG_SIZE {
         let quest_entry = ACTIVE_QUEST_OVERFLOW_BASE + offset as u32;
         if let Some(previous) = quests
             .by_character_quest()
@@ -2584,7 +2601,7 @@ pub fn playerbots_quest_fixture_active_log_overflow(
         {
             quests.id().delete(previous.id);
         }
-        quests.insert(crate::quest::CharacterQuest {
+        quests.insert(crate::tables::CharacterQuest {
             id: 0,
             character_guid: exemplar.character_guid,
             owner_identity: exemplar.owner_identity,
@@ -2604,7 +2621,7 @@ pub fn playerbots_quest_fixture_lose_provided_item(
     character_guid: u64,
     bank_item: bool,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let items = ctx.db.game_item_instance();
     let mut item = items
@@ -2635,9 +2652,9 @@ pub fn playerbots_quest_fixture_hide_live_target(
     ctx: &ReducerContext,
     creature_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
-    crate::creatures::despawn_creature_entity(ctx, creature_guid(creature_entry));
+    crate::package::fixture::despawn_creature_entity(ctx, creature_guid(creature_entry));
     Ok(())
 }
 
@@ -2648,7 +2665,7 @@ pub fn playerbots_quest_loop_fixture_respawn_target(
     character_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let fixture = ctx
         .db
@@ -2677,9 +2694,9 @@ pub fn playerbots_quest_loop_fixture_respawn_target(
         .entry()
         .find(spawn.entry)
         .ok_or("quest target template is absent")?;
-    crate::creatures::despawn_creature_entity(ctx, target_guid);
-    let entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
-    crate::creatures::insert_creature_entity(ctx, entity);
+    crate::package::fixture::despawn_creature_entity(ctx, target_guid);
+    let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
+    crate::package::fixture::insert_creature_entity(ctx, entity);
     Ok(())
 }
 
@@ -2689,7 +2706,7 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let bot = ctx
         .db
@@ -2741,14 +2758,14 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     entities.guid().update(target);
     ctx.db.game_creature_spline().guid().delete(target_guid);
 
-    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    let mut character = crate::actor::live_entity(ctx, character_guid)?;
     for alternative_guid in target_guid + 1..target_guid + 10 {
         entities
             .guid()
             .find(alternative_guid)
             .filter(|alternative| alternative.entry == 6 && !alternative.dead)
             .ok_or("moving-cast fixture alternative missing")?;
-        crate::creatures::despawn_creature_entity(ctx, alternative_guid);
+        crate::package::fixture::despawn_creature_entity(ctx, alternative_guid);
     }
     character.x = target_x - 80.0;
     character.y = target_y;
@@ -2783,7 +2800,7 @@ pub fn playerbots_quest_loop_fixture_start_moving_cast(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let bot = ctx
         .db
@@ -2807,7 +2824,7 @@ pub fn playerbots_quest_loop_fixture_start_moving_cast(
         .filter(|spell| spell.range_yd == 35 && spell.cast_time_ms == 1_500)
         .ok_or("moving-cast fixture requires the staged Fireball")?;
     let target_guid = creature_guid(6);
-    let target = crate::helpers::live_entity(ctx, target_guid)?;
+    let target = crate::actor::live_entity(ctx, target_guid)?;
     if target.dead || (target.map_id, target.instance_id) != (0, 0) {
         return Err("moving-cast fixture target is unavailable".to_string());
     }
@@ -2819,7 +2836,7 @@ pub fn playerbots_quest_loop_fixture_start_moving_cast(
         .ok_or("moving-cast fixture target is not moving forward")?;
 
     let caster_x = target.x - 38.5;
-    let mut character = crate::helpers::live_entity(ctx, character_guid)?;
+    let mut character = crate::actor::live_entity(ctx, character_guid)?;
     character.x = caster_x;
     character.y = target.y;
     character.z = target.z;
@@ -2846,11 +2863,11 @@ pub fn playerbots_quest_loop_fixture_make_target_friendly(
     character_guid: u64,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let factions = ctx.db.game_faction_template();
     if factions.id().find(FRIENDLY_FIXTURE_FACTION).is_none() {
-        factions.insert(crate::FactionTemplate {
+        factions.insert(crate::tables::FactionTemplate {
             id: FRIENDLY_FIXTURE_FACTION,
             faction: FRIENDLY_FIXTURE_FACTION,
             faction_group: 1,
@@ -2887,7 +2904,7 @@ pub fn playerbots_quest_fixture_deplete_gameobject(
     ctx: &ReducerContext,
     gameobject_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let rows = ctx.db.game_gameobject();
     let mut row = rows
@@ -2905,7 +2922,7 @@ pub fn playerbots_quest_fixture_move_gameobject(
     gameobject_entry: u32,
     x: f32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let rows = ctx.db.game_gameobject();
     let mut row = rows
@@ -2927,7 +2944,7 @@ pub fn playerbots_quest_fixture_move_creature_spawn(
     creature_entry: u32,
     x: f32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let rows = ctx.db.game_creature_spawn();
     let mut row = rows
@@ -2945,9 +2962,9 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
     character_guid: u64,
     creature_entry: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     match super::quest_loop::live_creature_target(ctx, &character, creature_entry, |_| true) {
         super::quest_loop::LiveCreatureTarget::Found(_) => {
             Err("live target still present".to_string())
@@ -2965,7 +2982,7 @@ pub fn playerbots_quest_fixture_assert_no_live_target(
 
 #[reducer]
 pub fn playerbots_quest_fixture_refresh(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     quest_catalog::refresh_catalog(ctx, "unknown");
     Ok(())
@@ -2973,7 +2990,7 @@ pub fn playerbots_quest_fixture_refresh(ctx: &ReducerContext) -> Result<(), Stri
 
 #[reducer]
 pub fn playerbots_quest_fixture_recheck_unchanged(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let headers = ctx.db.pkg_playerbots_quest_catalog();
     let mut header = headers
@@ -2993,7 +3010,7 @@ pub fn playerbots_recovery_fixture_stage_full_bag(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     playerbots_quest_loop_fixture_stage_named(ctx, character_guid)?;
     require_fixture(ctx)?;
     let objectives = ctx.db.pkg_playerbots_catalog_objective();
@@ -3033,7 +3050,7 @@ pub fn playerbots_recovery_fixture_clear_one_inventory_slot(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     let items = ctx.db.game_item_instance();
     let filler = items
@@ -3042,7 +3059,7 @@ pub fn playerbots_recovery_fixture_clear_one_inventory_slot(
         .find(|item| item.entry == INVENTORY_FILLER)
         .ok_or("inventory filler missing")?;
     items.guid().delete(filler.guid);
-    if !crate::items::has_free_slot(ctx, character_guid) {
+    if !crate::actor::has_free_slot(ctx, character_guid) {
         return Err("one inventory slot did not become available".to_string());
     }
     Ok(())
@@ -3055,7 +3072,7 @@ pub fn playerbots_recovery_fixture_three_parked_passes(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     require_fixture(ctx)?;
     for _ in 0..3 {
         super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
@@ -3068,8 +3085,8 @@ pub fn playerbots_recovery_fixture_arm_gameobject_respawn(
     ctx: &ReducerContext,
     delay_seconds: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if !(2..=10).contains(&delay_seconds) {
         return Err("respawn delay must be 2 through 10 seconds".to_string());
     }
@@ -3090,9 +3107,9 @@ pub fn playerbots_recovery_fixture_position_simple_gameobject(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let rows = ctx.db.game_gameobject();
     let mut gameobject = rows
         .guid()
@@ -3111,8 +3128,8 @@ pub fn playerbots_recovery_fixture_position_simple_gameobject(
 pub fn playerbots_recovery_fixture_remove_simple_gameobject(
     ctx: &ReducerContext,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if ctx
         .db
         .pkg_playerbots_seeded_quest_fixture()
@@ -3136,8 +3153,8 @@ pub fn playerbots_recovery_fixture_restore_simple_gameobject(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     let retained = ctx
         .db
         .pkg_playerbots_quest_objective()
@@ -3160,14 +3177,14 @@ pub fn playerbots_recovery_fixture_restore_simple_gameobject(
         .entry()
         .find(SEEDED_USE_GAMEOBJECT)
         .filter(|template| {
-            template.type_id == crate::gameobject::go_type::GOOBER && template.lock_id == 0
+            template.type_id == crate::actor::go_type::GOOBER && template.lock_id == 0
         })
         .ok_or("simple GameObject template differs")?;
     let rows = ctx.db.game_gameobject();
     if rows.guid().find(destination.guid).is_some() {
         return Err("simple GameObject is already present".to_string());
     }
-    rows.insert(crate::GameObject {
+    rows.insert(crate::tables::GameObject {
         guid: destination.guid,
         template_entry: template.entry,
         map_id: destination.map_id,
@@ -3194,8 +3211,8 @@ pub fn playerbots_recovery_fixture_restore_simple_gameobject(
 pub fn playerbots_recovery_fixture_remove_simple_gameobject_and_objective(
     ctx: &ReducerContext,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if ctx
         .db
         .game_quest_objective()
@@ -3220,10 +3237,10 @@ pub fn playerbots_recovery_fixture_stage_unreachable_ender(
     ctx: &ReducerContext,
     character_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     playerbots_quest_fixture_stage(ctx, character_guid)?;
     require_fixture(ctx)?;
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let ender_guid = creature_guid(197);
     super::fixture::playerbots_fixture_position(ctx, ender_guid, character.x + 40.0)?;
     let spawns = ctx.db.game_creature_spawn();

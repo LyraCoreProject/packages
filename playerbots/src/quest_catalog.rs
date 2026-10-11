@@ -1,6 +1,6 @@
 //! A versioned catalog of quest work this Package can execute with current core operations.
 
-use crate::{
+use crate::tables::{
     game_character_quest, game_creature_loot, game_creature_quest, game_gameobject_loot,
     game_gameobject_quest, game_gameobject_template, game_item_template, game_quest_cast_objective,
     game_quest_event_requirement, game_quest_objective, game_quest_template, game_world_entity,
@@ -696,7 +696,7 @@ fn destinations(
 ) -> Vec<CatalogDestination> {
     let mut found: Vec<_> = match entity.kind {
         CatalogEntityKind::Creature => {
-            crate::creatures::creature_spawn_evidence(ctx, entity.entry, map_id, DESTINATION_LIMIT)
+            crate::actor::creature_spawn_evidence(ctx, entity.entry, map_id, DESTINATION_LIMIT)
                 .into_iter()
                 .map(|spawn| CatalogDestination {
                     kind: entity.kind,
@@ -710,7 +710,7 @@ fn destinations(
                 })
                 .collect()
         }
-        CatalogEntityKind::GameObject => crate::gameobject::gameobject_destination_evidence(
+        CatalogEntityKind::GameObject => crate::actor::gameobject_destination_evidence(
             ctx,
             entity.entry,
             map_id,
@@ -858,14 +858,14 @@ fn observed_content_revision(ctx: &ReducerContext) -> String {
                 definition.start.kind,
                 definition.start.entry,
                 definition.entry,
-                crate::quest::quest_role::START,
+                crate::actor::quest_role::START,
             ) as u8,
             relation_exists(
                 ctx,
                 definition.actual_ender.kind,
                 definition.actual_ender.entry,
                 definition.entry,
-                crate::quest::quest_role::END,
+                crate::actor::quest_role::END,
             ) as u8,
         ]);
         let mut entity_destinations = destinations(ctx, definition.start, definition.map_id, 0);
@@ -1458,7 +1458,7 @@ fn source_gate(
     ctx: &ReducerContext,
     catalog: &PlayerbotsCatalogObjective,
     require_current_destination: bool,
-    character: &crate::WorldEntity,
+    character: &crate::tables::WorldEntity,
 ) -> Result<Option<CatalogDestination>, AdmissionRefusal> {
     let mut entries = Vec::new();
     match catalog.executor {
@@ -1492,7 +1492,7 @@ fn source_gate(
                 };
                 has_template = true;
                 let simple =
-                    template.type_id == crate::gameobject::go_type::CHEST && template.lock_id == 0;
+                    template.type_id == crate::actor::go_type::CHEST && template.lock_id == 0;
                 has_simple_chest |= simple;
                 if simple
                     && ctx
@@ -1530,8 +1530,7 @@ fn source_gate(
                     .entry()
                     .find(entry)
                     .is_some_and(|template| {
-                        template.type_id == crate::gameobject::go_type::GOOBER
-                            && template.lock_id == 0
+                        template.type_id == crate::actor::go_type::GOOBER && template.lock_id == 0
                     })
             }));
             if entries.is_empty() {
@@ -1583,11 +1582,11 @@ enum AdmissionKind {
 
 fn executor_gate(
     ctx: &ReducerContext,
-    character: &crate::WorldEntity,
+    character: &crate::tables::WorldEntity,
     admission_kind: AdmissionKind,
     quest: &PlayerbotsCatalogQuest,
     catalog: &PlayerbotsCatalogObjective,
-    core: Option<&crate::QuestObjective>,
+    core: Option<&crate::tables::QuestObjective>,
 ) -> Result<Option<CatalogDestination>, AdmissionRefusal> {
     match catalog.kind {
         CatalogObjectiveKind::ExploreAreaTrigger => {
@@ -1642,7 +1641,7 @@ fn executor_gate(
                     "kill objective is absent from core content",
                 ));
             };
-            if core.kind != crate::quest::objective_kind::KILL_CREATURE
+            if core.kind != crate::actor::objective_kind::KILL_CREATURE
                 || core.target_entry != catalog.target_entry
                 || core.required_count != catalog.required_count
                 || catalog.executor != ObjectiveExecutor::Attack
@@ -1666,7 +1665,7 @@ fn executor_gate(
                     "collect objective is absent from core content",
                 ));
             };
-            if core.kind != crate::quest::objective_kind::COLLECT_ITEM
+            if core.kind != crate::actor::objective_kind::COLLECT_ITEM
                 || core.target_entry != catalog.target_entry
                 || core.required_count != catalog.required_count
             {
@@ -1709,7 +1708,7 @@ fn executor_gate(
                         ));
                     }
                     if admission_kind == AdmissionKind::Held
-                        && crate::items::item_count(ctx, character.guid, catalog.target_entry)
+                        && crate::actor::item_count(ctx, character.guid, catalog.target_entry)
                             < catalog.required_count
                     {
                         return Err(missing(
@@ -1740,7 +1739,7 @@ fn executor_gate(
                     "GameObject objective is absent from core content",
                 ));
             };
-            if core.kind != crate::quest::objective_kind::USE_GAMEOBJECT
+            if core.kind != crate::actor::objective_kind::USE_GAMEOBJECT
                 || core.target_entry != catalog.target_entry
                 || core.required_count != catalog.required_count
                 || catalog.executor != ObjectiveExecutor::SimpleGameObject
@@ -1812,7 +1811,7 @@ fn inspect(
         .find(character_guid)
         .ok_or_else(|| AdmissionRefusal::Ineligible("Character is not in the world".to_string()))?;
     if admission_kind == AdmissionKind::Available {
-        crate::quest::accept_gates(ctx, &character, &template)
+        crate::actor::quest_acceptance(ctx, &character, &template)
             .map_err(AdmissionRefusal::Ineligible)?;
         if !quest.start_destinations.is_empty()
             && !quest.start_destinations.iter().any(|destination| {
@@ -1832,7 +1831,7 @@ fn inspect(
         quest.start_kind,
         quest.start_entry,
         quest_entry,
-        crate::quest::quest_role::START,
+        crate::actor::quest_role::START,
     ) {
         return Err(missing(
             MissingCapability::MissingStartRelation,
@@ -1844,7 +1843,7 @@ fn inspect(
         quest.actual_ender_kind,
         quest.actual_ender_entry,
         quest_entry,
-        crate::quest::quest_role::END,
+        crate::actor::quest_role::END,
     ) {
         return Err(missing(
             MissingCapability::MissingActualEndRelation,
@@ -1907,15 +1906,15 @@ fn inspect(
         )?;
         gated.push((catalog_objective, source));
     }
-    let held = crate::quest::character_quest_row(ctx, character_guid, quest_entry);
+    let held = crate::actor::character_quest(ctx, character_guid, quest_entry);
     let (selected, source) = gated
         .iter()
         .find(|(objective, _)| {
             core.iter()
                 .find(|core| core.obj_index == objective.objective_index)
                 .is_none_or(|core| {
-                    let count = if core.kind == crate::quest::objective_kind::COLLECT_ITEM {
-                        crate::items::item_count(ctx, character_guid, core.target_entry)
+                    let count = if core.kind == crate::actor::objective_kind::COLLECT_ITEM {
+                        crate::actor::item_count(ctx, character_guid, core.target_entry)
                     } else {
                         held.as_ref()
                             .and_then(|row| row.counts.get(core.obj_index as usize).copied())
@@ -2019,7 +2018,7 @@ fn inspect(
     });
     let complete = held
         .as_ref()
-        .is_some_and(|row| crate::quest::quest_is_complete(ctx, row));
+        .is_some_and(|row| crate::actor::quest_complete(ctx, row));
     let destination = if admission_kind == AdmissionKind::Available {
         start
             .clone()
@@ -2073,7 +2072,7 @@ pub(super) fn admit_held(
     character_guid: u64,
     quest_entry: u32,
 ) -> Result<QuestAdmission, AdmissionRefusal> {
-    let held = crate::quest::character_quest_row(ctx, character_guid, quest_entry)
+    let held = crate::actor::character_quest(ctx, character_guid, quest_entry)
         .is_some_and(|row| !row.rewarded && !row.failed);
     if !held {
         return Err(AdmissionRefusal::Ineligible(
@@ -2121,9 +2120,9 @@ pub(super) fn reconcile_active(
         .game_character_quest()
         .by_character_active()
         .filter((character_guid, false, false))
-        .take(crate::quest::MAX_QUEST_LOG_SIZE + 1)
+        .take(crate::actor::MAX_QUEST_LOG_SIZE + 1)
         .collect();
-    if active.len() > crate::quest::MAX_QUEST_LOG_SIZE {
+    if active.len() > crate::actor::MAX_QUEST_LOG_SIZE {
         return ReconcileResult::ReadLimit;
     }
     let catalog = ctx.db.pkg_playerbots_catalog_quest();
@@ -2316,7 +2315,7 @@ pub(super) fn active_wait_until(ctx: &ReducerContext, character_guid: u64) -> Op
         .character_guid()
         .find(character_guid)
         .filter(|row| row.state == QuestAdmissionState::Waiting)?;
-    crate::quest::character_quest_row(ctx, character_guid, admission.considered_quest)
+    crate::actor::character_quest(ctx, character_guid, admission.considered_quest)
         .is_some_and(|quest| !quest.rewarded && !quest.failed)
         .then_some(admission.wait_until_micros)
 }

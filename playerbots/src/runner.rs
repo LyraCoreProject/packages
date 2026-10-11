@@ -10,8 +10,8 @@ use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
 };
-use crate::transfer::game_bot_transfer_intent;
-use crate::{
+use crate::tables::game_bot_transfer_intent;
+use crate::tables::{
     game_character_quest, game_creature_spline, game_gameobject, game_melee_attack, game_spell,
     game_world_entity,
 };
@@ -84,10 +84,10 @@ pub enum Failure {
     Deadline,
     CastLost,
     ActionRefused(crate::actor::ActionRefusalKind),
-    CastRefused(crate::spell::CastRefusalKind),
+    CastRefused(crate::actor::CastRefusalKind),
     Decision(DecisionRefusal),
     PartyFactsUnavailable,
-    PartyReadUnavailable(crate::group::PartyFactsUnavailableReason),
+    PartyReadUnavailable(crate::actor::PartyFactsUnavailableReason),
     RoleFactsUnavailable(super::companion::RoleReadError),
     QuestTargetMissing,
     QuestReadLimit,
@@ -125,7 +125,7 @@ pub struct MovementRun {
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
 pub enum Running {
     Movement(MovementRun),
-    Cast(crate::spell::CastHandle),
+    Cast(crate::actor::CastHandle),
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug)]
@@ -211,7 +211,7 @@ pub enum RunnerOutcome {
     Waiting,
     Arrived,
     Accepted,
-    CastFinished(crate::spell::CastFinish),
+    CastFinished(crate::actor::CastFinish),
     Refused(Failure),
     Cancelled,
     Frozen,
@@ -387,13 +387,13 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
     let valid = |row: &PlayerbotsRotation| {
         (row.class, row.role, row.condition)
             == (bot.class, bot.role, super::cond::ALLY_HP_BELOW_PCT)
-            && crate::spell::knows_spell(ctx, bot.character_guid, row.spell_id)
+            && crate::actor::knows_spell(ctx, bot.character_guid, row.spell_id)
             && ctx
                 .db
                 .game_spell()
                 .spell_id()
                 .find(row.spell_id)
-                .is_some_and(|spell| spell.cast_flags & crate::spell::SPELL_ATTR_CHANNELED == 0)
+                .is_some_and(|spell| spell.cast_flags & crate::actor::SPELL_ATTR_CHANNELED == 0)
     };
     if scan.stage == ScanStage::Complete {
         scan.after_rotation_id = 0;
@@ -467,13 +467,13 @@ fn recovery_spell(ctx: &ReducerContext, bot: &PlayerbotsBot) -> RecoveryLookup {
 
 fn defense_target(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     target_guid: u64,
-) -> Result<Option<crate::WorldEntity>, crate::spell::ControlReadError> {
-    let Ok(target) = crate::combat::validate_attack_target(ctx, me, target_guid) else {
+) -> Result<Option<crate::tables::WorldEntity>, crate::actor::ControlReadError> {
+    let Ok(target) = crate::actor::attack_target_gate(ctx, me, target_guid) else {
         return Ok(None);
     };
-    if crate::spell::control_status(ctx, target.guid, 64)?.is_some() {
+    if crate::actor::control_status(ctx, target.guid, 64)?.is_some() {
         return Ok(None);
     }
     Ok(Some(target))
@@ -841,7 +841,7 @@ pub fn playerbots_select_controller(
     guid: u64,
     controller: Controller,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if controller == Controller::Legacy {
         return Err("Legacy controller selection is retired; select Cohort instead".to_string());
     }
@@ -911,7 +911,7 @@ pub fn playerbots_migrate_legacy_controllers(
     ctx: &ReducerContext,
     character_guids: Vec<u64>,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if character_guids.len() > CONTROLLER_MIGRATION_BATCH_LIMIT {
         return Err(format!(
             "Legacy controller migration batch exceeds {CONTROLLER_MIGRATION_BATCH_LIMIT} Characters"
@@ -945,7 +945,7 @@ pub fn playerbots_migrate_legacy_controllers(
             .is_some();
         if transfer_checkpoint
             || transfer_intent
-            || crate::helpers::character_by_guid(ctx, guid).is_none()
+            || crate::actor::character_by_guid(ctx, guid).is_none()
             || super::goals::legacy_transfer_pending(ctx, guid)
         {
             continue;
@@ -977,11 +977,11 @@ fn stop(ctx: &ReducerContext, guid: u64, state: &mut PlayerbotsRunner) {
             HISTORY_LIMIT,
         );
     }
-    if let Some(cast) = crate::spell::pending_cast(ctx, guid) {
+    if let Some(cast) = crate::actor::pending_cast(ctx, guid) {
         if actions::observation(ctx, guid, actions::ActionKind::Cast)
             .is_some_and(|owned| owned.cast_id == cast.scheduled_id)
         {
-            crate::spell::cancel_cast_attempt(ctx, guid, cast.scheduled_id);
+            crate::actor::cancel_cast_attempt(ctx, guid, cast.scheduled_id);
         }
     }
     if crate::actor::sessionless_action_gate(ctx, guid).is_ok() {
@@ -999,24 +999,19 @@ fn stop_movement(ctx: &ReducerContext, guid: u64) {
     {
         return;
     }
-    if let Some(mut me) = ctx.db.game_world_entity().guid().find(guid) {
-        crate::creatures::tick::stop_where_rendered(ctx, &mut me);
-        ctx.db.game_world_entity().guid().update(me);
-    } else {
-        ctx.db.game_creature_spline().guid().delete(guid);
-    }
+    crate::actor::stop_movement(ctx, guid);
 }
 
 fn geometry_revision(ctx: &ReducerContext, map: u32) -> Option<u64> {
-    crate::nav::coverage_generation(ctx, map)
+    crate::actor::movement::coverage_generation(ctx, map)
 }
 
-fn distance(me: &crate::WorldEntity, dest: &Destination) -> f32 {
+fn distance(me: &crate::tables::WorldEntity, dest: &Destination) -> f32 {
     ((me.x - dest.x).powi(2) + (me.y - dest.y).powi(2) + (me.z - dest.z).powi(2)).sqrt()
 }
 
 fn companion_destination(
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: &super::companion::Party,
     order: Option<&super::orders::CompanionOrderState>,
 ) -> Option<Destination> {
@@ -1074,7 +1069,7 @@ fn companion_destination(
 fn objective(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&super::companion::Party>,
     order: Option<&super::orders::CompanionOrderState>,
     state: &mut PlayerbotsRunner,
@@ -1340,7 +1335,12 @@ fn restore_transfer_deferral(state: &mut PlayerbotsRunner, until_micros: i64) {
     state.next_eligible_micros = until_micros;
 }
 
-fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut PlayerbotsRunner, now: i64) {
+fn observe(
+    ctx: &ReducerContext,
+    me: &crate::tables::WorldEntity,
+    state: &mut PlayerbotsRunner,
+    now: i64,
+) {
     if let Some(fg) = &state.foreground {
         if fg.generation != state.generation
             || (fg.map_id, fg.instance_id) != (me.map_id, me.instance_id)
@@ -1389,7 +1389,7 @@ fn observe(ctx: &ReducerContext, me: &crate::WorldEntity, state: &mut Playerbots
                 }
             }
             Running::Cast(handle) => {
-                if let Some(current) = crate::spell::pending_cast(ctx, me.guid)
+                if let Some(current) = crate::actor::pending_cast(ctx, me.guid)
                     .filter(|h| h.scheduled_id == handle.scheduled_id)
                 {
                     // Direct damage moves due_micros without changing the core cast identity.
@@ -1454,7 +1454,7 @@ fn admit_exact_target(
 ) -> Result<(), crate::actor::CommandOutcome> {
     let target = crate::actor::companion_target_facts(ctx, bot_guid, target_guid)?;
     if !party.enemies.iter().any(|enemy| enemy.guid == target.guid) {
-        party.enemies.push(crate::group::PartyEnemyFacts {
+        party.enemies.push(crate::actor::PartyEnemyFacts {
             guid: target.guid,
             map_id: target.map_id,
             instance_id: target.instance_id,
@@ -1939,7 +1939,7 @@ fn run(
         RecoveryLookup::Spell(row) => Some(row),
         RecoveryLookup::Pending | RecoveryLookup::Missing => None,
     };
-    let restricted = crate::helpers::live_entity(ctx, me.guid).is_err();
+    let restricted = crate::actor::live_entity(ctx, me.guid).is_err();
     let facts = decision::Facts {
         now,
         restricted,
@@ -1979,7 +1979,7 @@ fn run(
         RecoveryLookup::Pending => {}
         RecoveryLookup::Missing => recovery.readiness = Readiness::Refused,
         RecoveryLookup::Spell(spell) => {
-            let pending = crate::spell::pending_cast(ctx, me.guid);
+            let pending = crate::actor::pending_cast(ctx, me.guid);
             let retains_heal = pending.is_some_and(|pending| {
                 pending.spell_id == spell.spell_id && pending.target_guid == me.guid
             });
@@ -2106,7 +2106,7 @@ fn run(
                             member
                                 .unit
                                 .as_ref()
-                                .map(|unit| crate::group::PartyPartitionFacts {
+                                .map(|unit| crate::actor::PartyPartitionFacts {
                                     map_id: unit.map_id,
                                     instance_id: unit.instance_id,
                                     locator_revision: 0,
@@ -2118,7 +2118,7 @@ fn run(
                 (partition.map_id, partition.instance_id) != (me.map_id, me.instance_id)
             })
             .or_else(|| {
-                (party.is_none() && !partition_ok).then_some(crate::group::PartyPartitionFacts {
+                (party.is_none() && !partition_ok).then_some(crate::actor::PartyPartitionFacts {
                     map_id: destination.map_id,
                     instance_id: destination.instance_id,
                     locator_revision: 0,
@@ -2518,14 +2518,14 @@ fn run(
     {
         if let Some(foreground) = state.foreground.clone() {
             if let Running::Cast(handle) = foreground.running {
-                if crate::spell::expire_cast_attempt(ctx, me.guid, handle.scheduled_id, deadline) {
+                if crate::actor::expire_cast_attempt(ctx, me.guid, handle.scheduled_id, deadline) {
                     state.foreground = None;
                     bounded_push(
                         &mut state.history,
                         Transition {
                             at_micros: now,
                             chosen: Some(foreground.candidate),
-                            outcome: RunnerOutcome::CastFinished(crate::spell::CastFinish::Expired),
+                            outcome: RunnerOutcome::CastFinished(crate::actor::CastFinish::Expired),
                         },
                         HISTORY_LIMIT,
                     );
@@ -2814,7 +2814,7 @@ fn run(
 
 fn execute(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     objective_destination: &Destination,
     candidate: Candidate,
     state: &mut PlayerbotsRunner,
@@ -2982,8 +2982,8 @@ fn execute(
             }
             match super::actions::cast(ctx, me.guid, spell, target) {
                 Ok(
-                    crate::spell::CastStart::Started(handle)
-                    | crate::spell::CastStart::Waiting(handle),
+                    crate::actor::CastStart::Started(handle)
+                    | crate::actor::CastStart::Waiting(handle),
                 ) => {
                     let mut actual = candidate;
                     actual.id.action = Action::Cast(CastAction {
@@ -3000,7 +3000,7 @@ fn execute(
                     });
                     state.last_outcome = RunnerOutcome::Waiting;
                 }
-                Ok(crate::spell::CastStart::Resolved) => {
+                Ok(crate::actor::CastStart::Resolved) => {
                     state.cast_progress = Some(CastProgress {
                         observed_micros: now,
                         scheduled_id: 0,
@@ -3008,7 +3008,7 @@ fn execute(
                         target,
                     });
                     state.last_outcome =
-                        RunnerOutcome::CastFinished(crate::spell::CastFinish::Resolved);
+                        RunnerOutcome::CastFinished(crate::actor::CastFinish::Resolved);
                     if state.companion_heal_target_guid == Some(target) {
                         state.companion_heal_target_guid = None;
                     }
@@ -3116,7 +3116,7 @@ pub(super) fn fixture_refuse_quest_candidate(
     quest: u32,
     target: u64,
 ) -> Result<(), String> {
-    let me = crate::helpers::live_entity(ctx, guid)?;
+    let me = crate::actor::live_entity(ctx, guid)?;
     let mut state = PlayerbotsRunner::load(ctx, guid).ok_or("runner missing")?;
     let destination = state
         .objective
@@ -3163,7 +3163,7 @@ crate::game_hook!(on_cast_finished, fn playerbots_runner_cast_finished(ctx, payl
     if fg.generation != state.generation || handle.scheduled_id != payload.scheduled_id { return; }
     if !ctx.db.game_world_entity().guid().find(payload.caster_guid).is_some_and(|e| (e.map_id, e.instance_id) == (fg.map_id, fg.instance_id)) { return; }
     let now = ctx.timestamp.to_micros_since_unix_epoch();
-    if matches!(payload.outcome, crate::spell::CastFinish::Resolved) {
+    if matches!(payload.outcome, crate::actor::CastFinish::Resolved) {
         state.cast_progress = Some(CastProgress { observed_micros: now, scheduled_id: handle.scheduled_id, spell: handle.spell_id, target: handle.target_guid });
         state.retry_candidate = None;
     }
@@ -3214,7 +3214,7 @@ crate::game_hook!(on_group_invite, fn playerbots_auto_accept(ctx, payload) {
     {
         return;
     }
-    let inviter = crate::helpers::character_by_guid(ctx, payload.inviter_guid)
+    let inviter = crate::actor::character_by_guid(ctx, payload.inviter_guid)
         .map(|character| character.name)
         .unwrap_or_else(|| payload.inviter_guid.to_string());
     match crate::actor::accept_group_invite(ctx, payload.target_guid) {

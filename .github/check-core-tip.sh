@@ -83,6 +83,9 @@ for package_dir in "${package_dirs[@]}"; do
     installed_links+=("$link")
 done
 
+# Check the linked Packages before any caller-selected verification command.
+cargo +1.93.0 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --test package_api_lint
+
 # The default check: every collection Package compiles into the module. A caller that needs the
 # same linked tree for something else (e.g. the datascripts job's typegen/typecheck chain) passes
 # its own command instead — the link/displace/cleanup dance above is identical either way.

@@ -29,8 +29,8 @@ pub(super) fn companion_member(
 
 pub(super) fn candidate(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
-    partition: crate::group::PartyPartitionFacts,
+    me: &crate::tables::WorldEntity,
+    partition: crate::actor::PartyPartitionFacts,
     objective: u64,
 ) -> ActionNode {
     let route = SUPPORTED_AREA_TRIGGERS
@@ -70,7 +70,7 @@ pub(super) fn candidate(
     node
 }
 
-fn distance_sq(me: &crate::WorldEntity, route: &crate::quest::AreaTriggerRoute) -> f32 {
+fn distance_sq(me: &crate::tables::WorldEntity, route: &crate::actor::AreaTriggerRoute) -> f32 {
     (me.x - route.source_x).powi(2)
         + (me.y - route.source_y).powi(2)
         + (me.z - route.source_z).powi(2)
@@ -79,7 +79,7 @@ fn distance_sq(me: &crate::WorldEntity, route: &crate::quest::AreaTriggerRoute) 
 pub(super) fn normalize(
     ctx: &ReducerContext,
     state: &mut PlayerbotsRunner,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     action: TransferAction,
     intent_id: u64,
     generation: u64,
@@ -129,7 +129,7 @@ pub(super) fn normalize(
 pub(super) fn execute(
     ctx: &ReducerContext,
     state: &mut PlayerbotsRunner,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     action: TransferAction,
     now: i64,
 ) -> Result<u64, Failure> {
@@ -280,7 +280,7 @@ pub(super) fn companion_recovery_complete(
     checkpoint: TransferCheckpoint,
     objective: Option<&super::runner::Objective>,
     party: Option<&super::companion::Party>,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
 ) -> bool {
     let Some(TransferPurpose::Companion(CompanionTransferPurpose { member_guid, .. })) =
         checkpoint.purpose
@@ -334,7 +334,11 @@ pub(super) fn retains_quest(
     )
 }
 
-pub(super) fn begin_arrival(state: &mut PlayerbotsRunner, me: &crate::WorldEntity, now: i64) {
+pub(super) fn begin_arrival(
+    state: &mut PlayerbotsRunner,
+    me: &crate::tables::WorldEntity,
+    now: i64,
+) {
     let Some(checkpoint) = &mut state.transfer_checkpoint else {
         return;
     };
@@ -356,7 +360,7 @@ pub(super) fn arrival_expired(state: &PlayerbotsRunner, now: i64) -> bool {
 pub(super) fn arrival(
     ctx: &ReducerContext,
     state: &PlayerbotsRunner,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&super::companion::Party>,
     now: i64,
 ) -> Arrival {

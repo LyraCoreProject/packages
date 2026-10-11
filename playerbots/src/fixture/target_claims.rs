@@ -19,7 +19,7 @@ fn fight(ctx: &ReducerContext, guid: u64) -> Option<u64> {
 }
 
 fn available(ctx: &ReducerContext, guid: u64, target: u64) -> Result<bool, String> {
-    let me = crate::helpers::live_entity(ctx, guid)?;
+    let me = crate::actor::live_entity(ctx, guid)?;
     Ok(matches!(
         super::super::quest_loop::live_creature_target(ctx, &me, ENTRY, |_| true),
         super::super::quest_loop::LiveCreatureTarget::Found(found) if found.guid == target
@@ -42,11 +42,11 @@ fn add_target(ctx: &ReducerContext, source: u64, guid: u64, x: f32) -> Result<()
         .find(ENTRY)
         .ok_or("template missing")?;
     let spawn = ctx.db.game_creature_spawn().insert(spawn);
-    let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, 0);
+    let mut entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
     entity.level = 1;
     entity.health = 1000;
     entity.max_health = 1000;
-    crate::creatures::insert_creature_entity(ctx, entity);
+    crate::package::fixture::insert_creature_entity(ctx, entity);
     Ok(())
 }
 
@@ -55,8 +55,8 @@ pub fn playerbots_fixture_solo_target_claim(
     ctx: &ReducerContext,
     case: String,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)?;
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)?;
     if ctx.db.pkg_playerbots_bot().iter().next().is_some() {
         return Err("target claim fixture requires a fresh, private Shard".into());
     }
@@ -86,7 +86,7 @@ pub fn playerbots_fixture_solo_target_claim(
         bot.home_x = 1200.0;
         let guid = bot.character_guid;
         ctx.db.pkg_playerbots_bot().id().update(bot);
-        let mut me = crate::helpers::live_entity(ctx, guid)?;
+        let mut me = crate::actor::live_entity(ctx, guid)?;
         me.level = 1;
         me.power = 0;
         ctx.db.game_world_entity().guid().update(me);
@@ -106,7 +106,7 @@ pub fn playerbots_fixture_solo_target_claim(
         }
     }
     let target = companion_creature(ctx, ENTRY, 1240.0, 1200.0, 50.0, None)?;
-    let mut entity = crate::helpers::live_entity(ctx, target)?;
+    let mut entity = crate::actor::live_entity(ctx, target)?;
     entity.level = 1;
     entity.health = 1000;
     entity.max_health = 1000;
@@ -123,8 +123,8 @@ pub fn playerbots_fixture_solo_target_claim(
         return Err("another solo bot selected the claimed creature before combat".into());
     }
     if !matches!(
-        crate::loot::tag::live_loot_tag_eligibility(ctx, target, other),
-        crate::loot::tag::LiveLootTagEligibility::Available
+        crate::actor::live_loot_tag_eligibility(ctx, target, other),
+        crate::actor::LiveLootTagEligibility::Available
     ) {
         return Err("fixture already had a Loot Tag, so it did not prove an approach claim".into());
     }
@@ -177,7 +177,7 @@ pub fn playerbots_fixture_solo_target_claim(
             let mut state = rows.character_guid().find(owner).ok_or("runner missing")?;
             state.solo_target_guid = u64::MAX;
             rows.character_guid().update(state);
-            let me = crate::helpers::live_entity(ctx, other)?;
+            let me = crate::actor::live_entity(ctx, other)?;
             if !matches!(
                 TargetClaims::read(ctx, me.guid).availability(ctx, target),
                 Availability::ReadLimit
@@ -283,7 +283,7 @@ pub fn playerbots_fixture_solo_target_claim(
             let members = vec![owner, other];
             let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;
             let raid_slots = vec![0; members.len()];
-            crate::group::sync_group_mirror(
+            crate::package::fixture::sync_group_mirror(
                 ctx,
                 ROLES_GROUP,
                 owner,
@@ -291,7 +291,7 @@ pub fn playerbots_fixture_solo_target_claim(
                 2,
                 0,
                 members,
-                crate::SessionActor {
+                crate::package::fixture::SessionActor {
                     guid: owner,
                     ownership: None,
                 },
@@ -313,14 +313,14 @@ pub fn playerbots_fixture_solo_target_claim(
             }
         }
         "death" => {
-            let mut me = crate::helpers::live_entity(ctx, owner)?;
+            let mut me = crate::actor::live_entity(ctx, owner)?;
             me.dead = true;
             me.health = 0;
             ctx.db.game_world_entity().guid().update(me);
         }
         "freeze" => super::super::runner::transition_controller(ctx, owner, Controller::Frozen)?,
         "partition" => {
-            let mut me = crate::helpers::live_entity(ctx, owner)?;
+            let mut me = crate::actor::live_entity(ctx, owner)?;
             me.instance_id = 1;
             ctx.db.game_world_entity().guid().update(me);
         }

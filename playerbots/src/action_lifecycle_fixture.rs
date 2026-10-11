@@ -2,7 +2,9 @@
 
 //! Declared Core facts for the action-lifecycle acceptance cases.
 
-use crate::{game_creature_spawn, game_creature_spline, game_gameobject, game_world_entity};
+use crate::tables::{
+    game_creature_spawn, game_creature_spline, game_gameobject, game_world_entity,
+};
 use spacetimedb::{reducer, ReducerContext};
 
 fn place_entity(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
@@ -43,7 +45,7 @@ pub fn playerbots_action_lifecycle_stage_quest_plan(
     kind: u8,
     target_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     match kind {
         0 => {}
         1 => super::quest_catalog_fixture::playerbots_quest_fixture_admit_accept(
@@ -93,7 +95,7 @@ pub fn playerbots_action_lifecycle_stage_quest_plan(
         )?,
         _ => return Err("unknown action lifecycle quest plan".to_string()),
     }
-    let character = crate::helpers::live_entity(ctx, character_guid)?;
+    let character = crate::actor::live_entity(ctx, character_guid)?;
     let x = character.x + if kind == 6 { 80.0 } else { 40.0 };
     if matches!(kind, 3 | 4) {
         place_gameobject(ctx, target_guid, x)?;
@@ -113,7 +115,7 @@ pub fn playerbots_action_lifecycle_expire_movement(
     expected_move: u8,
     expected_target: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     super::fixture::playerbots_fixture_runner_pass_once(ctx, character_guid)?;
 
     use super::decision::{Action, MoveTarget};

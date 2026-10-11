@@ -6,7 +6,7 @@ use super::orders::{CommandRecord, CompanionOrder, CompanionOrderState};
 use super::{
     pkg_playerbots_bot, pkg_playerbots_companion_order, pkg_playerbots_runner, Controller,
 };
-use crate::{
+use crate::tables::{
     game_character, game_group, game_group_member, game_group_member_partition,
     game_group_roster_revision, game_world_entity,
 };
@@ -88,11 +88,11 @@ struct PartitionSnapshot {
     map_id: u32,
     instance_id: u64,
     locator_revision: u64,
-    state: crate::PartyPartitionState,
+    state: crate::tables::PartyPartitionState,
 }
 
-impl From<&crate::GroupMemberPartition> for PartitionSnapshot {
-    fn from(row: &crate::GroupMemberPartition) -> Self {
+impl From<&crate::tables::GroupMemberPartition> for PartitionSnapshot {
+    fn from(row: &crate::tables::GroupMemberPartition) -> Self {
         Self {
             character_guid: row.character_guid,
             group_id: row.group_id,
@@ -219,7 +219,7 @@ fn source_party(
         || active_partitions.iter().any(|partition| {
             !member_guids.contains(&partition.character_guid)
                 || partition.group_id != order.group_id
-                || partition.state != crate::PartyPartitionState::Known
+                || partition.state != crate::tables::PartyPartitionState::Known
         })
     {
         return Err("Assist source fixture party mirror changed".to_string());
@@ -305,7 +305,7 @@ fn relocate_character(
     guid: u64,
     destination: (f32, f32, f32, f32),
 ) -> Result<(), String> {
-    let mut character = crate::helpers::character_by_guid(ctx, guid)
+    let mut character = crate::actor::character_by_guid(ctx, guid)
         .ok_or("Assist source fixture Character disappeared")?;
     character.map_id = DESTINATION_MAP;
     character.pending_instance_id = DESTINATION_INSTANCE;
@@ -399,7 +399,7 @@ pub fn playerbots_transfer_assist_source_stage(
     leader_guid: u64,
     priest_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if bot_guid == 0
         || leader_guid == 0
         || priest_guid == 0
@@ -441,9 +441,9 @@ pub fn playerbots_transfer_assist_source_stage(
         return Err("Assist source fixture requires the selected Priest".to_string());
     }
     let party = source_party(ctx, bot_guid, leader_guid, priest_guid)?;
-    let bot_body = crate::helpers::live_entity(ctx, bot_guid)?;
-    let leader_body = crate::helpers::live_entity(ctx, leader_guid)?;
-    let priest_body = crate::helpers::live_entity(ctx, priest_guid)?;
+    let bot_body = crate::actor::live_entity(ctx, bot_guid)?;
+    let leader_body = crate::actor::live_entity(ctx, leader_guid)?;
+    let priest_body = crate::actor::live_entity(ctx, priest_guid)?;
     let source_partition = (bot_body.map_id, bot_body.instance_id);
     if !bot_body.is_player()
         || !leader_body.is_player()
@@ -459,7 +459,7 @@ pub fn playerbots_transfer_assist_source_stage(
         return Err("Assist source fixture requires one local party partition".to_string());
     }
     for guid in [bot_guid, leader_guid, priest_guid] {
-        let character = crate::helpers::character_by_guid(ctx, guid)
+        let character = crate::actor::character_by_guid(ctx, guid)
             .ok_or("Assist source fixture Character is absent")?;
         if (character.map_id, character.pending_instance_id) != source_partition {
             return Err("Assist source fixture Character partition changed".to_string());
@@ -468,8 +468,8 @@ pub fn playerbots_transfer_assist_source_stage(
     let retained_before = retained_work(ctx, bot_guid, party.order.group_id)?;
     let leader_source = (leader_body.x, leader_body.y, leader_body.z);
     let priest_source = (priest_body.x, priest_body.y, priest_body.z);
-    crate::package_fixture::remove_live_character(ctx, leader_guid)?;
-    crate::package_fixture::remove_live_character(ctx, priest_guid)?;
+    crate::package::fixture::remove_live_character(ctx, leader_guid)?;
+    crate::package::fixture::remove_live_character(ctx, priest_guid)?;
     relocate_character(ctx, leader_guid, LEADER_DESTINATION)?;
     relocate_character(ctx, priest_guid, PRIEST_DESTINATION)?;
     let leader_after = relocate_partition(ctx, leader_guid)?;
@@ -540,7 +540,7 @@ pub fn playerbots_transfer_assist_destination_stage(
     priest_guid: u64,
     unused_mage_guid: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let guids = [bot_guid, leader_guid, priest_guid, unused_mage_guid];
     if guids.contains(&0)
         || guids
@@ -550,8 +550,8 @@ pub fn playerbots_transfer_assist_destination_stage(
     {
         return Err("Assist destination fixture requires four distinct Characters".to_string());
     }
-    if crate::helpers::character_by_guid(ctx, bot_guid).is_some()
-        || crate::helpers::character_by_guid(ctx, unused_mage_guid).is_some()
+    if crate::actor::character_by_guid(ctx, bot_guid).is_some()
+        || crate::actor::character_by_guid(ctx, unused_mage_guid).is_some()
         || ctx
             .db
             .game_group_member()
@@ -591,5 +591,5 @@ pub fn playerbots_transfer_assist_destination_stage(
     super::fixture::playerbots_fixture_freeze(ctx, priest_guid)?;
     relocate_live_character(ctx, leader_guid, LEADER_DESTINATION)?;
     relocate_live_character(ctx, priest_guid, PRIEST_DESTINATION)?;
-    crate::package_fixture::declare_next_movement_tick(ctx, TimeDuration::from_micros(60_000_000))
+    crate::package::fixture::declare_next_movement_tick(ctx, TimeDuration::from_micros(60_000_000))
 }

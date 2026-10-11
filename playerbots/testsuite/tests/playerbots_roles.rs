@@ -1084,10 +1084,15 @@ fn playerbots_urgent_heal_releases_only_the_interrupted_buff_target() {
         .unwrap();
     evidence(&fixture, "heal-out-of-range-staged");
     assert!((mage_x - priest_x).abs() > renew_range);
-    pass(node, &fixture.priest);
+    // Fortitude starts its cooldown on admission; an unavailable heal cannot preempt it.
+    let healing_started = poll_until(POLL_TIMEOUT, || {
+        pass(node, &fixture.priest);
+        runner(node, &fixture.priest)["chosen"].contains("castingPosition")
+    });
     evidence(&fixture, "buff-interrupted-by-heal");
 
     let healing = runner(node, &fixture.priest);
+    assert!(healing_started, "{healing:?}");
     assert!(healing["chosen"].contains("castingPosition"), "{healing:?}");
     assert!(healing["chosen"].contains(&fixture.mage), "{healing:?}");
     assert!(

@@ -5,7 +5,7 @@ use super::*;
 pub(super) const INTERVAL: i64 = 500_000;
 const BATCH_LIMIT: usize = 1_024;
 const PLAN_LIMIT: usize = 32;
-const EXPANSION_LIMIT: u32 = 4 * crate::nav::LEG_MAX_EXPANSIONS;
+const EXPANSION_LIMIT: u32 = 4 * crate::actor::movement::LEG_MAX_EXPANSIONS;
 const RENEWAL_LEAD_MICROS: u64 = 2_000_000;
 
 struct PlanningBudget {
@@ -16,7 +16,7 @@ struct PlanningBudget {
 impl PlanningBudget {
     fn available(&self) -> bool {
         self.searches < PLAN_LIMIT
-            && self.expansions <= EXPANSION_LIMIT - crate::nav::LEG_MAX_EXPANSIONS
+            && self.expansions <= EXPANSION_LIMIT - crate::actor::movement::LEG_MAX_EXPANSIONS
     }
 
     fn record(&mut self, expansions: u32) {
@@ -27,7 +27,7 @@ impl PlanningBudget {
 
 fn begin(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     destination: &Destination,
     stand_off: f32,
 ) -> u32 {
@@ -37,7 +37,7 @@ fn begin(
     let horizontal_stop = (stand_off.powi(2) - (me.z - destination.z).powi(2))
         .max(0.0)
         .sqrt();
-    let route = crate::nav::route_path(
+    let route = crate::actor::movement::route_path(
         ctx,
         me.map_id,
         me.instance_id,
@@ -58,8 +58,8 @@ fn begin(
         distance(me, destination) <= stand_off + 0.05,
         route.step,
     );
-    if let Ok(mover) = crate::helpers::live_entity(ctx, me.guid) {
-        crate::creatures::tick::emit_creature_path(ctx, mover, route.points, true);
+    if let Ok(mover) = crate::actor::live_entity(ctx, me.guid) {
+        crate::actor::movement::emit_creature_path(ctx, mover, route.points, true);
     }
     expansions
 }
@@ -99,7 +99,7 @@ pub(super) fn retained(
                 .find(state.character_guid)
                 .is_some_and(|spline| {
                     spline.path.is_some_and(|path| {
-                        path.navigation == crate::nav::inputs(ctx, destination.map_id)
+                        path.navigation == crate::actor::movement::inputs(ctx, destination.map_id)
                     }) && spline
                         .start_micros
                         .saturating_add(u64::from(spline.dur_ms) * 1000)
@@ -328,11 +328,9 @@ fn advance(
             return true;
         };
         if let Some(spline) = spline {
-            if spline
-                .path
-                .as_ref()
-                .is_some_and(|path| path.navigation != crate::nav::inputs(ctx, me.map_id))
-            {
+            if spline.path.as_ref().is_some_and(|path| {
+                path.navigation != crate::actor::movement::inputs(ctx, me.map_id)
+            }) {
                 stop(ctx, guid, state);
                 state.last_outcome = RunnerOutcome::Cancelled;
                 return true;
@@ -401,7 +399,7 @@ fn advance(
 
 fn destination(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     state: &PlayerbotsRunner,
     foreground: &Foreground,
     movement: &MovementRun,
@@ -450,8 +448,8 @@ fn destination(
                 return None;
             }
             if foreground.candidate.id.reason == Reason::Quest
-                && crate::combat::validate_attack_target(ctx, me, guid).is_ok()
-                && crate::spell::control_status(ctx, guid, 64).ok()?.is_some()
+                && crate::actor::attack_target_gate(ctx, me, guid).is_ok()
+                && crate::actor::control_status(ctx, guid, 64).ok()?.is_some()
             {
                 return None;
             }

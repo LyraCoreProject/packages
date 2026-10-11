@@ -3,7 +3,7 @@
 //! Private party inputs for order decisions around the audited Deadmines entrance.
 
 use super::pkg_playerbots_bot;
-use crate::{
+use crate::tables::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_group,
     game_group_member_partition, game_group_roster_revision, game_world_entity,
 };
@@ -23,7 +23,7 @@ fn place_body(
     position: (f32, f32, f32),
 ) -> Result<(), String> {
     let (x, y, z) = position;
-    let mut entity = crate::helpers::live_entity(ctx, guid)?;
+    let mut entity = crate::actor::live_entity(ctx, guid)?;
     entity.map_id = map;
     entity.instance_id = instance;
     (entity.x, entity.y, entity.z) = (x, y, z);
@@ -45,7 +45,7 @@ pub fn playerbots_transfer_orders_stage(
     second_mage: u64,
     leader: u64,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let guids = [warrior, priest, mage, second_mage, leader];
     if guids
         .iter()
@@ -92,7 +92,7 @@ pub fn playerbots_transfer_orders_stage(
         .unwrap()
         .checked_add(1)
         .ok_or("fixture membership revision exhausted")?;
-    partitions.push(crate::GroupMemberPartition {
+    partitions.push(crate::tables::GroupMemberPartition {
         character_guid: second_mage,
         group_id: GROUP,
         membership_revision,
@@ -100,7 +100,7 @@ pub fn playerbots_transfer_orders_stage(
         map_id: 0,
         instance_id: 0,
         locator_revision: 1,
-        state: crate::PartyPartitionState::Known,
+        state: crate::tables::PartyPartitionState::Known,
     });
     partitions.sort_by_key(|p| p.membership_revision);
     let group = ctx
@@ -119,7 +119,7 @@ pub fn playerbots_transfer_orders_stage(
         .checked_add(1)
         .ok_or("fixture roster revision exhausted")?;
     let raid_slots = vec![0; partitions.len()];
-    crate::group::sync_group_mirror(
+    crate::package::fixture::sync_group_mirror(
         ctx,
         GROUP,
         leader,
@@ -127,7 +127,7 @@ pub fn playerbots_transfer_orders_stage(
         group.loot_threshold,
         group.master_looter_guid,
         partitions.iter().map(|p| p.character_guid).collect(),
-        crate::SessionActor {
+        crate::package::fixture::SessionActor {
             guid: leader,
             ownership: None,
         },
@@ -164,21 +164,23 @@ pub fn playerbots_transfer_orders_stage(
             (SOURCE.0 + 100.0, SOURCE.1 + index as f32, SOURCE.2),
         )?;
     }
-    ctx.db.game_area_trigger().insert(crate::GameAreaTrigger {
-        id: 78,
-        map_id: 0,
-        x: SOURCE.0,
-        y: SOURCE.1,
-        z: SOURCE.2,
-        radius: 7.0,
-        box_length: 0.0,
-        box_width: 0.0,
-        box_height: 0.0,
-        box_yaw: 0.0,
-    });
+    ctx.db
+        .game_area_trigger()
+        .insert(crate::tables::GameAreaTrigger {
+            id: 78,
+            map_id: 0,
+            x: SOURCE.0,
+            y: SOURCE.1,
+            z: SOURCE.2,
+            radius: 7.0,
+            box_length: 0.0,
+            box_width: 0.0,
+            box_height: 0.0,
+            box_yaw: 0.0,
+        });
     ctx.db
         .game_areatrigger_teleport()
-        .insert(crate::AreatriggerTeleport {
+        .insert(crate::tables::AreatriggerTeleport {
             trigger_id: 78,
             target_map: 36,
             x: LANDING.0,
@@ -188,7 +190,7 @@ pub fn playerbots_transfer_orders_stage(
             name: "Deadmines - Entering".to_string(),
         });
     // Keep the first real Target leg pending while the caller records and changes partition facts.
-    crate::package_fixture::declare_next_movement_tick(ctx, TimeDuration::from_micros(60_000_000))
+    crate::package::fixture::declare_next_movement_tick(ctx, TimeDuration::from_micros(60_000_000))
 }
 
 /// Supply a later Known partition through the normal mirror operation. The Gateway process
@@ -196,12 +198,12 @@ pub fn playerbots_transfer_orders_stage(
 #[reducer]
 pub fn playerbots_transfer_orders_remote(
     ctx: &ReducerContext,
-    request_actor: crate::SessionActor,
+    request_actor: crate::package::fixture::SessionActor,
     priest: u64,
     target: u64,
     mode: u8,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if mode > 2 {
         return Err("unknown order Transfer fixture mode".to_string());
     }
@@ -223,14 +225,14 @@ pub fn playerbots_transfer_orders_remote(
     if partitions.len() != 5 || !partitions.iter().any(|p| p.character_guid == priest) {
         return Err("order Transfer fixture requires its five-member party".to_string());
     }
-    crate::package_fixture::admit_to_instance(ctx, leader, 36, INSTANCE, GROUP, request_actor)?;
+    crate::package::fixture::admit_to_instance(ctx, leader, 36, INSTANCE, GROUP, request_actor)?;
     for guid in [Some(leader), (mode == 1).then_some(priest)]
         .into_iter()
         .flatten()
     {
-        crate::package_fixture::remove_live_character(ctx, guid)?;
+        crate::package::fixture::remove_live_character(ctx, guid)?;
         let mut character =
-            crate::helpers::character_by_guid(ctx, guid).ok_or("fixture Character missing")?;
+            crate::actor::character_by_guid(ctx, guid).ok_or("fixture Character missing")?;
         character.map_id = 36;
         character.pending_instance_id = INSTANCE;
         (character.x, character.y, character.z) = (LANDING.0, LANDING.1, LANDING.2);
@@ -248,7 +250,7 @@ pub fn playerbots_transfer_orders_remote(
             .ok_or("fixture locator revision exhausted")?;
     }
     if mode == 2 {
-        let entity = crate::helpers::live_entity(ctx, target)?;
+        let entity = crate::actor::live_entity(ctx, target)?;
         if entity.entry != 5_098_001 || entity.is_player() {
             return Err("fixture refuses another designated target".to_string());
         }
@@ -269,7 +271,7 @@ pub fn playerbots_transfer_orders_remote(
         .ok_or("fixture roster revision missing")?
         .revision;
     let raid_slots = vec![0; partitions.len()];
-    crate::group::sync_group_mirror(
+    crate::package::fixture::sync_group_mirror(
         ctx,
         GROUP,
         leader,

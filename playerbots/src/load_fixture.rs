@@ -1,5 +1,7 @@
-use crate::nav::game_nav_chunk;
-use crate::terrain::game_terrain_chunk;
+#![cfg(feature = "debug_reducers")]
+
+use crate::tables::game_nav_chunk;
+use crate::tables::game_terrain_chunk;
 use spacetimedb::{reducer, table, ReducerContext, SpacetimeType, Table};
 
 use super::{pkg_playerbots_bot, pkg_playerbots_runner, Controller};
@@ -58,7 +60,7 @@ fn route_geometry(ctx: &ReducerContext) -> Result<(Vec<u64>, Vec<LoadBlockedCell
             }
             ctx.db
                 .game_terrain_chunk()
-                .insert(crate::terrain::TerrainChunk {
+                .insert(crate::tables::TerrainChunk {
                     key,
                     map_id: 0,
                     cell_x: x,
@@ -82,7 +84,7 @@ fn route_geometry(ctx: &ReducerContext) -> Result<(Vec<u64>, Vec<LoadBlockedCell
                     }
                 }
             }
-            ctx.db.game_nav_chunk().insert(crate::nav::NavChunk {
+            ctx.db.game_nav_chunk().insert(crate::tables::NavChunk {
                 key,
                 map_id: 0,
                 cell_x: x,
@@ -97,14 +99,14 @@ fn route_geometry(ctx: &ReducerContext) -> Result<(Vec<u64>, Vec<LoadBlockedCell
     if blocked.is_empty() {
         return Err("load route has no blocked navigation cells".to_string());
     }
-    crate::nav::record_change(ctx)?;
+    crate::package::fixture::record_navigation_change(ctx)?;
     Ok((keys, blocked))
 }
 
 /// Stage a declared route around a wall. The ordinary Core tick owns measured movement.
 #[reducer]
 pub fn playerbots_load_stage(ctx: &ReducerContext, count: u32, seed: u32) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     if !matches!(count, 10 | 25 | 100 | 250 | 500 | 1_000) || !(1..=30).contains(&seed) {
         return Err(
             "load fixture needs 10, 25, 100, 250, 500 or 1000 bots and seed 1 through 30"
@@ -172,7 +174,7 @@ pub fn playerbots_load_stage(ctx: &ReducerContext, count: u32, seed: u32) -> Res
 
 #[reducer]
 pub fn playerbots_load_begin(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let mut fixture = ctx
         .db
         .pkg_playerbots_load_fixture()
@@ -211,7 +213,7 @@ pub fn playerbots_load_foreign_motion(
     guid: u64,
     duration_ms: u32,
 ) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
+    crate::package::require_operator(ctx)?;
     let staged = ctx
         .db
         .pkg_playerbots_load_fixture()
@@ -243,8 +245,8 @@ pub fn playerbots_load_foreign_motion(
         .ok_or("selected load bot is absent")?;
     bot.next_think_micros = i64::MAX;
     ctx.db.pkg_playerbots_bot().id().update(bot);
-    let me = crate::helpers::live_entity(ctx, guid)?;
-    crate::creatures::tick::emit_move_spline(
+    let me = crate::actor::live_entity(ctx, guid)?;
+    crate::package::fixture::emit_move_spline(
         ctx,
         guid,
         (me.x, me.y, me.z),

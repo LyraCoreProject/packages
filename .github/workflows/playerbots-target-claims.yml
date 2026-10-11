@@ -45,10 +45,15 @@ jobs:
           ref: 0cae690301552430d713a582b0036e7096c215d2
           path: baseline-core
           persist-credentials: false
+      - name: Select the paired Core revision
+        id: core-ref
+        uses: ./collection/.github/actions/core-ref
+        with:
+          fallback: 6e73c274d7b084c7c0b1842d4a7ae82316952b4a
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
-          ref: f91066df4aef5c8d753dbe1d2203c6a669f485fa
+          ref: ${{ steps.core-ref.outputs.ref }}
           path: lyracore
           persist-credentials: false
       - name: Install pinned Rust and SpacetimeDB

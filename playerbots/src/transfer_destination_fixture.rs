@@ -10,7 +10,7 @@ use super::quest_catalog::{
     PlayerbotsQuestCatalog, CATALOG_BLUEPRINT_REVISION, CATALOG_NAME, CATALOG_REVISION,
 };
 use super::runner::ObjectiveKind;
-use crate::{
+use crate::tables::{
     game_character_quest, game_creature_quest, game_creature_spawn, game_creature_template,
     game_quest_objective, game_quest_template, game_world_entity,
 };
@@ -30,17 +30,17 @@ fn destination_guid(entry: u32, ordinal: u64) -> u64 {
 }
 
 fn require_private_fixture(ctx: &ReducerContext) -> Result<(), String> {
-    crate::helpers::require_operator(ctx)?;
-    crate::package_fixture::require_no_imported_content(ctx)
+    crate::package::require_operator(ctx)?;
+    crate::package::fixture::require_no_imported_content(ctx)
 }
 
 /// The revision the real Navigation Inputs import advances. It does not depend on the map.
 fn imported_navigation_revision(ctx: &ReducerContext) -> Option<u64> {
-    crate::nav::inputs(ctx, DESTINATION_MAP).imported_revision
+    crate::actor::movement::inputs(ctx, DESTINATION_MAP).imported_revision
 }
 
-fn quest_template(entry: u32, prerequisite: u32) -> crate::QuestTemplate {
-    crate::QuestTemplate {
+fn quest_template(entry: u32, prerequisite: u32) -> crate::tables::QuestTemplate {
+    crate::tables::QuestTemplate {
         entry,
         min_level: 1,
         quest_level: 1,
@@ -85,7 +85,7 @@ fn stage_creature(
     template.faction_template = if hostile { 14 } else { 35 };
     template.aggro_range = 0;
     let template = ctx.db.game_creature_template().insert(template);
-    let spawn = crate::CreatureSpawn {
+    let spawn = crate::tables::CreatureSpawn {
         guid,
         entry,
         map_id,
@@ -93,17 +93,18 @@ fn stage_creature(
         y: at.1,
         z: at.2,
         orientation: 0.0,
-        respawn_at: crate::creatures::timer_never(ctx),
-        despawn_at: crate::creatures::timer_never(ctx),
+        respawn_at: crate::package::fixture::timer_never(ctx),
+        despawn_at: crate::package::fixture::timer_never(ctx),
         movement_type: 0,
         respawn_secs: 60,
         life_seq: 1,
     };
-    let mut entity = crate::creatures::build_creature_entity(&spawn, &template, 0, instance_id);
+    let mut entity =
+        crate::package::fixture::build_creature_entity(&spawn, &template, 0, instance_id);
     ctx.db.game_creature_spawn().insert(spawn);
     entity.map_id = map_id;
     entity.instance_id = instance_id;
-    crate::creatures::insert_creature_entity(ctx, entity);
+    crate::package::fixture::insert_creature_entity(ctx, entity);
     Ok(CatalogDestination {
         kind: CatalogEntityKind::Creature,
         entry,
@@ -117,12 +118,14 @@ fn stage_creature(
 }
 
 fn insert_relation(ctx: &ReducerContext, id: u64, creature_entry: u32, quest_entry: u32, role: u8) {
-    ctx.db.game_creature_quest().insert(crate::CreatureQuest {
-        id,
-        creature_entry,
-        quest_entry,
-        role,
-    });
+    ctx.db
+        .game_creature_quest()
+        .insert(crate::tables::CreatureQuest {
+            id,
+            creature_entry,
+            quest_entry,
+            role,
+        });
 }
 
 fn insert_header(ctx: &ReducerContext, content_revision: &str) {
@@ -330,7 +333,7 @@ pub fn playerbots_transfer_destination_catalogue_stage(
     mode: u8,
 ) -> Result<(), String> {
     require_private_fixture(ctx)?;
-    if crate::helpers::character_by_guid(ctx, character_guid).is_some()
+    if crate::actor::character_by_guid(ctx, character_guid).is_some()
         || ctx
             .db
             .game_world_entity()
@@ -407,25 +410,27 @@ pub fn playerbots_transfer_destination_catalogue_stage(
         RELATION_BASE,
         first.entry,
         quest_entry,
-        crate::quest::quest_role::START,
+        crate::actor::quest_role::START,
     );
     insert_relation(
         ctx,
         RELATION_BASE + 1,
         if mode == 1 { first.entry } else { second.entry },
         quest_entry,
-        crate::quest::quest_role::END,
+        crate::actor::quest_role::END,
     );
 
     let (actual_ender, objective) = if mode == 1 {
-        ctx.db.game_quest_objective().insert(crate::QuestObjective {
-            id: OBJECTIVE_ID,
-            quest_entry,
-            obj_index: 0,
-            kind: crate::quest::objective_kind::KILL_CREATURE,
-            target_entry: 6,
-            required_count: 10,
-        });
+        ctx.db
+            .game_quest_objective()
+            .insert(crate::tables::QuestObjective {
+                id: OBJECTIVE_ID,
+                quest_entry,
+                obj_index: 0,
+                kind: crate::actor::objective_kind::KILL_CREATURE,
+                target_entry: 6,
+                required_count: 10,
+            });
         let objective = PlayerbotsCatalogObjective {
             id: OBJECTIVE_ID,
             quest_entry,

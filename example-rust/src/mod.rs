@@ -1,10 +1,11 @@
-use crate::package_config::{ensure_package_config_default, game_package_config};
+use crate::package::ensure_config_default;
+use crate::tables::game_package_config;
 
 const PACKAGE: &str = "example-rust";
 const DEFAULT_GREETING: &str = "Welcome from example-rust!";
 
 crate::game_hook!(on_login, fn example_rust_on_login(ctx, payload) {
-    ensure_package_config_default(ctx, PACKAGE, "greeting", DEFAULT_GREETING);
+    ensure_config_default(ctx, PACKAGE, "greeting", DEFAULT_GREETING);
     let configured = ctx.db.game_package_config().by_package_key()
         .filter((PACKAGE, "greeting")).next().map(|row| row.value);
     let message = greeting(configured.as_deref()).to_string();

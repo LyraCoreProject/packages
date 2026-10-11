@@ -6,7 +6,7 @@ use super::{
     cond, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot, PlayerbotsRotation,
     ROLE_HEALER,
 };
-use crate::{game_spell, game_spell_effect, game_world_entity};
+use crate::tables::{game_spell, game_spell_effect, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const ROTATION_LIMIT: usize = 12;
@@ -26,7 +26,7 @@ fn node(action: Action, reason: Reason, priority: i32, objective: u64) -> Action
 }
 
 fn wounded_member(
-    member: &crate::group::PartyMemberFacts,
+    member: &crate::actor::PartyMemberFacts,
     partition: (u32, u64),
     heal_at_pct: u8,
 ) -> Option<(u32, u32, u64)> {
@@ -70,15 +70,15 @@ enum CastPreparation {
 /// completion leeway instead of consuming it before the cast starts.
 fn cast_preparation(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     spell_id: u32,
     target_guid: u64,
 ) -> CastPreparation {
     match crate::actor::cast_readiness(ctx, me.guid, spell_id, target_guid) {
-        Err(refusal) if refusal.kind == crate::spell::CastRefusalKind::OutOfRange => {
+        Err(refusal) if refusal.kind == crate::actor::CastRefusalKind::OutOfRange => {
             return CastPreparation::MoveForRange;
         }
-        Err(refusal) if refusal.kind == crate::spell::CastRefusalKind::NoLineOfSight => {
+        Err(refusal) if refusal.kind == crate::actor::CastRefusalKind::NoLineOfSight => {
             return CastPreparation::MoveForLineOfSight;
         }
         Err(_) => return CastPreparation::Refused,
@@ -110,7 +110,7 @@ fn cast_preparation(
 
 fn cast_node(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     cast: CastAction,
     reason: Reason,
     position_reason: Reason,
@@ -118,7 +118,7 @@ fn cast_node(
     objective: u64,
 ) -> ActionNode {
     let mut candidate = node(Action::Cast(cast), reason, priority, objective);
-    if crate::spell::pending_cast(ctx, me.guid)
+    if crate::actor::pending_cast(ctx, me.guid)
         .is_some_and(|pending| pending.spell_id == cast.spell && pending.target_guid == cast.target)
     {
         return candidate;
@@ -188,13 +188,13 @@ fn buff_missing(
     spell_id: u32,
     caster_level: u8,
 ) -> Result<bool, RoleReadError> {
-    match crate::spell::buff_status(ctx, target_guid, spell_id, caster_level) {
-        crate::spell::BuffStatus::Missing => Ok(true),
-        crate::spell::BuffStatus::Satisfied => Ok(false),
-        crate::spell::BuffStatus::Unavailable(crate::spell::BuffUnavailableReason::AuraLimit) => {
+    match crate::actor::buff_status(ctx, target_guid, spell_id, caster_level) {
+        crate::actor::BuffStatus::Missing => Ok(true),
+        crate::actor::BuffStatus::Satisfied => Ok(false),
+        crate::actor::BuffStatus::Unavailable(crate::actor::BuffUnavailableReason::AuraLimit) => {
             Err(RoleReadError::BuffAuraLimit)
         }
-        crate::spell::BuffStatus::Unavailable(crate::spell::BuffUnavailableReason::Family) => {
+        crate::actor::BuffStatus::Unavailable(crate::actor::BuffUnavailableReason::Family) => {
             Err(RoleReadError::BuffFamilyUnavailable)
         }
     }
@@ -202,7 +202,7 @@ fn buff_missing(
 
 fn buff_target(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     row: &PlayerbotsRotation,
     retained: Option<u64>,
@@ -216,7 +216,7 @@ fn buff_target(
     let Some(party) = party else {
         return Ok(buff_missing(ctx, me.guid, row.spell_id, me.level as u8)?.then_some(me.guid));
     };
-    let eligible = |unit: &crate::group::PartyUnitFacts| {
+    let eligible = |unit: &crate::actor::PartyUnitFacts| {
         !unit.dead && (unit.map_id, unit.instance_id) == (me.map_id, me.instance_id)
     };
     if let Some(retained) = retained {
@@ -248,7 +248,7 @@ fn buff_target(
 fn maintenance(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     in_combat: bool,
     objective: u64,
@@ -305,11 +305,11 @@ fn periodic_heal_only(ctx: &ReducerContext, spell: u32) -> bool {
     effects.len() <= 3
         && effects
             .iter()
-            .any(|effect| effect.kind == crate::spell::A_PERIODIC_HEAL)
+            .any(|effect| effect.kind == crate::actor::A_PERIODIC_HEAL)
         && !effects.iter().any(|effect| {
             matches!(
                 effect.kind,
-                crate::spell::E_HEAL | crate::spell::E_HEAL_MAX_HEALTH
+                crate::actor::E_HEAL | crate::actor::E_HEAL_MAX_HEALTH
             )
         })
 }
@@ -317,7 +317,7 @@ fn periodic_heal_only(ctx: &ReducerContext, spell: u32) -> bool {
 fn healing(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     party: Option<&Party>,
     personality_heal_at: u8,
     objective: u64,
@@ -399,7 +399,7 @@ pub(super) fn combat_buff(ctx: &ReducerContext, spell: u32) -> bool {
             spell.cast_time_ms == 0
                 && spell.power_type == lyracore_shared::packing::power_type::RAGE
                 && !spell.is_negative
-                && spell.cast_flags & crate::spell::SPELL_ATTR_CHANNELED == 0
+                && spell.cast_flags & crate::actor::SPELL_ATTR_CHANNELED == 0
         })
 }
 
@@ -409,12 +409,12 @@ pub(super) fn queues_swing(ctx: &ReducerContext, spell: u32) -> bool {
         .by_spell()
         .filter(spell)
         .take(3)
-        .any(|effect| effect.kind == crate::spell::E_NEXT_SWING)
+        .any(|effect| effect.kind == crate::actor::E_NEXT_SWING)
 }
 
 fn preserves_queued_swing_resource(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     spell: u32,
 ) -> bool {
     if me.next_swing_spell == 0 {
@@ -448,7 +448,7 @@ pub(super) struct Fight {
 pub(super) fn combat(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     fight: Fight,
     objective: u64,
     reason: Reason,
@@ -538,7 +538,7 @@ pub(super) struct SupportContext<'a> {
 pub(super) fn support(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     context: SupportContext<'_>,
     objective: u64,
     fallback: &ActionNode,
@@ -603,10 +603,10 @@ pub(super) fn support(
 mod tests {
     use super::*;
 
-    fn member(guid: u64, health: u32, max_health: u32) -> crate::group::PartyMemberFacts {
-        crate::group::PartyMemberFacts {
+    fn member(guid: u64, health: u32, max_health: u32) -> crate::actor::PartyMemberFacts {
+        crate::actor::PartyMemberFacts {
             character_guid: guid,
-            unit: Some(crate::group::PartyUnitFacts {
+            unit: Some(crate::actor::PartyUnitFacts {
                 map_id: 0,
                 instance_id: 0,
                 x: 0.0,

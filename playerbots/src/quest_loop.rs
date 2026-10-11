@@ -6,7 +6,7 @@ use super::quest_catalog::{
     PlayerbotsQuestObjective, RetainedPosition,
 };
 use super::PlayerbotsBot;
-use crate::{game_corpse_loot, game_gameobject, game_world_entity};
+use crate::tables::{game_corpse_loot, game_gameobject, game_world_entity};
 use spacetimedb::ReducerContext;
 
 const SEARCH_RADIUS_YD: f32 = 100.0;
@@ -87,12 +87,12 @@ enum Search<T> {
 }
 
 struct EntitySearch {
-    rows: Vec<crate::WorldEntity>,
+    rows: Vec<crate::tables::WorldEntity>,
     exhausted: bool,
 }
 
 pub(super) enum LiveCreatureTarget {
-    Found(crate::WorldEntity),
+    Found(crate::tables::WorldEntity),
     Missing,
     ReadLimit,
     Deferred,
@@ -111,13 +111,13 @@ enum GameObjectSearch {
     Respawn,
 }
 
-fn distance_sq(me: &crate::WorldEntity, x: f32, y: f32, z: f32) -> f32 {
+fn distance_sq(me: &crate::tables::WorldEntity, x: f32, y: f32, z: f32) -> f32 {
     (me.x - x).powi(2) + (me.y - y).powi(2) + (me.z - z).powi(2)
 }
 
 fn live_giver(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     destination: &CatalogDestination,
 ) -> bool {
     match destination.kind {
@@ -145,9 +145,9 @@ fn live_giver(
 
 fn search_entities(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     dead: bool,
-    mut wanted: impl FnMut(&crate::WorldEntity) -> bool,
+    mut wanted: impl FnMut(&crate::tables::WorldEntity) -> bool,
 ) -> EntitySearch {
     let (gx0, gx1, gy0, gy1) =
         lyracore_shared::spatial::covering_cell_box(me.x, me.y, SEARCH_RADIUS_YD);
@@ -186,7 +186,7 @@ fn search_entities(
 
 pub(super) fn live_creature_target(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     entry: u32,
     eligible_work: impl Fn(u64) -> bool,
 ) -> LiveCreatureTarget {
@@ -203,10 +203,10 @@ pub(super) fn live_creature_target(
 
 fn preferred_creature(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     source: &CatalogDestination,
     guid: u64,
-) -> Option<crate::WorldEntity> {
+) -> Option<crate::tables::WorldEntity> {
     if source.kind == CatalogEntityKind::Creature {
         ctx.db.game_world_entity().guid().find(guid)
     } else {
@@ -222,7 +222,7 @@ fn preferred_creature(
 pub(super) fn grind_target(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     preferred: Option<u64>,
     eligible_work: impl Fn(u64) -> bool,
 ) -> LiveCreatureTarget {
@@ -246,7 +246,7 @@ pub(super) fn grind_target(
 
 fn select_live_target(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     search: EntitySearch,
     eligible_work: impl Fn(u64) -> bool,
     salt: Option<u64>,
@@ -258,12 +258,12 @@ fn select_live_target(
     let mut eligible: Vec<_> = search
         .rows
         .into_iter()
-        .filter(|target| crate::combat::validate_attack_target(ctx, me, target.guid).is_ok())
+        .filter(|target| crate::actor::attack_target_gate(ctx, me, target.guid).is_ok())
         .filter(|target| {
-            match crate::loot::tag::live_loot_tag_eligibility(ctx, target.guid, me.guid) {
-                crate::loot::tag::LiveLootTagEligibility::Available => {}
-                crate::loot::tag::LiveLootTagEligibility::Foreign => return false,
-                crate::loot::tag::LiveLootTagEligibility::ReadLimit => {
+            match crate::actor::live_loot_tag_eligibility(ctx, target.guid, me.guid) {
+                crate::actor::LiveLootTagEligibility::Available => {}
+                crate::actor::LiveLootTagEligibility::Foreign => return false,
+                crate::actor::LiveLootTagEligibility::ReadLimit => {
                     read_limited = true;
                     return false;
                 }
@@ -298,7 +298,7 @@ fn select_live_target(
             }
             break;
         }
-        match crate::spell::control_status(ctx, target.guid, CONTROL_AURA_LIMIT) {
+        match crate::actor::control_status(ctx, target.guid, CONTROL_AURA_LIMIT) {
             Ok(None) => {
                 if preferred == Some(target.guid) {
                     return LiveCreatureTarget::Found(target);
@@ -349,7 +349,7 @@ fn wanted_loot_slot(ctx: &ReducerContext, source_guid: u64, item_entry: u32) -> 
 
 fn entitled_corpse(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     source_entry: u32,
     item_entry: u32,
 ) -> Search<(u64, u8)> {
@@ -365,7 +365,7 @@ fn entitled_corpse(
     });
     let inconclusive = search.exhausted || corpses.len() > CORPSE_LIMIT;
     for corpse in corpses.into_iter().take(CORPSE_LIMIT) {
-        if crate::loot::corpse_access(ctx, me.guid, corpse.guid).is_err() {
+        if crate::actor::corpse_access(ctx, me.guid, corpse.guid).is_err() {
             continue;
         }
         match wanted_loot_slot(ctx, corpse.guid, item_entry) {
@@ -383,7 +383,7 @@ fn entitled_corpse(
 
 fn preferred_creature_plan(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     source: &CatalogDestination,
     preferred_guid: u64,
     quest: u32,
@@ -393,7 +393,7 @@ fn preferred_creature_plan(
     let preferred = preferred_creature(ctx, me, source, preferred_guid)?;
     if preferred.dead {
         let item = loot_item?;
-        if crate::loot::corpse_access(ctx, me.guid, preferred.guid).is_err() {
+        if crate::actor::corpse_access(ctx, me.guid, preferred.guid).is_err() {
             return None;
         }
         return match wanted_loot_slot(ctx, preferred.guid, item) {
@@ -424,7 +424,7 @@ fn preferred_creature_plan(
 
 fn creature_plan(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     source: &CatalogDestination,
     active_fight: Option<u64>,
     quest: u32,
@@ -453,7 +453,7 @@ fn creature_plan(
 
 fn gameobject_work(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     entry: u32,
     wanted_item: Option<u32>,
 ) -> GameObjectSearch {
@@ -518,13 +518,13 @@ fn gameobject_work(
 
 pub(super) fn plan(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     retained: &PlayerbotsQuestObjective,
     active_fight: Option<u64>,
     eligible_fight: impl Fn(u64) -> bool,
 ) -> QuestPlan {
     let quest = retained.quest_entry;
-    let Some(held) = crate::quest::character_quest_row(ctx, me.guid, quest) else {
+    let Some(held) = crate::actor::character_quest(ctx, me.guid, quest) else {
         return if live_giver(ctx, me, &retained.destination) {
             QuestPlan::Accept {
                 quest,
@@ -537,7 +537,7 @@ pub(super) fn plan(
     if held.rewarded || held.failed {
         return QuestPlan::Wait(WaitReason::MissingTarget);
     }
-    if crate::quest::quest_is_complete(ctx, &held) {
+    if crate::actor::quest_complete(ctx, &held) {
         return if live_giver(ctx, me, &retained.actual_ender) {
             QuestPlan::TurnIn {
                 quest,
@@ -661,7 +661,7 @@ fn action_node(action: Action, reason: Reason, priority: i32, objective: u64) ->
 pub(super) fn strategy(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     plan: QuestPlan,
     objective: u64,
     away: bool,
@@ -836,7 +836,7 @@ pub(super) fn wait_reason(plan: QuestPlan) -> Option<WaitReason> {
 
 pub(super) fn observe_safe_position(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     retained: &PlayerbotsQuestObjective,
 ) -> Option<RetainedPosition> {
     let source = retained.target.source.as_ref()?;
@@ -875,7 +875,7 @@ pub(super) fn observe_safe_position(
 
 pub(super) fn invalidate_safe_position(
     ctx: &ReducerContext,
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     retained: &mut PlayerbotsQuestObjective,
 ) {
     let Some(safe) = retained.safe_position.as_ref() else {
@@ -902,7 +902,7 @@ pub(super) fn invalidate_safe_position(
 }
 
 pub(super) fn safe_position(
-    me: &crate::WorldEntity,
+    me: &crate::tables::WorldEntity,
     retained: &PlayerbotsQuestObjective,
 ) -> Option<RetainedPosition> {
     retained

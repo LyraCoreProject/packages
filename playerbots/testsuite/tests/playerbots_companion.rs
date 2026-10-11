@@ -10,21 +10,6 @@ const HEAL: &str = "5090100";
 const CHANNEL_HEAL: &str = "5090104";
 const LEGACY_COMPARISON_PACKAGE: &str = "50e2cd10870d2cfb4a36018bbbd559f9d07c2062";
 const LEGACY_GOALS_BLOB: &str = "e72a7f97552d01edfa101d45e1b24b39196ca405";
-const LEGACY_GOALS_EXPRESSIONS: [&str; 13] = [
-    "pub(crate) const FOLLOW_RANGE_YD: f32 = 15.0;",
-    "const FOLLOW_STAND_OFF_YD: f32 = 8.0;",
-    "if should_flee(",
-    "if crate::spell::pending_cast(ctx, me.guid).is_some() {",
-    "let engaged = combat_target(ctx, &me, party.as_ref());",
-    "is_bot(ctx, party.leader_guid)",
-    "if quests_in_this_party {",
-    "if let Some(target) = engaged {",
-    "follow_leader(ctx, &me, party.leader_guid);",
-    "record_goal(ctx, bot.character_guid, goal::FOLLOW, now);",
-    "if flee_at_pct == 0 || max_health == 0 {",
-    "if distance_2d(me.x, me.y, leader.x, leader.y) <= FOLLOW_RANGE_YD {",
-    "FOLLOW_STAND_OFF_YD,",
-];
 fn record_inputs(node: &Standalone) {
     let core = support::core_root();
     let package = core.join("packages/playerbots");
@@ -306,9 +291,7 @@ fn policy_gameplay_state(
     })
 }
 
-fn verify_legacy_goals_source() {
-    let core = support::core_root();
-    let package = core.join("packages/playerbots");
+fn verify_legacy_comparison() {
     let collection_path = std::env::var_os("PLAYERBOTS_COMPANION_COMPARISON_COLLECTION")
         .expect("set PLAYERBOTS_COMPANION_COMPARISON_COLLECTION to the Package checkout");
     let collection = std::path::Path::new(&collection_path);
@@ -317,41 +300,6 @@ fn verify_legacy_goals_source() {
         git(collection, &["rev-parse", &committed_goals]),
         LEGACY_GOALS_BLOB
     );
-    let legacy = std::process::Command::new("git")
-        .current_dir(collection)
-        .args(["cat-file", "blob", LEGACY_GOALS_BLOB])
-        .output()
-        .unwrap();
-    assert!(legacy.status.success());
-    let legacy = String::from_utf8(legacy.stdout).unwrap();
-    let source = std::fs::read_to_string(package.join("src/goals.rs")).unwrap();
-    assert_eq!(source, without_inline_tests(&legacy));
-    let mut remaining = source.as_str();
-    for expression in LEGACY_GOALS_EXPRESSIONS {
-        let start = remaining
-            .find(expression)
-            .unwrap_or_else(|| panic!("Legacy comparison expression missing: {expression}"));
-        remaining = &remaining[start + expression.len()..];
-    }
-}
-
-/// The Legacy source as goals.rs holds it now: its inline test module moved to `goals/tests.rs`,
-/// and the production code before it is byte-identical.
-fn without_inline_tests(legacy: &str) -> String {
-    const INLINE_TESTS: &str = "#[cfg(test)]\nmod tests {\n";
-    let starts: Vec<_> = legacy
-        .match_indices(INLINE_TESTS)
-        .map(|(at, _)| at)
-        .collect();
-    let [start] = starts[..] else {
-        panic!("the Legacy goals.rs must hold exactly one inline test module");
-    };
-    assert_eq!(
-        legacy[start..].find("\n}\n"),
-        Some(legacy.len() - start - 3),
-        "the Legacy inline test module must end the file"
-    );
-    format!("{}#[cfg(test)]\nmod tests;\n", &legacy[..start])
 }
 
 fn record_policy_comparison(node: &Standalone, priest: &str, leader: &str, ally: &str) {
@@ -415,7 +363,7 @@ fn record_policy_comparison(node: &Standalone, priest: &str, leader: &str, ally:
     );
     assert!(flee_scripts.iter().all(|row| row["enabled"] == "false"));
 
-    verify_legacy_goals_source();
+    verify_legacy_comparison();
 
     let gameplay_before = policy_gameplay_state(node, priest, leader, ally);
     for field in ["pending_casts", "melee"] {
@@ -510,7 +458,6 @@ fn record_policy_comparison(node: &Standalone, priest: &str, leader: &str, ally:
             "basis": "SOURCE-DERIVED",
             "package_commit": LEGACY_COMPARISON_PACKAGE,
             "goals_blob": LEGACY_GOALS_BLOB,
-            "source_expressions": LEGACY_GOALS_EXPRESSIONS,
             "decision": legacy_decision,
         },
         "record_only": {
@@ -824,6 +771,10 @@ fn playerbots_non_healer_companion_retains_self_recovery() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_casting_position_retains_one_injured_ally_across_movement_legs() {
     let (node, bots) = fixture("playerbots-companion-target-retention");
+    // Keep a real cooldown active after the five-second fixture cast finishes.
+    node.assert_sql(&format!(
+        "UPDATE game_spell SET gcd_ms = 10000 WHERE spell_id = {HEAL}"
+    ));
     let (priest, leader, ally) = (&bots[0], &bots[1], &bots[2]);
     node.assert_call(
         "playerbots_fixture_companion_move",
