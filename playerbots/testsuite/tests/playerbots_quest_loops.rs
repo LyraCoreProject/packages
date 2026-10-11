@@ -464,9 +464,13 @@ fn record(node: &Standalone, suffix: &str) {
         .collect();
     seeded_content_identity.sort();
     seeded_content_identity.dedup();
-    let named_loop = seeded_content_identity
-        .iter()
-        .any(|identity| identity == "playerbots-loopback-named-q7-ten-targets-v2");
+    let named_loop = seeded_content_identity.iter().any(|identity| {
+        matches!(
+            identity.as_str(),
+            "playerbots-loopback-named-q7-ten-targets-v2"
+                | "playerbots-loopback-named-q7-distant-targets-v1"
+        )
+    });
     let smite_header = node.query_rows("SELECT * FROM game_spell WHERE spell_id = 585");
     let smite_effect = node.query_rows("SELECT * FROM game_spell_effect WHERE spell_id = 585");
     let nav_chunks = node
@@ -572,6 +576,21 @@ fn record_declared_targets(node: &Standalone, suffix: &str, targets: &[u64]) {
 fn playerbots_autonomous_talk_kill_and_collect_loops_run_for_all_starter_classes() {
     for (class, role, label) in [(1, 0, "warrior"), (5, 1, "priest"), (8, 2, "mage")] {
         let (node, guid) = fixture(&format!("playerbots-quest-loop-{label}"), class, role, true);
+        // Ranged casters must also travel beyond the former 150-yard home leash.
+        let targets = node.query_rows("SELECT guid, x, y FROM game_world_entity WHERE entry = 6");
+        assert_eq!(targets.len(), 10);
+        for target in targets {
+            let x = target["x"].parse::<f32>().unwrap() + 30.0;
+            node.assert_call(
+                "playerbots_fixture_companion_move",
+                &[&target["guid"], &x.to_string(), &target["y"]],
+            );
+        }
+        node.assert_sql(&format!(
+            "UPDATE pkg_playerbots_quest_loop_fixture SET content_revision = 'playerbots-loopback-named-q7-distant-targets-v1' WHERE character_guid = {guid}"
+        ));
+        node.assert_call("playerbots_quest_fixture_refresh", &[]);
+
         assert!(node
             .query_rows(&format!(
                 "SELECT * FROM game_character_quest WHERE character_guid = {guid}"
@@ -596,7 +615,7 @@ fn playerbots_autonomous_talk_kill_and_collect_loops_run_for_all_starter_classes
 
         let mut max_x = f32::NEG_INFINITY;
         let smite_updates = if class == 5 {
-            drive_until(&node, &guid, LOOP_TIMEOUT, |node| {
+            max_x = max_x.max(drive_until(&node, &guid, LOOP_TIMEOUT, |node| {
                 query_one(
                     node,
                     &format!("SELECT x FROM game_world_entity WHERE guid = {guid}"),
@@ -604,14 +623,14 @@ fn playerbots_autonomous_talk_kill_and_collect_loops_run_for_all_starter_classes
                     .parse::<f32>()
                     .unwrap()
                     >= 1_250.0
-            });
+            }));
             node.capture_updates(
                 &format!("SELECT * FROM pkg_playerbots_action WHERE character_guid = {guid} AND spell_id = 585"),
                 2,
                 || {
-                    max_x = drive_until(&node, &guid, LOOP_TIMEOUT, |node| {
+                    max_x = max_x.max(drive_until(&node, &guid, LOOP_TIMEOUT, |node| {
                         quest(node, &guid, 7).is_some_and(|quest| first_quest_count(&quest) > 0)
-                    });
+                    }));
                 },
             )
         } else {
@@ -648,7 +667,8 @@ fn playerbots_autonomous_talk_kill_and_collect_loops_run_for_all_starter_classes
         }));
         assert!(
             max_x - before["x"].parse::<f32>().unwrap() > 150.0,
-            "{label} did not reach the work area beyond the former home leash"
+            "{label} did not reach the work area beyond the former home leash: start={}, max={max_x}",
+            before["x"]
         );
         let kill = quest(&node, &guid, 7).unwrap();
         assert_eq!(first_quest_count(&kill), 10, "{kill:?}");

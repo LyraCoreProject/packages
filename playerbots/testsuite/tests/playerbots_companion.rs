@@ -771,6 +771,10 @@ fn playerbots_non_healer_companion_retains_self_recovery() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_casting_position_retains_one_injured_ally_across_movement_legs() {
     let (node, bots) = fixture("playerbots-companion-target-retention");
+    // Keep a real cooldown active after the five-second fixture cast finishes.
+    node.assert_sql(&format!(
+        "UPDATE game_spell SET gcd_ms = 10000 WHERE spell_id = {HEAL}"
+    ));
     let (priest, leader, ally) = (&bots[0], &bots[1], &bots[2]);
     node.assert_call(
         "playerbots_fixture_companion_move",

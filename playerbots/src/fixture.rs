@@ -2621,15 +2621,6 @@ pub fn playerbots_fixture_runner_pending_defense_then_recovery(
         || foreground.candidate.id.reason != Reason::Defense
         || !matches!(&foreground.running, Running::Cast(handle) if handle == &pending)
         || state.chosen != Some(foreground.candidate)
-        || ctx
-            .db
-            .game_spell_cooldown()
-            .caster_guid()
-            .find(guid)
-            .is_some_and(|cooldown| {
-                cooldown.ready_at.to_micros_since_unix_epoch()
-                    > ctx.timestamp.to_micros_since_unix_epoch()
-            })
     {
         return Err("pending cast is not the Runner's exact Defense Smite".to_string());
     }
@@ -2643,9 +2634,28 @@ pub fn playerbots_fixture_runner_pending_defense_then_recovery(
         return Err("Defense cast action is not the exact pending Smite".to_string());
     }
     let expected_foreground = foreground.clone();
+    let mut cooldown = ctx
+        .db
+        .game_spell_cooldown()
+        .caster_guid()
+        .find(guid)
+        .ok_or("Defense Smite did not start its cooldown")?;
+    if cooldown.ready_at <= ctx.timestamp {
+        return Err("Defense Smite cooldown is not active".to_string());
+    }
+    // Isolate power readiness while keeping the exact pending Defense cast.
+    cooldown.ready_at = ctx.timestamp;
+    ctx.db.game_spell_cooldown().caster_guid().update(cooldown);
 
     playerbots_fixture_companion_health(ctx, guid, 25)?;
     set_fixture_priest_power(ctx, guid, 25)?;
+    if !matches!(
+        crate::actor::cast_readiness(ctx, guid, 2050, guid),
+        Err(refusal) if refusal.kind == crate::actor::CastRefusalKind::InsufficientPower
+    ) {
+        return Err("Recovery readiness did not refuse insufficient power".to_string());
+    }
+
     playerbots_fixture_runner_pass_once(ctx, guid)?;
     let retained = ctx
         .db
@@ -2676,6 +2686,9 @@ pub fn playerbots_fixture_runner_pending_defense_then_recovery(
         ));
     }
     set_fixture_priest_power(ctx, guid, 100)?;
+    crate::actor::cast_readiness(ctx, guid, 2050, guid).map_err(|refusal| {
+        format!("Recovery remains unavailable after restoring power: {refusal}")
+    })?;
     playerbots_fixture_runner_start_and_retain_recovery(ctx, guid)
 }
 
