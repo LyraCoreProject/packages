@@ -1134,6 +1134,8 @@ fn insert_creature(ctx: &ReducerContext, entry: u32, x: f32, y: f32, z: f32) -> 
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
+            instance_id: 0,
+            source_guid: 0,
         });
     crate::package::fixture::insert_creature_entity(
         ctx,
@@ -1709,6 +1711,8 @@ pub(super) fn stage_named_with_rotation(
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
+            instance_id: 0,
+            source_guid: 0,
         };
         let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         spawns.guid().delete(guid);
@@ -1780,6 +1784,8 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
             movement_type: 0,
             respawn_secs: 0,
             life_seq: 1,
+            instance_id: 0,
+            source_guid: 0,
         };
         let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         spawns.guid().delete(guid);
@@ -1920,6 +1926,8 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
+            instance_id: 0,
+            source_guid: 0,
         };
         let mut entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         entity.health = 0;
@@ -1995,6 +2003,8 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit_with_live_alternative(
             movement_type: source_spawn.movement_type,
             respawn_secs: source_spawn.respawn_secs,
             life_seq: source_spawn.life_seq,
+            instance_id: 0,
+            source_guid: 0,
         });
     crate::package::fixture::insert_creature_entity(
         ctx,

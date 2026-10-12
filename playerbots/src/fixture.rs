@@ -829,6 +829,8 @@ fn companion_creature(
         movement_type: 0,
         respawn_secs: 60,
         life_seq: 1,
+        instance_id: 0,
+        source_guid: 0,
     };
     ctx.db.game_creature_spawn().guid().delete(guid);
     let spawn = ctx.db.game_creature_spawn().insert(spawn);
@@ -1897,6 +1899,8 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
         movement_type: 0,
         respawn_secs: 60,
         life_seq: 1,
+        instance_id: 0,
+        source_guid: 0,
     };
     ctx.db.game_creature_spawn().guid().delete(target_guid);
     let spawn = ctx.db.game_creature_spawn().insert(spawn);
@@ -2095,6 +2099,8 @@ pub fn playerbots_fixture_runner_second_attacker(
         movement_type: 0,
         respawn_secs: 60,
         life_seq: 1,
+        instance_id: 0,
+        source_guid: 0,
     };
     ctx.db.game_creature_spawn().guid().delete(second_guid);
     let spawn = ctx.db.game_creature_spawn().insert(spawn);

@@ -2223,6 +2223,8 @@ fn stage_level_gap_sources(
             movement_type: 0,
             respawn_secs: 60,
             life_seq: 1,
+            instance_id: 0,
+            source_guid: 0,
         };
         let mut entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         if offset < LEVEL_GAP_LONG_SOURCE_COUNT {
