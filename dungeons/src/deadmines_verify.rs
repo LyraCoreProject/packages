@@ -10,9 +10,7 @@ use super::deadmines::{
     MR_SMITE, RHAHKZOR, SMITES_CHEST, SMITES_MIGHTY_HAMMER, SMITES_REAVER, SMITE_FIRST_STAND_PCT,
     SMITE_SECOND_STAND_PCT, SNEED, SNEEDS_SHREDDER,
 };
-use crate::package::encounter::{
-    self, DOOR_OPEN_STATE, ENCOUNTER_DONE, ENCOUNTER_FAILED, ENCOUNTER_IN_PROGRESS,
-};
+use crate::package::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
 use crate::tables::{
     game_chat_event, game_creature_spline, game_creature_template, game_encounter_equip,
     game_gameobject, game_gameobject_template, game_instance, game_item_template,
@@ -22,7 +20,6 @@ use crate::tables::{
 const FIXTURE_LOW_BAND: u64 = 0x10_0000;
 const DEADMINES_INSTANCE: u64 = 936;
 const GO_FIXTURE_BAND: u64 = 0xF11D << 48;
-const DOOR_RELOAD_COPY_BAND: u64 = GO_FIXTURE_BAND | (1 << 40);
 
 /// Requires a Shard without imported content; positions follow classic-db z2815.
 #[reducer]
@@ -184,81 +181,6 @@ pub fn debug_deadmines_smite_falls(ctx: &ReducerContext) -> Result<(), String> {
         ENCOUNTER_SMITE,
         "Mr. Smite encounter state is not Done",
     )
-}
-
-/// Requires all three boss encounters Done in fixture instance 936.
-#[reducer]
-pub fn debug_deadmines_prepare_door_reload(ctx: &ReducerContext) -> Result<(), String> {
-    crate::package::fixture::require_no_imported_content(ctx)?;
-    install_instance(ctx, MAP_ID, DEADMINES_INSTANCE + 1)?;
-    install_instance(ctx, 1, DEADMINES_INSTANCE + 2)?;
-    for (entry, encounter_id) in [
-        (FACTORY_DOOR, ENCOUNTER_RHAHKZOR),
-        (MAST_ROOM_DOOR, ENCOUNTER_SNEED),
-        (FOUNDRY_DOOR, ENCOUNTER_GILNID),
-    ] {
-        require_done(
-            ctx,
-            encounter_id,
-            "boss completion is missing before reload",
-        )?;
-        encounter::set_encounter_state(ctx, DEADMINES_INSTANCE + 1, encounter_id, ENCOUNTER_DONE)?;
-        if entry == FACTORY_DOOR {
-            encounter::encounter_reset(ctx, DEADMINES_INSTANCE + 1, encounter_id);
-        } else {
-            encounter::set_encounter_state(
-                ctx,
-                DEADMINES_INSTANCE + 1,
-                encounter_id,
-                if entry == MAST_ROOM_DOOR {
-                    ENCOUNTER_IN_PROGRESS
-                } else {
-                    ENCOUNTER_FAILED
-                },
-            )?;
-        }
-        encounter::set_encounter_state(ctx, DEADMINES_INSTANCE + 2, encounter_id, ENCOUNTER_DONE)?;
-        let doors = ctx.db.game_gameobject();
-        for (map_id, instance_id) in [
-            (MAP_ID, DEADMINES_INSTANCE + 1),
-            (1, DEADMINES_INSTANCE + 2),
-            (MAP_ID, 0),
-        ] {
-            let mut door = doors
-                .guid()
-                .find(GO_FIXTURE_BAND | u64::from(entry))
-                .ok_or_else(|| format!("fixture door {entry} is missing"))?;
-            door.guid = DOOR_RELOAD_COPY_BAND | (instance_id << 24) | u64::from(entry);
-            door.map_id = map_id;
-            door.instance_id = instance_id;
-            door.state = 0;
-            doors.guid().delete(door.guid);
-            doors.insert(door);
-        }
-        doors.guid().delete(GO_FIXTURE_BAND | u64::from(entry));
-    }
-    Ok(())
-}
-
-/// Requires debug_deadmines_prepare_door_reload; repeatable after a node restart.
-#[reducer]
-pub fn debug_deadmines_recreate_boss_doors(ctx: &ReducerContext) -> Result<(), String> {
-    crate::package::fixture::require_no_imported_content(ctx)?;
-    let doors = ctx.db.game_gameobject();
-    for entry in [FACTORY_DOOR, MAST_ROOM_DOOR, FOUNDRY_DOOR] {
-        let source_guid =
-            DOOR_RELOAD_COPY_BAND | ((DEADMINES_INSTANCE + 1) << 24) | u64::from(entry);
-        let mut door = doors
-            .guid()
-            .find(source_guid)
-            .ok_or_else(|| format!("fixture source door {entry} is missing"))?;
-        door.guid = GO_FIXTURE_BAND | u64::from(entry);
-        door.instance_id = DEADMINES_INSTANCE;
-        door.state = 0;
-        doors.guid().delete(door.guid);
-        doors.insert(door);
-    }
-    Ok(())
 }
 
 fn seed_gameobject(

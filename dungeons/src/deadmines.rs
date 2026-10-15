@@ -1,9 +1,9 @@
-//! Read dungeons/README.md#deadmines before changing encounter behavior or recovery.
+//! Read dungeons/README.md#deadmines before changing encounter behavior.
 
 use spacetimedb::ReducerContext;
 
-use crate::package::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
-use crate::tables::{game_gameobject, game_instance, game_world_entity};
+use crate::package::encounter::{self, ENCOUNTER_DONE};
+use crate::tables::{game_gameobject, game_world_entity};
 
 pub(crate) const MAP_ID: u32 = 36;
 
@@ -92,29 +92,6 @@ crate::game_hook!(on_creature_death, fn deadmines_boss_died(ctx, payload) {
         }
         MR_SMITE => mark_done(ctx, instance_id, ENCOUNTER_SMITE),
         _ => {}
-    }
-});
-
-crate::game_tick_pass!(fn deadmines_restore_completed_boss_doors(ctx) {
-    // Core has no gameobject-created hook; recovery runs on the creature tick.
-    for door in ctx.db.game_gameobject().by_map().filter(&MAP_ID) {
-        if door.instance_id == 0 || door.state == DOOR_OPEN_STATE {
-            continue;
-        }
-        let encounter_id = match door.template_entry {
-            FACTORY_DOOR => ENCOUNTER_RHAHKZOR,
-            MAST_ROOM_DOOR => ENCOUNTER_SNEED,
-            FOUNDRY_DOOR => ENCOUNTER_GILNID,
-            _ => continue,
-        };
-        if ctx.db.game_instance().instance_id().find(door.instance_id)
-            .is_none_or(|instance| instance.map_id != MAP_ID)
-        {
-            continue;
-        }
-        if encounter::get_encounter_state(ctx, door.instance_id, encounter_id) == ENCOUNTER_DONE {
-            open_door_logged(ctx, door.template_entry, door.instance_id);
-        }
     }
 });
 
