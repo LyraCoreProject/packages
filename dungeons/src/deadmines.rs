@@ -1,21 +1,4 @@
-//! Deadmines (map 36) choreography — the encounter kernel's first consumer.
-//!
-//! Unlike the retired EventAI-routed dungeons, the vanilla data carries NO
-//! `ACTION_T_SET_INSTANCE_DATA` rows for any Deadmines creature (dump-verified against classic-db
-//! z2815: their ACID rows are combat spells and yells only, which import generically — VanCleef's
-//! yells and his 50%-HP allies summon need nothing from this Package). The door, cannon, and
-//! Mr. Smite behavior lived in a C++ instance script upstream, so this Package rebuilds it on the
-//! kernel's notify hooks and primitives:
-//!
-//! - `on_creature_death` — Rhahk'Zor, Sneed, and Gilnid each open their door; Sneed's Shredder
-//!   ejects Sneed on destruction.
-//! - `on_go_used` — firing the Defias Cannon breaches the Iron Clad Door.
-//! - `on_hp_threshold` + `equip_swap` + `move_to_point` — Mr. Smite's stair scene: at 66% he
-//!   runs to his chest and comes back dual-wielding, at 33% he switches to his two-hand hammer.
-//!   His yells are this Package's own content; the source data has no text rows for them.
-//!
-//! Omitted from the scene: Smite's stomp stun (no vanilla data row backs it; revisit if a
-//! curated spell mapping lands).
+//! Read dungeons/README.md#deadmines before changing encounter behavior.
 
 use spacetimedb::ReducerContext;
 
@@ -187,7 +170,9 @@ fn eject_sneed(ctx: &ReducerContext, shredder_guid: u64, instance_id: u64) {
 
 fn open_door_logged(ctx: &ReducerContext, go_entry: u32, instance_id: u64) {
     if let Err(error) = encounter::open_door(ctx, go_entry, instance_id) {
-        spacetimedb::log::warn!("deadmines: door {go_entry} did not open: {error}");
+        spacetimedb::log::warn!(
+            "deadmines: door {go_entry} in instance {instance_id} did not open: {error}"
+        );
     }
 }
 

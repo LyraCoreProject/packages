@@ -1,0 +1,11 @@
+[package]
+name = "lyracore-dungeons-tests"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.93.0"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+lyracore-test-support = "0.1.0"
