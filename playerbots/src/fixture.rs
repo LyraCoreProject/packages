@@ -1367,6 +1367,7 @@ pub fn playerbots_fixture_roles_record_only_attack(
         pursuit_ends_ms: 0,
         leash_x: 0.0,
         leash_y: 0.0,
+        swing_error: 0,
     });
     runner_due_for(ctx, guid)?;
     super::runner::pass(ctx);
