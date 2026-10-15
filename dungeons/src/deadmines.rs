@@ -1,26 +1,9 @@
-//! Deadmines (map 36) choreography — the encounter kernel's first consumer.
-//!
-//! Unlike the retired EventAI-routed dungeons, the vanilla data carries NO
-//! `ACTION_T_SET_INSTANCE_DATA` rows for any Deadmines creature (dump-verified against classic-db
-//! z2815: their ACID rows are combat spells and yells only, which import generically — VanCleef's
-//! yells and his 50%-HP allies summon need nothing from this Package). The door, cannon, and
-//! Mr. Smite behavior lived in a C++ instance script upstream, so this Package rebuilds it on the
-//! kernel's notify hooks and primitives:
-//!
-//! - `on_creature_death` — Rhahk'Zor, Sneed, and Gilnid each open their door; Sneed's Shredder
-//!   ejects Sneed on destruction.
-//! - `on_go_used` — firing the Defias Cannon breaches the Iron Clad Door.
-//! - `on_hp_threshold` + `equip_swap` + `move_to_point` — Mr. Smite's stair scene: at 66% he
-//!   runs to his chest and comes back dual-wielding, at 33% he switches to his two-hand hammer.
-//!   His yells are this Package's own content; the source data has no text rows for them.
-//!
-//! Omitted from the scene: Smite's stomp stun (no vanilla data row backs it; revisit if a
-//! curated spell mapping lands).
+//! Read dungeons/README.md#deadmines before changing encounter behavior or recovery.
 
 use spacetimedb::ReducerContext;
 
-use crate::package::encounter::{self, ENCOUNTER_DONE};
-use crate::tables::{game_gameobject, game_world_entity};
+use crate::package::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
+use crate::tables::{game_gameobject, game_instance, game_world_entity};
 
 pub(crate) const MAP_ID: u32 = 36;
 
@@ -112,6 +95,29 @@ crate::game_hook!(on_creature_death, fn deadmines_boss_died(ctx, payload) {
     }
 });
 
+crate::game_tick_pass!(fn deadmines_restore_completed_boss_doors(ctx) {
+    // Core has no gameobject-created hook; recovery runs on the creature tick.
+    for door in ctx.db.game_gameobject().by_map().filter(&MAP_ID) {
+        if door.instance_id == 0 || door.state == DOOR_OPEN_STATE {
+            continue;
+        }
+        let encounter_id = match door.template_entry {
+            FACTORY_DOOR => ENCOUNTER_RHAHKZOR,
+            MAST_ROOM_DOOR => ENCOUNTER_SNEED,
+            FOUNDRY_DOOR => ENCOUNTER_GILNID,
+            _ => continue,
+        };
+        if ctx.db.game_instance().instance_id().find(door.instance_id)
+            .is_none_or(|instance| instance.map_id != MAP_ID)
+        {
+            continue;
+        }
+        if encounter::get_encounter_state(ctx, door.instance_id, encounter_id) == ENCOUNTER_DONE {
+            open_door_logged(ctx, door.template_entry, door.instance_id);
+        }
+    }
+});
+
 crate::game_hook!(on_go_used, fn defias_cannon_fired(ctx, payload) {
     if payload.go_entry != DEFIAS_CANNON || payload.instance_id == 0 {
         return;
@@ -187,7 +193,9 @@ fn eject_sneed(ctx: &ReducerContext, shredder_guid: u64, instance_id: u64) {
 
 fn open_door_logged(ctx: &ReducerContext, go_entry: u32, instance_id: u64) {
     if let Err(error) = encounter::open_door(ctx, go_entry, instance_id) {
-        spacetimedb::log::warn!("deadmines: door {go_entry} did not open: {error}");
+        spacetimedb::log::warn!(
+            "deadmines: door {go_entry} in instance {instance_id} did not open: {error}"
+        );
     }
 }
 

@@ -1,10 +1,6 @@
 #![cfg(feature = "debug_reducers")]
 
-//! Deadmines verification harness (`debug_reducers` only): stage reducers the durable test
-//! (`module/tests/deadmines_package.rs`) calls in order over the standalone CLI. Every reducer is
-//! argument-free — fixture guids exceed the CLI's safe integer range, so each stage resolves its
-//! own subjects server-side, drives the REAL production path (kill, damage, gameobject use), and
-//! verifies the durable outcome in the same call.
+//! Read dungeons/README.md#verification before running these fixture reducers.
 
 use spacetimedb::{reducer, ReducerContext, Table};
 
@@ -14,7 +10,9 @@ use super::deadmines::{
     MR_SMITE, RHAHKZOR, SMITES_CHEST, SMITES_MIGHTY_HAMMER, SMITES_REAVER, SMITE_FIRST_STAND_PCT,
     SMITE_SECOND_STAND_PCT, SNEED, SNEEDS_SHREDDER,
 };
-use crate::package::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
+use crate::package::encounter::{
+    self, DOOR_OPEN_STATE, ENCOUNTER_DONE, ENCOUNTER_FAILED, ENCOUNTER_IN_PROGRESS,
+};
 use crate::tables::{
     game_chat_event, game_creature_spline, game_creature_template, game_encounter_equip,
     game_gameobject, game_gameobject_template, game_instance, game_item_template,
@@ -24,11 +22,12 @@ use crate::tables::{
 const FIXTURE_LOW_BAND: u64 = 0x10_0000;
 const DEADMINES_INSTANCE: u64 = 936;
 const GO_FIXTURE_BAND: u64 = 0xF11D << 48;
+const DOOR_RELOAD_COPY_BAND: u64 = GO_FIXTURE_BAND | (1 << 40);
 
-/// Seed a Deadmines fixture instance: doors, cannon, chest, Smite's weapons, the bosses, and one
-/// player. Positions come from the classic-db z2815 spawn rows.
+/// Requires a Shard without imported content; positions follow classic-db z2815.
 #[reducer]
 pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
+    crate::package::fixture::require_no_imported_content(ctx)?;
     install_instance(ctx, MAP_ID, DEADMINES_INSTANCE)?;
     for (entry, type_id, display_id, x, y, z, orientation) in [
         (
@@ -54,7 +53,7 @@ pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
         ),
         (SMITES_CHEST, 5, 259, 2.69086, -781.633, 9.76985, 2.33874),
     ] {
-        seed_gameobject(ctx, entry, type_id, display_id, x, y, z, orientation)?;
+        seed_gameobject(ctx, entry, type_id, display_id, [x, y, z, orientation])?;
     }
     seed_smite_weapon(ctx, SMITES_REAVER, "Smite's Reaver", 13913)?;
     seed_smite_weapon(ctx, SMITES_MIGHTY_HAMMER, "Smite's Mighty Hammer", 19610)?;
@@ -71,8 +70,7 @@ pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
     let player = spawn_fixture_player(ctx, MAP_ID, DEADMINES_INSTANCE, 44)?;
     set_fixture_position(ctx, player, -5.0, -760.0, 9.8)?;
 
-    // The real fixture registers these through the Package's `on_creature_spawn` hook when Smite
-    // spawns via the production path; `spawn_source` writes the row directly, so arm them here.
+    // Direct fixture inserts do not fire on_creature_spawn.
     encounter::watch_hp_threshold(ctx, MR_SMITE, SMITE_FIRST_STAND_PCT)?;
     encounter::watch_hp_threshold(ctx, MR_SMITE, SMITE_SECOND_STAND_PCT)?;
     Ok(())
@@ -146,12 +144,11 @@ pub fn debug_deadmines_gilnid_falls(ctx: &ReducerContext) -> Result<(), String> 
     require_done(ctx, ENCOUNTER_GILNID, "Gilnid encounter state is not Done")
 }
 
-/// Damage Smite through his 66% threshold: yell, chest run, dual Reavers.
 #[reducer]
 pub fn debug_deadmines_smite_improvises(ctx: &ReducerContext) -> Result<(), String> {
     damage_smite_to_pct(ctx, 60)?;
     require_yell_containing(ctx, "improvise")?;
-    require_smite_at_chest(ctx)?;
+    require_smite_chest_run(ctx)?;
     require_smite_equip(ctx, SMITES_REAVER, SMITES_REAVER, "66%")
 }
 
@@ -189,20 +186,89 @@ pub fn debug_deadmines_smite_falls(ctx: &ReducerContext) -> Result<(), String> {
     )
 }
 
-// -------------------------------------------------------------------------------------------
-//  Fixture plumbing
-// -------------------------------------------------------------------------------------------
+/// Requires all three boss encounters Done in fixture instance 936.
+#[reducer]
+pub fn debug_deadmines_prepare_door_reload(ctx: &ReducerContext) -> Result<(), String> {
+    crate::package::fixture::require_no_imported_content(ctx)?;
+    install_instance(ctx, MAP_ID, DEADMINES_INSTANCE + 1)?;
+    install_instance(ctx, 1, DEADMINES_INSTANCE + 2)?;
+    for (entry, encounter_id) in [
+        (FACTORY_DOOR, ENCOUNTER_RHAHKZOR),
+        (MAST_ROOM_DOOR, ENCOUNTER_SNEED),
+        (FOUNDRY_DOOR, ENCOUNTER_GILNID),
+    ] {
+        require_done(
+            ctx,
+            encounter_id,
+            "boss completion is missing before reload",
+        )?;
+        encounter::set_encounter_state(ctx, DEADMINES_INSTANCE + 1, encounter_id, ENCOUNTER_DONE)?;
+        if entry == FACTORY_DOOR {
+            encounter::encounter_reset(ctx, DEADMINES_INSTANCE + 1, encounter_id);
+        } else {
+            encounter::set_encounter_state(
+                ctx,
+                DEADMINES_INSTANCE + 1,
+                encounter_id,
+                if entry == MAST_ROOM_DOOR {
+                    ENCOUNTER_IN_PROGRESS
+                } else {
+                    ENCOUNTER_FAILED
+                },
+            )?;
+        }
+        encounter::set_encounter_state(ctx, DEADMINES_INSTANCE + 2, encounter_id, ENCOUNTER_DONE)?;
+        let doors = ctx.db.game_gameobject();
+        for (map_id, instance_id) in [
+            (MAP_ID, DEADMINES_INSTANCE + 1),
+            (1, DEADMINES_INSTANCE + 2),
+            (MAP_ID, 0),
+        ] {
+            let mut door = doors
+                .guid()
+                .find(GO_FIXTURE_BAND | u64::from(entry))
+                .ok_or_else(|| format!("fixture door {entry} is missing"))?;
+            door.guid = DOOR_RELOAD_COPY_BAND | (instance_id << 24) | u64::from(entry);
+            door.map_id = map_id;
+            door.instance_id = instance_id;
+            door.state = 0;
+            doors.guid().delete(door.guid);
+            doors.insert(door);
+        }
+        doors.guid().delete(GO_FIXTURE_BAND | u64::from(entry));
+    }
+    Ok(())
+}
+
+/// Requires debug_deadmines_prepare_door_reload; repeatable after a node restart.
+#[reducer]
+pub fn debug_deadmines_recreate_boss_doors(ctx: &ReducerContext) -> Result<(), String> {
+    crate::package::fixture::require_no_imported_content(ctx)?;
+    let doors = ctx.db.game_gameobject();
+    for entry in [FACTORY_DOOR, MAST_ROOM_DOOR, FOUNDRY_DOOR] {
+        let source_guid =
+            DOOR_RELOAD_COPY_BAND | ((DEADMINES_INSTANCE + 1) << 24) | u64::from(entry);
+        let mut door = doors
+            .guid()
+            .find(source_guid)
+            .ok_or_else(|| format!("fixture source door {entry} is missing"))?;
+        door.guid = GO_FIXTURE_BAND | u64::from(entry);
+        door.instance_id = DEADMINES_INSTANCE;
+        door.state = 0;
+        doors.guid().delete(door.guid);
+        doors.insert(door);
+    }
+    Ok(())
+}
 
 fn seed_gameobject(
     ctx: &ReducerContext,
     entry: u32,
     type_id: u8,
     display_id: u32,
-    x: f32,
-    y: f32,
-    z: f32,
-    orientation: f32,
+    position: [f32; 4],
 ) -> Result<(), String> {
+    let [x, y, z, orientation] = position;
     let templates = ctx.db.game_gameobject_template();
     if templates.entry().find(entry).is_none() {
         templates.insert(crate::tables::GameObjectTemplate {
@@ -342,31 +408,29 @@ fn require_yell_containing(ctx: &ReducerContext, fragment: &str) -> Result<(), S
     )
 }
 
-fn require_smite_at_chest(ctx: &ReducerContext) -> Result<(), String> {
+fn require_smite_chest_run(ctx: &ReducerContext) -> Result<(), String> {
     let smite_guid = fixture_guid(MR_SMITE, 43);
-    let smite = ctx
+    let leg = ctx
         .db
-        .game_world_entity()
+        .game_creature_spline()
         .guid()
         .find(smite_guid)
-        .ok_or_else(|| "Mr. Smite disappeared".to_string())?;
+        .ok_or_else(|| "Smite's chest run emitted no movement spline".to_string())?;
     let chest = ctx
         .db
         .game_gameobject()
         .guid()
         .find(GO_FIXTURE_BAND | u64::from(SMITES_CHEST))
         .ok_or_else(|| "Smite's Chest disappeared".to_string())?;
+    // Movement updates the stored position on later ticks.
     require(
-        (smite.x - chest.x).abs() < 0.5 && (smite.y - chest.y).abs() < 0.5,
-        "Smite did not run to his chest",
-    )?;
-    require(
-        ctx.db
-            .game_creature_spline()
-            .guid()
-            .find(smite_guid)
-            .is_some(),
-        "Smite's chest run emitted no movement spline",
+        leg.map_id == chest.map_id
+            && leg.instance_id == chest.instance_id
+            && leg.run
+            && (leg.dx - chest.x).abs() < 0.5
+            && (leg.dy - chest.y).abs() < 0.5
+            && (leg.dz - chest.z).abs() < 0.5,
+        "Smite's run does not lead to his chest",
     )
 }
 
