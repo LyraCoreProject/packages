@@ -5,9 +5,9 @@ The Package adds matchmaking, round progression, shops and an ordinary 1.12 addo
 companion Core changes and the Playerbots Package from the same source revision. Stock Benilla
 needs no binary changes.
 
-This is a local prototype. Hosting is deferred. Automated round tests advance deadlines and resolve
-creature deaths; they do not establish combat balance or a 30-minute completion time. An attended
-five-person run remains necessary before inviting public testers.
+The prototype is deployed on Argus at `159.69.88.70`. Automated round tests advance deadlines and
+resolve creature deaths; they do not establish combat balance or a 30-minute completion time.
+An attended five-person run remains necessary to assess the play experience.
 
 ## Play
 
@@ -103,8 +103,12 @@ The collection check passes all 1,730 Core library tests and 37 Package API chec
 tests also pass for the full round, queue eligibility, progression, combat, pets, forms and reconnect.
 Formatting and comment review are complete.
 
-The local Gateway build and addon routing tests pass. The full Gateway suite is not green on this
-macOS machine: a completed run had 1,998 passes, 169 failures and 42 ignored tests, with one hanging
-login-cancellation test excluded after stopping the first run. Most failures report
-`Socket is not connected (os error 57)`. The Linux-only schema parity test has not run here.
-These results do not establish readiness for public hosting.
+The complete Linux deployment gate passes on Argus, including all Gateway targets and 146 schema
+parity checks. The earlier macOS run had socket errors and a hanging login-cancellation test;
+those failures did not recur on Linux.
+
+The deployed realm passes authenticated login, level-one lobby entry, the normal sixty-second
+bot-fill queue, a five-member Party, the initial draft choice and lobby return through a Headless
+Client. Public login also passes after cutover. Install the addon separately on stock Benilla and
+use the existing Discord signup bot to create a fresh account. The previous realm's accounts and
+Characters remain in its retained databases.
