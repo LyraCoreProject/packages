@@ -1985,7 +1985,7 @@ fn stage_journey_for(
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     let entity = ctx
         .db
         .game_world_entity()

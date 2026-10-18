@@ -491,11 +491,10 @@ fn wound_without_moving(ctx: &ReducerContext, guid: u64) -> Result<(), String> {
         entity.grid_y,
         entity.cell,
     );
-    // Both allies must still need healing after the Priest repairs line of sight.
-    // Ordinary regeneration remains active during that approach.
+    // Regeneration must leave both allies wounded until the Priest repairs line of sight.
     let health = (entity.max_health.saturating_mul(10) / 100).max(1);
     entity.health = health;
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     let wounded = crate::actor::live_entity(ctx, guid)?;
     if wounded.health != health
         || (
@@ -808,7 +807,7 @@ pub fn playerbots_companion_acceptance_accept_retained_quest(
     giver_body.grid_x = grid_x;
     giver_body.grid_y = grid_y;
     giver_body.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(giver_body);
+    giver_body.update(ctx);
     super::actions::accept_quest(ctx, plan.warrior_guid, giver, RETAINED_QUEST).map_err(
         |refusal| format!("companion acceptance retained Quest was refused: {refusal:?}"),
     )?;
@@ -867,7 +866,7 @@ fn stage_repair_wall(ctx: &ReducerContext, priest_guid: u64, mage_guid: u64) -> 
     mage.grid_x = grid_x;
     mage.grid_y = grid_y;
     mage.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(mage);
+    mage.update(ctx);
     let wall_x = priest.x + 50.0;
     let cell_x = lyracore_shared::terrain::cell_index(wall_x).ok_or("repair wall off grid")?;
     let cell_y = lyracore_shared::terrain::cell_index(priest.y).ok_or("repair wall off grid")?;

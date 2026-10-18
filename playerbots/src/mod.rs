@@ -35,10 +35,14 @@ mod recovery;
 mod runner;
 mod target_claims;
 mod transfer;
+mod wave_defense;
+#[cfg(feature = "debug_reducers")]
+mod wave_defense_fixture;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;
 pub(crate) use quest_catalog::*;
 pub(crate) use runner::*;
+pub(crate) use wave_defense::*;
 #[cfg(feature = "debug_reducers")]
 mod acceptance_fixture;
 #[cfg(feature = "debug_reducers")]
@@ -100,8 +104,8 @@ pub(crate) use orders::*;
 #[cfg(feature = "debug_reducers")]
 pub(crate) use quest_catalog_fixture::*;
 
+use crate::tables::game_character;
 use crate::tables::game_package_config;
-use crate::tables::{game_character, game_world_entity};
 
 /// The Package Config namespace and the Package name the Trust Review prints.
 pub(crate) const PACKAGE: &str = "playerbots";
@@ -784,7 +788,7 @@ fn spawn_one(
     let character = chars.guid().update(character);
     let account_id = character.account_id;
     let entity = crate::package::character::build_player_entity(ctx, &character, Identity::ZERO);
-    ctx.db.game_world_entity().insert(entity);
+    entity.insert(ctx);
 
     let (flee_at_pct, heal_at_pct) = role_personality_defaults(role);
     ctx.db

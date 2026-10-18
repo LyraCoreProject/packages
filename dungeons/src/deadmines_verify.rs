@@ -432,7 +432,7 @@ fn spawn_source(
     source.instance_id = instance_id;
     source.dead = dead;
     source.health = if dead { 0 } else { source.max_health.max(1) };
-    entities.insert(source);
+    source.insert(ctx);
     Ok(guid)
 }
 
@@ -460,7 +460,7 @@ fn spawn_fixture_player(
     player.health = 1_000_000;
     player.max_health = 1_000_000;
     player.faction_template = 1;
-    entities.insert(player);
+    player.insert(ctx);
     Ok(guid)
 }
 
@@ -483,7 +483,7 @@ fn set_fixture_position(
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 

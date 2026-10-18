@@ -89,7 +89,7 @@ pub fn playerbots_fixture_class_stage(
     me.health = me.max_health;
     me.max_power = 1000;
     me.power = 400;
-    ctx.db.game_world_entity().guid().update(me);
+    me.update(ctx);
     let bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -145,7 +145,7 @@ pub fn playerbots_fixture_class_stage(
     target.level = 1;
     target.health = 10_000;
     target.max_health = 10_000;
-    ctx.db.game_world_entity().guid().update(target);
+    target.update(ctx);
     playerbots_fixture_runner_select_cohort(ctx, guid)?;
     // Keep equipment and supply work out of the explicitly staged decision window.
     use super::pkg_playerbots_provisioning;
@@ -183,7 +183,7 @@ pub fn playerbots_fixture_class_hold_queue(ctx: &ReducerContext, guid: u64) -> R
     me.next_swing_spell = 78;
     me.power = 200;
     me.base_attack_time_ms = 60_000;
-    ctx.db.game_world_entity().guid().update(me);
+    me.update(ctx);
     let mut attack = ctx
         .db
         .game_melee_attack()
@@ -531,7 +531,7 @@ pub fn playerbots_fixture_orders_target_state(
         }
         _ => return Err("unknown order fixture target mode".to_string()),
     }
-    entities.guid().update(target);
+    target.update(ctx);
     Ok(())
 }
 
@@ -560,7 +560,7 @@ pub fn playerbots_fixture_orders_restore_target(
         .ok_or("order fixture target restore failed")?;
     target.max_health = 1_000;
     target.health = 1_000;
-    entities.guid().update(target);
+    target.update(ctx);
     Ok(())
 }
 
@@ -583,7 +583,7 @@ pub fn playerbots_fixture_orders_partition(
         .ok_or("order fixture Character body missing")?;
     entity.map_id = map_id;
     entity.instance_id = instance_id;
-    entities.guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 
@@ -664,7 +664,7 @@ pub fn playerbots_fixture_prepare(ctx: &ReducerContext) -> Result<(), String> {
         entity.grid_x = gx;
         entity.grid_y = gy;
         entity.cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
-        ctx.db.game_world_entity().guid().update(entity);
+        entity.update(ctx);
         ctx.db.pkg_playerbots_bot().id().update(bot);
     }
     let mut spell = ctx
@@ -766,7 +766,7 @@ pub fn playerbots_fixture_position(ctx: &ReducerContext, guid: u64, x: f32) -> R
     entity.cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
     // A pending spline must not restore the position this fixture replaces.
     ctx.db.game_creature_spline().guid().delete(guid);
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 
@@ -786,7 +786,7 @@ fn companion_unit(
     entity.grid_x = gx;
     entity.grid_y = gy;
     entity.cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 
@@ -1071,7 +1071,7 @@ pub fn playerbots_fixture_roles_stage(
         let mut entity = crate::actor::live_entity(ctx, guid)?;
         entity.max_health = 1_000;
         entity.health = 1_000;
-        ctx.db.game_world_entity().guid().update(entity);
+        entity.update(ctx);
     }
     let members = vec![leader_guid, warrior_guid, priest_guid, mage_guid];
     let partitions = fixture_group_partitions(ctx, ROLES_GROUP, &members)?;
@@ -1110,7 +1110,7 @@ pub fn playerbots_fixture_roles_select(
     crate::package::require_operator(ctx)?;
     let mut leader = crate::actor::live_entity(ctx, leader_guid)?;
     leader.target_guid = target_guid;
-    ctx.db.game_world_entity().guid().update(leader);
+    leader.update(ctx);
     Ok(())
 }
 
@@ -1584,7 +1584,7 @@ fn set_fixture_priest_power(
     let mut priest = crate::actor::live_entity(ctx, priest_guid)?;
     priest.max_power = 100;
     priest.power = power;
-    ctx.db.game_world_entity().guid().update(priest);
+    priest.update(ctx);
     Ok(())
 }
 
@@ -1874,7 +1874,7 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
     crate::package::require_operator(ctx)?;
     let mut me = crate::actor::live_entity(ctx, guid)?;
     me.health = me.max_health;
-    ctx.db.game_world_entity().guid().update(me);
+    me.update(ctx);
     let me = crate::actor::live_entity(ctx, guid)?;
     let entry = 5_090_101;
     let target_guid = (0xF130u64 << 48) | ((entry as u64) << 24) | 1;
@@ -2086,7 +2086,7 @@ pub fn playerbots_fixture_runner_second_attacker(
     let mut first = crate::actor::live_entity(ctx, first_guid)?;
     first.health = 1_000;
     first.max_health = 1_000;
-    ctx.db.game_world_entity().guid().update(first);
+    first.update(ctx);
     let spawn = crate::tables::CreatureSpawn {
         guid: second_guid,
         entry,
@@ -2109,7 +2109,7 @@ pub fn playerbots_fixture_runner_second_attacker(
     let mut second = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
     second.health = 1_000;
     second.max_health = 1_000;
-    ctx.db.game_world_entity().insert(second);
+    second.insert(ctx);
     Ok(())
 }
 
@@ -2389,7 +2389,7 @@ pub fn playerbots_fixture_runner_stage(
     } else {
         me.max_health
     };
-    ctx.db.game_world_entity().guid().update(me);
+    me.update(ctx);
     let mut personality = ctx
         .db
         .pkg_playerbots_personality()
@@ -2989,7 +2989,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_wait(
     me.grid_x = grid_x;
     me.grid_y = grid_y;
     me.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(me);
+    me.update(ctx);
     let mut bot = ctx
         .db
         .pkg_playerbots_bot()
@@ -3091,7 +3091,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
     let target_y = target.y;
     let target_z = target.z;
     let target_health = target.health;
-    ctx.db.game_world_entity().guid().update(target);
+    target.update(ctx);
     let other_targets: Vec<_> = ctx
         .db
         .game_world_entity()
@@ -3120,7 +3120,7 @@ pub fn playerbots_fixture_runner_stage_completed_quest_fight(
     me.grid_x = grid_x;
     me.grid_y = grid_y;
     me.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(me);
+    me.update(ctx);
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     objective.stage = ObjectiveStage::Completed;
     objective.last_verified_progress_micros = Some(now);
@@ -4553,7 +4553,7 @@ pub fn playerbots_fixture_provision_dead(ctx: &ReducerContext, guid: u64) -> Res
     let mut entity = crate::actor::live_entity(ctx, guid)?;
     entity.dead = true;
     entity.health = 0;
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     let mut state = provision_state(ctx, guid)?;
     state.next_repair_micros = 0;
     state.history.clear();
@@ -4571,6 +4571,6 @@ pub fn playerbots_fixture_provision_levelup(ctx: &ReducerContext, guid: u64) -> 
     crate::package::character::set_character_level(ctx, guid, 9)?;
     let mut entity = crate::actor::live_entity(ctx, guid)?;
     crate::package::fixture::grant_xp(ctx, &mut entity, 1_000_000);
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     runner_park_for(ctx, guid)
 }

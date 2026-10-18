@@ -15,7 +15,7 @@ fn place_entity(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(entity);
+    entity.update(ctx);
     if let Some(mut spawn) = ctx.db.game_creature_spawn().guid().find(guid) {
         spawn.x = x;
         ctx.db.game_creature_spawn().guid().update(spawn);

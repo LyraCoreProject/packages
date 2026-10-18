@@ -6,6 +6,7 @@ use super::decision::{
     Reason, Strategy, Trigger,
 };
 use super::orders::pkg_playerbots_companion_order;
+use super::wave_defense::pkg_playerbots_wave_defense;
 use super::{
     pkg_playerbots_bot, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot,
     PlayerbotsRotation,
@@ -1075,6 +1076,34 @@ fn objective(
     state: &mut PlayerbotsRunner,
     now: i64,
 ) -> bool {
+    if let Some(defense) = ctx
+        .db
+        .pkg_playerbots_wave_defense()
+        .character_guid()
+        .find(me.guid)
+    {
+        if state
+            .objective
+            .as_ref()
+            .is_none_or(|objective| objective.destination != defense.destination)
+        {
+            state.objective_sequence = state.objective_sequence.saturating_add(1);
+            state.objective = Some(Objective {
+                identity: state.objective_sequence,
+                kind: ObjectiveKind::Companion,
+                destination: defense.destination,
+                stage: ObjectiveStage::Travelling,
+                deadline_micros: i64::MAX,
+                last_verified_progress_micros: None,
+                started_micros: now,
+                catalog_revision: CATALOG_REVISION,
+            });
+            state.companion_leader_guid = party.map(|party| party.leader_guid);
+            state.retry_count = 0;
+            state.last_stall_check_micros = now;
+        }
+        return false;
+    }
     state.deferred_destinations.retain(|d| d.until_micros > now);
     let returning_home = state.objective.as_ref().is_some_and(|objective| {
         objective.kind == ObjectiveKind::ReturnHome
@@ -1520,7 +1549,14 @@ fn run(
         }
     });
     super::transfer::begin_arrival(&mut state, &me, now);
-    let mut party = match if return_home {
+    let wave_defense = ctx
+        .db
+        .pkg_playerbots_wave_defense()
+        .character_guid()
+        .find(me.guid);
+    let mut party = match if wave_defense.is_some() {
+        super::companion::party(ctx, me.guid, false)
+    } else if return_home {
         Ok(None)
     } else if bot.controller == Controller::Legacy {
         super::companion::party(ctx, me.guid, false)
@@ -1557,7 +1593,36 @@ fn run(
             return;
         }
     };
-    let mut order = super::orders::active(ctx, me.guid);
+    if let (Some(defense), Some(party)) = (wave_defense.as_ref(), party.as_mut()) {
+        party.enemies.retain(|enemy| {
+            defense.target_guids.contains(&enemy.guid)
+                && defense.permits(enemy.map_id, enemy.instance_id, enemy.x, enemy.y, enemy.z)
+        });
+        for target in &defense.target_guids {
+            if ctx
+                .db
+                .game_world_entity()
+                .guid()
+                .find(*target)
+                .is_some_and(|target| {
+                    defense.permits(
+                        target.map_id,
+                        target.instance_id,
+                        target.x,
+                        target.y,
+                        target.z,
+                    )
+                })
+            {
+                let _ = admit_exact_target(ctx, me.guid, party, *target);
+            }
+        }
+    }
+    let mut order = if wave_defense.is_some() {
+        None
+    } else {
+        super::orders::active(ctx, me.guid)
+    };
     if order.as_ref().is_some_and(|order| {
         matches!(
             &order.order,
@@ -1878,7 +1943,8 @@ fn run(
     let partition_ok = (destination.map_id, destination.instance_id) == (me.map_id, me.instance_id);
     let stop_distance = if party.is_some() { 3.05 } else { 2.05 };
     let at_destination = partition_ok && distance(&me, &destination) <= stop_distance;
-    let grind_target = if party.is_none()
+    let grind_target = if wave_defense.is_none()
+        && party.is_none()
         && !quest_objective
         && !quest_read_limited
         && quest_wait.is_none_or(|until| until <= now)
@@ -1923,6 +1989,30 @@ fn run(
         .next();
     let flee_at = personality.as_ref().map_or(15, |p| p.flee_at_pct);
     let low_health = super::goals::should_flee(me.health, me.max_health, flee_at);
+    if let Some(defense) = &wave_defense {
+        state.defense_target = if bot.role == super::ROLE_HEALER {
+            None
+        } else {
+            defense.target_guids.iter().copied().find(|guid| {
+                ctx.db
+                    .game_world_entity()
+                    .guid()
+                    .find(*guid)
+                    .is_some_and(|target| {
+                        !target.dead
+                            && target.health > 0
+                            && defense.permits(
+                                target.map_id,
+                                target.instance_id,
+                                target.x,
+                                target.y,
+                                target.z,
+                            )
+                            && crate::actor::attack_target_gate(ctx, &me, target.guid).is_ok()
+                    })
+            })
+        };
+    }
     let threat = match state.defense_target {
         Some(guid) => match defense_target(ctx, &me, guid) {
             Ok(target) => target,
@@ -1954,7 +2044,11 @@ fn run(
         node.candidate.id.objective = objective_sequence;
         node
     };
-    let mut travel_action = node(Action::Move(MoveTarget::Home), Reason::ReturnHome, 100);
+    let mut travel_action = node(
+        Action::Move(MoveTarget::Home),
+        Reason::ReturnHome,
+        if wave_defense.is_some() { 101 } else { 100 },
+    );
     travel_action.readiness = if !partition_ok {
         Readiness::Refused
     } else if state.next_eligible_micros > now {
@@ -2083,7 +2177,15 @@ fn run(
     if me.dead {
         strategies.push(strategy(
             Trigger::Always,
-            node(Action::Resurrect, Reason::Resurrection, 1000),
+            node(
+                if wave_defense.is_some() {
+                    Action::Hold
+                } else {
+                    Action::Resurrect
+                },
+                Reason::Resurrection,
+                1000,
+            ),
         ));
     } else {
         strategies.push(strategy(Trigger::LowHealth, survival));
@@ -2124,15 +2226,21 @@ fn run(
                     locator_revision: 0,
                 })
             });
-        if let Some(partition) = transfer_partition {
+        if let Some(partition) = transfer_partition.filter(|_| wave_defense.is_none()) {
             strategies.push(strategy(
                 Trigger::Always,
                 super::transfer::candidate(ctx, &me, partition, state.objective_sequence),
             ));
         }
         if let Some(party) = party.as_ref() {
-            let follow_member_guid =
-                super::transfer::companion_member(order.as_ref(), Some(party.leader_guid));
+            let follow_member_guid = if wave_defense.is_some() {
+                None
+            } else {
+                super::transfer::companion_member(order.as_ref(), Some(party.leader_guid))
+            };
+            if wave_defense.is_some() {
+                strategies.push(strategy(Trigger::Away, travel_action.clone()));
+            }
             let selection = super::companion::strategy(
                 ctx,
                 bot,
@@ -2937,6 +3045,19 @@ fn execute(
                 }
                 return;
             };
+            if ctx
+                .db
+                .pkg_playerbots_wave_defense()
+                .character_guid()
+                .find(me.guid)
+                .is_some_and(|defense| {
+                    !defense.permits(dest.map_id, dest.instance_id, dest.x, dest.y, dest.z)
+                })
+            {
+                stop(ctx, me.guid, state);
+                state.last_outcome = RunnerOutcome::Waiting;
+                return;
+            }
             if candidate.id.reason == Reason::Survival {
                 let _ = crate::actor::stop_attack(ctx, me.guid);
             }
