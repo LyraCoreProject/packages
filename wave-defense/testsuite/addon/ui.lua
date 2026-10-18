@@ -1,4 +1,5 @@
 local frames, sent, now = {}, {}, 0
+local cinematic, stoppedCinematics = true, 0
 local methods = {}
 local function region(kind, name, parent)
     local result = { kind = kind, name = name, parent = parent, scripts = {}, shown = true, enabled = true, labels = {} }
@@ -43,6 +44,8 @@ end
 function UnitClass() return "Mage", "MAGE" end
 function UnitName() return "Kara" end
 function GetTime() return now end
+function InCinematic() return cinematic end
+function StopCinematic() cinematic, stoppedCinematics = false, stoppedCinematics + 1 end
 function SendAddonMessage(prefix, message, lane)
     assert(prefix == "STC" and lane == "PARTY")
     assert(not string.find(string.gsub(message, "||", ""), "|", 1, true))
@@ -93,7 +96,10 @@ assert(WaveDefenseLobby.shown and not WaveDefenseDock.shown)
 assert(not findButton(WaveDefenseLobby, "Join queue").enabled)
 update(0)
 assert(table.getn(sent) == 1)
+fire("CHAT_MSG_ADDON", "OTHER", "unrelated", "UNKNOWN", "Kara")
+assert(stoppedCinematics == 0)
 response("status", status("lobby", "0", "0", "0"))
+assert(stoppedCinematics == 1)
 assert(hasText(WaveDefenseLobby, "Frost Mage"))
 click(WaveDefenseLobby, "Select specialization")
 assert(WaveDefenseRequest == "1")
