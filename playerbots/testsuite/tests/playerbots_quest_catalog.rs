@@ -1237,6 +1237,10 @@ fn playerbots_missing_quest_target_retry_keeps_a_queued_return_home() {
     node.assert_sql(&format!(
         "UPDATE pkg_playerbots_runner SET next_eligible_micros = {delayed_until}, movement_due_micros = {} WHERE character_guid = {bot}", i64::MAX
     ));
+    // The retry moved its due time from the runner row into the movement queue.
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_movement SET due_micros = {delayed_until} WHERE character_guid = {bot}"
+    ));
     node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
     let waiting = runner(&node, &bot);
     assert_eq!(waiting["path_pending"], "true", "{waiting:?}");
