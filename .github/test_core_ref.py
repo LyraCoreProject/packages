@@ -41,11 +41,15 @@ class PairedCore(unittest.TestCase):
         self.assertEqual(self.select({'feat/vmangos-world-data': 'abc'},
                                      'vmangos/second', 'vmangos/first'), (0, 'ref=abc\n'))
 
-    def test_unpaired_branch_uses_main(self):
-        self.assertEqual(self.select({}, 'unpaired'), (0, 'ref=required\n'))
+    def test_unpaired_branch_into_main_keeps_the_required_revision(self):
+        self.assertEqual(self.select({'main': 'moving-tip'}, 'unpaired', 'main'), (0, 'ref=required\n'))
 
     def test_remote_failure_does_not_select_main(self):
         self.assertEqual(self.select({}, 'slice', status=128), (128, ''))
 
     def test_main_keeps_the_required_revision(self):
         self.assertEqual(self.select({"main": "abc"}, "main"), (0, "ref=required\n"))
+
+    def test_pairing_is_only_for_non_main_bases(self):
+        self.assertEqual(self.select({'slice': 'paired', 'main': 'moving-tip'}, 'slice', 'main'),
+                         (0, 'ref=required\n'))
