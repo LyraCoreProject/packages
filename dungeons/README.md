@@ -58,7 +58,7 @@ the CLI's safe integer range. After setup, each stage resolves its subjects in t
 the production kill, damage, or gameobject use path, and checks the durable outcome in the same
 transaction.
 Core's `module/tests/deadmines_package.rs` also calls these stages to check the boss deaths,
-cannon, and Smite's weapon changes:
+cannon, Smite's weapon changes, and both yells through a speech event subscription:
 
 ```sh
 cd /path/to/LyraCore
