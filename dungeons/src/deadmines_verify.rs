@@ -224,6 +224,7 @@ fn seed_gameobject(
     Ok(())
 }
 
+// equip_swap reads only the display id; the other fields can retain the starter weapon values.
 fn seed_smite_weapon(
     ctx: &ReducerContext,
     entry: u32,
