@@ -23,9 +23,6 @@ runs:
           exit 0
         fi
         candidates=("$BRANCH" "$BASE_BRANCH")
-        if [[ "$BRANCH" == vmangos/* ]]; then
-          candidates+=(feat/vmangos-world-data)
-        fi
         for candidate in "${candidates[@]}"; do
           [ -n "$candidate" ] || continue
           if paired=$(git ls-remote --exit-code --heads https://github.com/LyraCoreProject/LyraCore "refs/heads/$candidate"); then

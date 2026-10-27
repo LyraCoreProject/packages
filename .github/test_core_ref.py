@@ -37,9 +37,9 @@ class PairedCore(unittest.TestCase):
     def test_slice_uses_its_base_partner(self):
         self.assertEqual(self.select({'base': 'def'}, 'slice', 'base'), (0, 'ref=def\n'))
 
-    def test_vmangos_stack_uses_feature_partner(self):
+    def test_unpaired_vmangos_stack_keeps_the_required_revision(self):
         self.assertEqual(self.select({'feat/vmangos-world-data': 'abc'},
-                                     'vmangos/second', 'vmangos/first'), (0, 'ref=abc\n'))
+                                     'vmangos/second', 'vmangos/first'), (0, 'ref=required\n'))
 
     def test_unpaired_branch_into_main_keeps_the_required_revision(self):
         self.assertEqual(self.select({'main': 'moving-tip'}, 'unpaired', 'main'), (0, 'ref=required\n'))
