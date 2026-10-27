@@ -628,6 +628,7 @@ pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
         proc_flags: 0,
         proc_chance: 101,
         proc_charges: 0,
+        max_duration_ms: 0,
     });
     ctx.db
         .game_spell_effect()
@@ -650,6 +651,7 @@ pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
             p1: 0,
             script_id: 0,
             enters_combat: false,
+            points_per_combo: 0.0,
         });
     Ok(())
 }
