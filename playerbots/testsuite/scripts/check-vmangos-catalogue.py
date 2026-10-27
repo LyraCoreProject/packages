@@ -7,6 +7,18 @@ import re
 import sqlite3
 
 
+def source_objectives(row):
+    objectives = []
+    for slot in range(1, 5):
+        if row[f"ReqItemId{slot}"]:
+            objectives.append(("CollectItem", row[f"ReqItemId{slot}"], row[f"ReqItemCount{slot}"]))
+        target = row[f"ReqCreatureOrGOId{slot}"]
+        if target:
+            kind = "UseGameObject" if target < 0 else "KillCreature"
+            objectives.append((kind, abs(target), row[f"ReqCreatureOrGOCount{slot}"]))
+    return objectives
+
+
 def check(path):
     package = Path(__file__).resolve().parents[2]
     source = (package / "src/quest_catalog.rs").read_text()
@@ -49,12 +61,7 @@ def check(path):
                 expected.append((kind, target, required))
                 if "ObjectiveExecutor::ProvidedItem" in objective:
                     assert (row["SrcItemId"], row["SrcItemCount"]) == (target, required), entry
-        actual = []
-        for slot in range(1, 5):
-            if row[f"ReqItemId{slot}"]:
-                actual.append(("CollectItem", row[f"ReqItemId{slot}"], row[f"ReqItemCount{slot}"]))
-            if row[f"ReqCreatureOrGOId{slot}"]:
-                actual.append(("KillCreature", row[f"ReqCreatureOrGOId{slot}"], row[f"ReqCreatureOrGOCount{slot}"]))
+        actual = source_objectives(row)
         assert sorted(expected) == sorted(actual), (entry, expected, actual)
         assert row["SpecialFlags"] & 2 == 0, (entry, "requires event credit")
         print(f"quest {entry}: eligibility, relations and objectives match")
