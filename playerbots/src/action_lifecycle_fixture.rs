@@ -15,7 +15,7 @@ fn place_entity(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(entity);
+    entity.update(ctx);
     if let Some(mut spawn) = ctx.db.game_creature_spawn().guid().find(guid) {
         spawn.x = x;
         ctx.db.game_creature_spawn().guid().update(spawn);
@@ -24,14 +24,17 @@ fn place_entity(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
 }
 
 fn place_gameobject(ctx: &ReducerContext, guid: u64, x: f32) -> Result<(), String> {
-    let rows = ctx.db.game_gameobject();
-    let mut row = rows.guid().find(guid).ok_or("quest GameObject missing")?;
+    let gameobjects = ctx.db.game_gameobject();
+    let mut row = gameobjects
+        .guid()
+        .find(guid)
+        .ok_or("quest GameObject missing")?;
     row.x = x;
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(row.x, row.y);
     row.grid_x = grid_x;
     row.grid_y = grid_y;
     row.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    rows.guid().update(row);
+    row.update(ctx);
     Ok(())
 }
 

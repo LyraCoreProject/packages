@@ -1084,7 +1084,7 @@ fn a_despawn_takes_the_quest_log_and_the_corpse_with_it() {
         .expect("module/src/world.rs is core, never an optional drop-in");
     let body = code_of(&src, "pub(crate) fn cascade_delete_character(");
     assert!(
-        body.contains("game_corpse()"),
+        body.contains("Corpse::delete("),
         "`cascade_delete_character` no longer deletes the corpse, so a bot despawned as a \
          ghost would leave one standing in a field forever"
     );

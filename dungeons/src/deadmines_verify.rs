@@ -208,10 +208,9 @@ fn seed_gameobject(
         });
     }
     let guid = GO_FIXTURE_BAND | u64::from(entry);
-    let gos = ctx.db.game_gameobject();
-    gos.guid().delete(guid);
+    crate::tables::GameObject::delete(ctx, guid);
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(x, y);
-    gos.insert(crate::tables::GameObject {
+    crate::tables::GameObject {
         guid,
         template_entry: entry,
         map_id: MAP_ID,
@@ -230,7 +229,8 @@ fn seed_gameobject(
         grid_x,
         grid_y,
         cell: lyracore_shared::spatial::grid_cell_id(grid_x, grid_y),
-    });
+    }
+    .insert(ctx);
     Ok(())
 }
 
@@ -425,14 +425,14 @@ fn spawn_source(
         .find(|entity| !entity.is_player())
         .ok_or_else(|| "fixture needs one seeded creature".to_string())?;
     let guid = fixture_guid(entry, sequence);
-    entities.guid().delete(guid);
+    crate::tables::WorldEntity::delete(ctx, guid);
     source.guid = guid;
     source.entry = entry;
     source.map_id = map_id;
     source.instance_id = instance_id;
     source.dead = dead;
     source.health = if dead { 0 } else { source.max_health.max(1) };
-    entities.insert(source);
+    source.insert(ctx);
     Ok(guid)
 }
 
@@ -450,7 +450,7 @@ fn spawn_fixture_player(
         .find(|entity| !entity.is_player())
         .ok_or_else(|| "fixture needs one seeded creature".to_string())?;
     let guid = fixture_guid(0, sequence);
-    entities.guid().delete(guid);
+    crate::tables::WorldEntity::delete(ctx, guid);
     player.guid = guid;
     player.entry = 0;
     player.map_id = map_id;
@@ -460,7 +460,7 @@ fn spawn_fixture_player(
     player.health = 1_000_000;
     player.max_health = 1_000_000;
     player.faction_template = 1;
-    entities.insert(player);
+    player.insert(ctx);
     Ok(guid)
 }
 
@@ -483,7 +483,7 @@ fn set_fixture_position(
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 

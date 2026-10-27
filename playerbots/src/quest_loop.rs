@@ -459,14 +459,17 @@ fn gameobject_work(
 ) -> GameObjectSearch {
     let (gx0, gx1, gy0, gy1) =
         lyracore_shared::spatial::covering_cell_box(me.x, me.y, SEARCH_RADIUS_YD);
-    let rows = ctx.db.game_gameobject();
+    let gameobjects = ctx.db.game_gameobject();
     let mut scanned = 0usize;
     let mut matching = Vec::new();
     let mut exhausted = false;
     'cells: for gx in gx0..=gx1 {
         for gy in gy0..=gy1 {
             let cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
-            for row in rows.by_cell().filter((me.map_id, me.instance_id, cell)) {
+            for row in gameobjects
+                .by_cell()
+                .filter((me.map_id, me.instance_id, cell))
+            {
                 if scanned == RAW_ENTITY_LIMIT {
                     exhausted = true;
                     break 'cells;
