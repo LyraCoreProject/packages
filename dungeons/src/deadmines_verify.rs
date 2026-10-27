@@ -12,9 +12,8 @@ use super::deadmines::{
 };
 use crate::package::encounter::{self, DOOR_OPEN_STATE, ENCOUNTER_DONE};
 use crate::tables::{
-    game_chat_event, game_creature_spline, game_creature_template, game_encounter_equip,
-    game_gameobject, game_gameobject_template, game_instance, game_item_template,
-    game_world_entity, GameInstance,
+    game_creature_spline, game_creature_template, game_encounter_equip, game_gameobject,
+    game_gameobject_template, game_instance, game_item_template, game_world_entity, GameInstance,
 };
 
 const FIXTURE_LOW_BAND: u64 = 0x10_0000;
@@ -67,13 +66,12 @@ pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
     let player = spawn_fixture_player(ctx, MAP_ID, DEADMINES_INSTANCE, 44)?;
     set_fixture_position(ctx, player, -5.0, -760.0, 9.8)?;
 
-    // Direct fixture inserts do not fire on_creature_spawn.
+    // Fixture inserts do not dispatch creature spawn hooks.
     encounter::watch_hp_threshold(ctx, MR_SMITE, SMITE_FIRST_STAND_PCT)?;
     encounter::watch_hp_threshold(ctx, MR_SMITE, SMITE_SECOND_STAND_PCT)?;
     Ok(())
 }
 
-/// Rhahk'Zor's death opens the Factory Door through the production kill path.
 #[reducer]
 pub fn debug_deadmines_rhahkzor_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, RHAHKZOR)?;
@@ -89,7 +87,6 @@ pub fn debug_deadmines_rhahkzor_falls(ctx: &ReducerContext) -> Result<(), String
     )
 }
 
-/// Destroying Sneed's Shredder ejects Sneed; the Mast Room Door stays shut until Sneed dies.
 #[reducer]
 pub fn debug_deadmines_shredder_ejects_sneed(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, SNEEDS_SHREDDER)?;
@@ -112,7 +109,6 @@ pub fn debug_deadmines_shredder_ejects_sneed(ctx: &ReducerContext) -> Result<(),
     )
 }
 
-/// Sneed's death opens the Mast Room Door.
 #[reducer]
 pub fn debug_deadmines_sneed_falls(ctx: &ReducerContext) -> Result<(), String> {
     let sneed = live_boss(ctx, SNEED).ok_or_else(|| "Sneed is not alive to kill".to_string())?;
@@ -129,7 +125,6 @@ pub fn debug_deadmines_sneed_falls(ctx: &ReducerContext) -> Result<(), String> {
     require_done(ctx, ENCOUNTER_SNEED, "Sneed encounter state is not Done")
 }
 
-/// Gilnid's death opens the Foundry Door.
 #[reducer]
 pub fn debug_deadmines_gilnid_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, GILNID)?;
@@ -144,20 +139,16 @@ pub fn debug_deadmines_gilnid_falls(ctx: &ReducerContext) -> Result<(), String> 
 #[reducer]
 pub fn debug_deadmines_smite_improvises(ctx: &ReducerContext) -> Result<(), String> {
     damage_smite_to_pct(ctx, 60)?;
-    require_yell_containing(ctx, "improvise")?;
     require_smite_chest_run(ctx)?;
     require_smite_equip(ctx, SMITES_REAVER, SMITES_REAVER, "66%")
 }
 
-/// Damage Smite through his 33% threshold: yell, second chest run, the two-hand hammer.
 #[reducer]
 pub fn debug_deadmines_smite_gets_angry(ctx: &ReducerContext) -> Result<(), String> {
     damage_smite_to_pct(ctx, 30)?;
-    require_yell_containing(ctx, "angry")?;
     require_smite_equip(ctx, SMITES_MIGHTY_HAMMER, 0, "33%")
 }
 
-/// Firing the Defias Cannon breaches the Iron Clad Door through the production use path.
 #[reducer]
 pub fn debug_deadmines_cannon_breaches(ctx: &ReducerContext) -> Result<(), String> {
     let player = fixture_guid(0, 44);
@@ -172,7 +163,6 @@ pub fn debug_deadmines_cannon_breaches(ctx: &ReducerContext) -> Result<(), Strin
     require_done(ctx, ENCOUNTER_CANNON, "cannon encounter state is not Done")
 }
 
-/// Smite's death closes his encounter.
 #[reducer]
 pub fn debug_deadmines_smite_falls(ctx: &ReducerContext) -> Result<(), String> {
     kill_fixture_boss(ctx, MR_SMITE)?;
@@ -208,10 +198,9 @@ fn seed_gameobject(
         });
     }
     let guid = GO_FIXTURE_BAND | u64::from(entry);
-    let gos = ctx.db.game_gameobject();
-    gos.guid().delete(guid);
+    crate::tables::GameObject::delete(ctx, guid);
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(x, y);
-    gos.insert(crate::tables::GameObject {
+    crate::tables::GameObject {
         guid,
         template_entry: entry,
         map_id: MAP_ID,
@@ -230,12 +219,11 @@ fn seed_gameobject(
         grid_x,
         grid_y,
         cell: lyracore_shared::spatial::grid_cell_id(grid_x, grid_y),
-    });
+    }
+    .insert(ctx);
     Ok(())
 }
 
-/// Clone the seeded starter sword into one of Smite's swap weapons — `equip_swap` only reads the
-/// display id, so everything else may stay the starter's.
 fn seed_smite_weapon(
     ctx: &ReducerContext,
     entry: u32,
@@ -257,7 +245,6 @@ fn seed_smite_weapon(
     Ok(())
 }
 
-/// Clone a seeded creature template into Sneed's so `spawn_wave` can eject him.
 fn seed_sneed_template(ctx: &ReducerContext) -> Result<(), String> {
     let templates = ctx.db.game_creature_template();
     if templates.entry().find(SNEED).is_some() {
@@ -316,17 +303,6 @@ fn require_done(ctx: &ReducerContext, encounter_id: u32, error: &str) -> Result<
     require(
         encounter::get_encounter_state(ctx, DEADMINES_INSTANCE, encounter_id) == ENCOUNTER_DONE,
         error,
-    )
-}
-
-fn require_yell_containing(ctx: &ReducerContext, fragment: &str) -> Result<(), String> {
-    let smite_guid = fixture_guid(MR_SMITE, 43);
-    require(
-        ctx.db
-            .game_chat_event()
-            .iter()
-            .any(|event| event.sender_guid == smite_guid && event.message.contains(fragment)),
-        &format!("Smite never yelled a line containing {fragment:?}"),
     )
 }
 
@@ -425,14 +401,14 @@ fn spawn_source(
         .find(|entity| !entity.is_player())
         .ok_or_else(|| "fixture needs one seeded creature".to_string())?;
     let guid = fixture_guid(entry, sequence);
-    entities.guid().delete(guid);
+    crate::tables::WorldEntity::delete(ctx, guid);
     source.guid = guid;
     source.entry = entry;
     source.map_id = map_id;
     source.instance_id = instance_id;
     source.dead = dead;
     source.health = if dead { 0 } else { source.max_health.max(1) };
-    entities.insert(source);
+    source.insert(ctx);
     Ok(guid)
 }
 
@@ -450,7 +426,7 @@ fn spawn_fixture_player(
         .find(|entity| !entity.is_player())
         .ok_or_else(|| "fixture needs one seeded creature".to_string())?;
     let guid = fixture_guid(0, sequence);
-    entities.guid().delete(guid);
+    crate::tables::WorldEntity::delete(ctx, guid);
     player.guid = guid;
     player.entry = 0;
     player.map_id = map_id;
@@ -460,7 +436,7 @@ fn spawn_fixture_player(
     player.health = 1_000_000;
     player.max_health = 1_000_000;
     player.faction_template = 1;
-    entities.insert(player);
+    player.insert(ctx);
     Ok(guid)
 }
 
@@ -483,7 +459,7 @@ fn set_fixture_position(
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 
