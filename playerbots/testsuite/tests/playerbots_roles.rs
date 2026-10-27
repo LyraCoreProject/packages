@@ -212,8 +212,8 @@ fn node_evidence(node: &Standalone, case: &str) {
             "provenance": "curated core seeds and explicitly named private role fixture rows",
             "imported_content": null,
             "training_level_reference": {
-                "source": "local classic-db-full.sql",
-                "sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+                "source": "local vmangos SQLite",
+                "sha256": "a8ce8ecc8e9c9d00dfe23321d0763cf8aee19677c836f1e1b9acc15fb1fbd5c9",
                 "use": "source-derived level facts only; not an imported World Shard",
                 "levels": {"133": 1, "139": 8, "168": 1, "355": 10, "585": 1, "1243": 1, "2050": 1, "6673": 1, "7386": 10},
             },

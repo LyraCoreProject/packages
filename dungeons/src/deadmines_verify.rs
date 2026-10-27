@@ -20,7 +20,7 @@ const FIXTURE_LOW_BAND: u64 = 0x10_0000;
 const DEADMINES_INSTANCE: u64 = 936;
 const GO_FIXTURE_BAND: u64 = 0xF11D << 48;
 
-/// Requires a Shard without imported content; positions follow classic-db z2815.
+/// Requires a Shard without imported content; positions are authored for this fixture.
 #[reducer]
 pub fn debug_deadmines_begin(ctx: &ReducerContext) -> Result<(), String> {
     crate::package::fixture::require_no_imported_content(ctx)?;

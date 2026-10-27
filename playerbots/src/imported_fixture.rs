@@ -56,6 +56,8 @@ fn imported_inputs(
         "creature-ai",
         "globals",
         "spellmeta",
+        "spell",
+        "dbc",
     ] {
         let revision = crate::actor::import_revision(ctx, family)
             .ok_or_else(|| format!("imported fixture is missing the {family} import"))?;

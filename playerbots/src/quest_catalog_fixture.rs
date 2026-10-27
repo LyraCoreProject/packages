@@ -599,9 +599,7 @@ pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
     if existing.is_some() || existing_effect.is_some() {
         return Err("loopback Smite fixture spell is occupied".to_string());
     }
-    // The pinned ClassicDB spell_template row supplies the gameplay fields below. The dump omits
-    // auxiliary DBC rows for CastTimeIndex 16, RangeIndex 4, and DurationIndex 0, so this private
-    // fixture declares 1500ms, 30yd, and 0ms for those three values.
+    // See playerbots/fixtures/quest-catalog.json for spell provenance and auxiliary choices.
     ctx.db.game_spell().insert(crate::tables::Spell {
         spell_id: LOOPBACK_SMITE,
         name: "Smite".to_string(),

@@ -479,8 +479,8 @@ fn record(node: &Standalone, suffix: &str) {
         (!nav_chunks.is_empty()).then_some("playerbots-synthetic-nav-v1");
     let smite_fixture = named_loop.then(|| {
         serde_json::json!({
-            "classic_db_spell_template_sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
-            "source_fields": "spell 585 header and effect normalized from ClassicDB spell_template",
+            "vmangos_sqlite_sha256": "a8ce8ecc8e9c9d00dfe23321d0763cf8aee19677c836f1e1b9acc15fb1fbd5c9",
+            "source_fields": "spell 585 header and effect normalized from vmangos spell_template",
             "auxiliary_fixture_choices": {
                 "cast_time_ms": 1500,
                 "range_yd": 30,

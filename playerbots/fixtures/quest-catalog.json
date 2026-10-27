@@ -1,14 +1,14 @@
 {
   "fixture": "playerbots-quest-catalog-v1",
-  "catalog": "starting-areas-supported-v2",
-  "catalog_revision": 2,
-  "blueprint_revision": "classicdb:d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+  "catalog": "starting-areas-supported-v3",
+  "catalog_revision": 3,
+  "blueprint_revision": "vmangos:a8ce8ecc8e9c9d00dfe23321d0763cf8aee19677c836f1e1b9acc15fb1fbd5c9",
   "reference_source_revision": "unknown",
   "observed_content_revision": "computed from staged quest, relation, objective, loot, item, and spawn rows",
   "starter_classes": [
-    { "class": 1, "name": "warrior", "seed": 783001 },
-    { "class": 5, "name": "priest", "seed": 783005 },
-    { "class": 8, "name": "mage", "seed": 783008 }
+    {"class": 1, "name": "warrior", "seed": 783001},
+    {"class": 5, "name": "priest", "seed": 783005},
+    {"class": 8, "name": "mage", "seed": 783008}
   ],
   "quest_order": [783, 7, 5261, 33, 18, 3903, 3904, 3905, 40, 35, 37, 45, 179, 233, 363, 364, 456, 457, 458, 747, 752, 788],
   "caught_refusals": [
@@ -26,9 +26,9 @@
     "gameobject_161557": "0xf110000000027715"
   },
   "source_inspection": {
-    "path": ".import/classic-db-full.sql",
-    "size_bytes": 73294017,
-    "sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+    "path": ".import/vmangos/current.json (sqlite_path)",
+    "commit": "464179081673cfd240f7ffe7f0daf96bca0b5a70",
+    "sha256": "a8ce8ecc8e9c9d00dfe23321d0763cf8aee19677c836f1e1b9acc15fb1fbd5c9",
     "imported_world_run": false,
     "client_geometry": null
   },
@@ -40,5 +40,20 @@
     "repeat_stage": "no-op for the same owned fixture revision",
     "later_import": "refused before mutation"
   },
-  "provenance": "Private Standalone rows shaped from the inspected ClassicDB schema. Coordinates, item drops, and action outcomes in this fixture are synthetic."
+  "provenance": "Private Standalone fixtures. The catalogue defaults were checked against vmangos; staged coordinates, eligibility overrides, item drops and action outcomes are synthetic.",
+  "synthetic_eligibility": {
+    "quests_40_35_37_45_min_level": 1,
+    "quest_3903_prerequisite": 33,
+    "quest_233_prerequisite": 179,
+    "race_masks": "synthetic faction restrictions; the runtime catalogue reads the staged templates"
+  },
+  "smite_fixture": {
+    "spell": 585,
+    "source": "vmangos spell_template at build 5875",
+    "auxiliary_choices": {
+      "cast_time_ms": 1500,
+      "range_yd": 30,
+      "duration_ms": 0
+    }
+  }
 }
