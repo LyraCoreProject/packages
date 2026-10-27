@@ -89,7 +89,7 @@ pub fn playerbots_fixture_solo_target_claim(
         let mut me = crate::actor::live_entity(ctx, guid)?;
         me.level = 1;
         me.power = 0;
-        ctx.db.game_world_entity().guid().update(me);
+        me.update(ctx);
         use super::super::pkg_playerbots_provisioning;
         if let Some(mut profile) = ctx
             .db
@@ -110,7 +110,7 @@ pub fn playerbots_fixture_solo_target_claim(
     entity.level = 1;
     entity.health = 1000;
     entity.max_health = 1000;
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     playerbots_fixture_runner_pass_once(ctx, owner)?;
     if fight(ctx, owner) != Some(target) {
         let state = ctx.db.pkg_playerbots_runner().character_guid().find(owner);
@@ -316,13 +316,13 @@ pub fn playerbots_fixture_solo_target_claim(
             let mut me = crate::actor::live_entity(ctx, owner)?;
             me.dead = true;
             me.health = 0;
-            ctx.db.game_world_entity().guid().update(me);
+            me.update(ctx);
         }
         "freeze" => super::super::runner::transition_controller(ctx, owner, Controller::Frozen)?,
         "partition" => {
             let mut me = crate::actor::live_entity(ctx, owner)?;
             me.instance_id = 1;
-            ctx.db.game_world_entity().guid().update(me);
+            me.update(ctx);
         }
         "expired" | "stalled" | "progress" | "abandoned" | "refused" => {
             let rows = ctx.db.pkg_playerbots_runner();

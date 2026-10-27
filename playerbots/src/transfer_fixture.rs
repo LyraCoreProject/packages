@@ -124,7 +124,7 @@ fn place_live(
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 

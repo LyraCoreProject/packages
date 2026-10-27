@@ -7,14 +7,12 @@ use crate::tables::{game_gameobject, game_world_entity};
 
 pub(crate) const MAP_ID: u32 = 36;
 
-// Creature entries (classic-db z2815).
 pub(crate) const RHAHKZOR: u32 = 644;
 pub(crate) const SNEEDS_SHREDDER: u32 = 642;
 pub(crate) const SNEED: u32 = 643;
 pub(crate) const GILNID: u32 = 1763;
 pub(crate) const MR_SMITE: u32 = 646;
 
-// Gameobject template entries (classic-db z2815).
 pub(crate) const FACTORY_DOOR: u32 = 13965;
 pub(crate) const MAST_ROOM_DOOR: u32 = 16400;
 pub(crate) const FOUNDRY_DOOR: u32 = 16399;
@@ -22,7 +20,6 @@ pub(crate) const IRON_CLAD_DOOR: u32 = 16397;
 pub(crate) const DEFIAS_CANNON: u32 = 16398;
 pub(crate) const SMITES_CHEST: u32 = 144111;
 
-// Mr. Smite's swap weapons (classic-db z2815 item entries).
 pub(crate) const SMITES_REAVER: u32 = 5196;
 pub(crate) const SMITES_MIGHTY_HAMMER: u32 = 7230;
 

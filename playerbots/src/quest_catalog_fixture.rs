@@ -430,7 +430,7 @@ pub fn playerbots_recovery_fixture_keep_two_quest_targets(
     }
     for offset in 2..10u64 {
         let guid = creature_guid(6).saturating_add(offset);
-        ctx.db.game_world_entity().guid().delete(guid);
+        crate::tables::WorldEntity::delete(ctx, guid);
         ctx.db.game_creature_spawn().guid().delete(guid);
     }
     let entities = ctx.db.game_world_entity();
@@ -442,7 +442,7 @@ pub fn playerbots_recovery_fixture_keep_two_quest_targets(
             .ok_or("Quest 7 target is absent")?;
         target.x += 4.0;
         target.y += 4.0;
-        entities.guid().update(target);
+        target.update(ctx);
     }
     Ok(())
 }
@@ -536,9 +536,8 @@ fn insert_alternative_gameobject(ctx: &ReducerContext, entry: u32) -> Result<u64
     let x = original.x + 12.0;
     let y = original.y;
     let (grid_x, grid_y) = lyracore_shared::spatial::grid_cell(x, y);
-    let rows = ctx.db.game_gameobject();
-    rows.guid().delete(guid);
-    rows.insert(crate::tables::GameObject {
+    crate::tables::GameObject::delete(ctx, guid);
+    crate::tables::GameObject {
         guid,
         template_entry: original.template_entry,
         map_id: original.map_id,
@@ -557,7 +556,8 @@ fn insert_alternative_gameobject(ctx: &ReducerContext, entry: u32) -> Result<u64
         rotation_1: original.rotation_1,
         rotation_2: original.rotation_2,
         rotation_3: original.rotation_3,
-    });
+    }
+    .insert(ctx);
     Ok(guid)
 }
 
@@ -599,61 +599,30 @@ pub(super) fn stage_loopback_smite(ctx: &ReducerContext) -> Result<(), String> {
     if existing.is_some() || existing_effect.is_some() {
         return Err("loopback Smite fixture spell is occupied".to_string());
     }
-    // The pinned ClassicDB spell_template row supplies the gameplay fields below. The dump omits
-    // auxiliary DBC rows for CastTimeIndex 16, RangeIndex 4, and DurationIndex 0, so this private
-    // fixture declares 1500ms, 30yd, and 0ms for those three values.
+    // See playerbots/fixtures/quest-catalog.json for spell provenance and auxiliary choices.
     ctx.db.game_spell().insert(crate::tables::Spell {
-        spell_id: LOOPBACK_SMITE,
-        name: "Smite".to_string(),
-        power_type: 0,
         cost: 20,
         cast_time_ms: 1_500,
-        gcd_ms: 1_500,
-        cooldown_ms: 0,
         range_yd: 30,
-        duration_ms: 0,
         school_mask: 2,
-        dispel_type: 0,
-        mechanic: 0,
-        max_stacks: 0,
-        aura_interrupt: 0,
         attributes: 65_536,
         spell_level: 1,
         max_level: 6,
         is_negative: true,
-        cast_flags: 0,
-        stances: 0,
         family_name: 6,
         family_flags: 128,
-        proc_flags: 0,
         proc_chance: 101,
-        proc_charges: 0,
-        custom_flags: 0,
-        min_target_level: 0,
-        single_target_key: 0,
+        ..crate::package::fixture::base_spell(LOOPBACK_SMITE, "Smite")
     });
     ctx.db
         .game_spell_effect()
         .insert(crate::tables::SpellEffect {
-            id: 2_340,
-            spell_id: LOOPBACK_SMITE,
-            effect_index: 0,
             kind: 1,
             base_points: 13,
             die_sides: 5,
             per_level: 0.5,
-            period_ms: 0,
             target: 1,
-            radius_yd: 0.0,
-            chain_targets: 0,
-            trigger_spell: 0,
-            effect_mechanic: 0,
-            p0: 0,
-            p0_kind: 0,
-            p1: 0,
-            script_id: 0,
-            enters_combat: false,
-            bonus_coefficient: -1.0,
+            ..crate::package::fixture::base_effect(LOOPBACK_SMITE, 0)
         });
     Ok(())
 }
@@ -733,7 +702,7 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
         .find(character_guid)
         .ok_or("Character missing")?;
     character.health = character.max_health;
-    ctx.db.game_world_entity().guid().update(character);
+    character.update(ctx);
     let character = ctx
         .db
         .game_world_entity()
@@ -1175,7 +1144,7 @@ fn insert_gameobject(
             size: 1.0,
         });
     let guid = gameobject_guid(entry);
-    ctx.db.game_gameobject().insert(crate::tables::GameObject {
+    crate::tables::GameObject {
         guid,
         template_entry: entry,
         map_id,
@@ -1194,7 +1163,8 @@ fn insert_gameobject(
         rotation_1: 0.0,
         rotation_2: 0.0,
         rotation_3: 0.0,
-    });
+    }
+    .insert(ctx);
 }
 
 fn clone_item(ctx: &ReducerContext, entry: u32, source_entry: u32) -> Result<(), String> {
@@ -1344,9 +1314,9 @@ fn reward_prerequisite(ctx: &ReducerContext, guid: u64, quest_entry: u32) -> Res
         .find(guid)
         .ok_or("Character missing")?
         .owner_identity;
-    ctx.db
-        .game_character_quest()
-        .insert(crate::tables::CharacterQuest {
+    crate::tables::CharacterQuest::insert(
+        ctx,
+        crate::tables::CharacterQuest {
             id: 0, // Core allocates per-Character quest-log ids.
             character_guid: guid,
             owner_identity,
@@ -1355,7 +1325,8 @@ fn reward_prerequisite(ctx: &ReducerContext, guid: u64, quest_entry: u32) -> Res
             rewarded: true,
             deadline_micros: 0,
             failed: false,
-        });
+        },
+    );
     Ok(())
 }
 
@@ -1382,7 +1353,7 @@ pub fn playerbots_quest_fixture_stage(
         .find(character_guid)
         .ok_or("Character missing")?;
     character.level = character.level.max(2);
-    ctx.db.game_world_entity().guid().update(character);
+    character.update(ctx);
     let character = ctx
         .db
         .game_world_entity()
@@ -1561,7 +1532,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
         entity.grid_x = grid_x;
         entity.grid_y = grid_y;
         entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-        ctx.db.game_world_entity().guid().update(entity);
+        entity.update(ctx);
         playerbots_quest_fixture_admit_accept(ctx, guid, 7)?;
         let mut entity = crate::actor::live_entity(ctx, guid)?;
         entity.x = selection_x;
@@ -1571,7 +1542,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
         entity.grid_x = grid_x;
         entity.grid_y = grid_y;
         entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-        ctx.db.game_world_entity().guid().update(entity);
+        entity.update(ctx);
         let mut bot = ctx
             .db
             .pkg_playerbots_bot()
@@ -1594,7 +1565,7 @@ pub fn playerbots_quest_loop_fixture_prepare_dispersion(
     excluded.grid_x = grid_x;
     excluded.grid_y = grid_y;
     excluded.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(excluded);
+    excluded.update(ctx);
     Ok(())
 }
 
@@ -1652,7 +1623,7 @@ pub(super) fn stage_named_with_rotation(
         character.max_power = LOOPBACK_PRIEST_MANA;
         character.power = LOOPBACK_PRIEST_MANA;
     }
-    ctx.db.game_world_entity().guid().update(character);
+    character.update(ctx);
     let character = ctx
         .db
         .game_world_entity()
@@ -1692,10 +1663,9 @@ pub(super) fn stage_named_with_rotation(
             .ok_or("collect source missing")?;
         source.health = 1;
         source.max_health = 1;
-        ctx.db.game_world_entity().guid().update(source);
+        source.update(ctx);
     }
     let spawns = ctx.db.game_creature_spawn();
-    let entities = ctx.db.game_world_entity();
     let mut inserted_sources = Vec::with_capacity(10);
     for insertion in 0..10u64 {
         let offset = (insertion + u64::from(source_insertion_rotation)) % 10;
@@ -1721,7 +1691,7 @@ pub(super) fn stage_named_with_rotation(
         let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         spawns.guid().delete(guid);
         spawns.insert(spawn);
-        entities.guid().delete(guid);
+        crate::tables::WorldEntity::delete(ctx, guid);
         crate::package::fixture::insert_creature_entity(ctx, entity);
         inserted_sources.push(guid);
     }
@@ -1771,7 +1741,6 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
     templates.entry().delete(SEARCH_LIMIT_ENTRY);
     let template = templates.insert(template);
     let spawns = ctx.db.game_creature_spawn();
-    let entities = ctx.db.game_world_entity();
     for offset in 0..SEARCH_LIMIT_ROWS {
         let guid =
             (0xF130u64 << 48) | (u64::from(SEARCH_LIMIT_ENTRY) << 24) | offset.saturating_add(1);
@@ -1794,7 +1763,7 @@ pub fn playerbots_quest_loop_fixture_stage_search_limit(
         let entity = crate::package::fixture::build_creature_entity(&spawn, &template, 0, 0);
         spawns.guid().delete(guid);
         spawns.insert(spawn);
-        entities.guid().delete(guid);
+        crate::tables::WorldEntity::delete(ctx, guid);
         crate::package::fixture::insert_creature_entity(ctx, entity);
     }
     Ok(())
@@ -1811,7 +1780,7 @@ pub fn playerbots_quest_loop_fixture_set_partition(
     let mut character = crate::actor::live_entity(ctx, character_guid)?;
     character.instance_id = instance_id;
     ctx.db.game_creature_spline().guid().delete(character_guid);
-    ctx.db.game_world_entity().guid().update(character);
+    character.update(ctx);
     Ok(())
 }
 
@@ -1854,7 +1823,7 @@ pub fn playerbots_quest_loop_fixture_set_simple_gameobject_state(
         .find(gameobject_guid(SEEDED_USE_GAMEOBJECT))
         .ok_or("simple GameObject fixture is absent")?;
     row.state = state;
-    rows.guid().update(row);
+    row.update(ctx);
     Ok(())
 }
 
@@ -1914,7 +1883,6 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
         .find(source.entry)
         .ok_or("retained creature-loot template is absent")?;
     let spawns = ctx.db.game_creature_spawn();
-    let entities = ctx.db.game_world_entity();
     for offset in 10..19u64 {
         let guid = creature_guid(source.entry).saturating_add(offset);
         let spawn = crate::tables::CreatureSpawn {
@@ -1938,7 +1906,7 @@ pub fn playerbots_quest_loop_fixture_stage_corpse_limit(
         entity.dead = true;
         spawns.guid().delete(guid);
         spawns.insert(spawn);
-        entities.guid().delete(guid);
+        crate::tables::WorldEntity::delete(ctx, guid);
         crate::package::fixture::insert_creature_entity(ctx, entity);
     }
     Ok(())
@@ -2251,7 +2219,7 @@ pub fn playerbots_quest_fixture_clear_filler_and_take_gameobject_loot(
         .filter(|item| item.entry == INVENTORY_FILLER)
         .collect::<Vec<_>>()
     {
-        items.guid().delete(item.guid);
+        crate::tables::ItemInstance::delete(ctx, item.guid);
     }
     let guid = gameobject_guid(CHEST_ENTRY);
     let slots: Vec<_> = ctx
@@ -2396,7 +2364,7 @@ pub fn playerbots_quest_fixture_mixed_progress(
         .find(|item| item.entry == 752)
         .ok_or("bank fixture item missing")?;
     banked.slot = 39;
-    items.guid().update(banked);
+    banked.update(ctx);
 
     quest_catalog::refresh_catalog(ctx, "unknown");
     let objectives = ctx.db.pkg_playerbots_catalog_objective();
@@ -2507,7 +2475,7 @@ pub fn playerbots_quest_fixture_level_admission(
         .find(character_guid)
         .ok_or("Character missing")?;
     character.level = level;
-    rows.guid().update(character);
+    character.update(ctx);
     match quest_catalog::admit_available(ctx, character_guid, quest_entry) {
         Ok(admission) => quest_catalog::record_admission(
             ctx,
@@ -2613,18 +2581,21 @@ pub fn playerbots_quest_fixture_active_log_overflow(
             .filter((character_guid, quest_entry))
             .next()
         {
-            quests.id().delete(previous.id);
+            crate::tables::CharacterQuest::delete(ctx, previous.id);
         }
-        quests.insert(crate::tables::CharacterQuest {
-            id: 0,
-            character_guid: exemplar.character_guid,
-            owner_identity: exemplar.owner_identity,
-            quest_entry,
-            counts: Vec::new(),
-            rewarded: false,
-            deadline_micros: exemplar.deadline_micros,
-            failed: false,
-        });
+        crate::tables::CharacterQuest::insert(
+            ctx,
+            crate::tables::CharacterQuest {
+                id: 0,
+                character_guid: exemplar.character_guid,
+                owner_identity: exemplar.owner_identity,
+                quest_entry,
+                counts: Vec::new(),
+                rewarded: false,
+                deadline_micros: exemplar.deadline_micros,
+                failed: false,
+            },
+        );
     }
     Ok(())
 }
@@ -2645,9 +2616,9 @@ pub fn playerbots_quest_fixture_lose_provided_item(
         .ok_or("provided delivery item missing")?;
     if bank_item {
         item.slot = 39;
-        items.guid().update(item);
+        item.update(ctx);
     } else {
-        items.guid().delete(item.guid);
+        crate::tables::ItemInstance::delete(ctx, item.guid);
     }
     match quest_catalog::reconcile_active(ctx, character_guid, &[]) {
         quest_catalog::ReconcileResult::Found(_) => {
@@ -2769,7 +2740,7 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     target.grid_x = grid_x;
     target.grid_y = grid_y;
     target.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    entities.guid().update(target);
+    target.update(ctx);
     ctx.db.game_creature_spline().guid().delete(target_guid);
 
     let mut character = crate::actor::live_entity(ctx, character_guid)?;
@@ -2788,10 +2759,9 @@ pub fn playerbots_quest_loop_fixture_prepare_moving_cast(
     character.grid_x = grid_x;
     character.grid_y = grid_y;
     character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    // A relocation is movement: stamp the move clock (as `emit_creature_leg` would), or the
-    // bot reads as idle and its new cell never wakes the target creature.
+    // The move clock wakes nearby creatures after this relocation.
     character.last_move_ms = (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u32;
-    entities.guid().update(character);
+    character.update(ctx);
     ctx.db.game_creature_spline().guid().delete(character_guid);
 
     let spawns = ctx.db.game_creature_spawn();
@@ -2858,7 +2828,7 @@ pub fn playerbots_quest_loop_fixture_start_moving_cast(
     character.grid_x = grid_x;
     character.grid_y = grid_y;
     character.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(character);
+    character.update(ctx);
     ctx.db.game_creature_spline().guid().delete(character_guid);
 
     let mut parked = bot;
@@ -2903,13 +2873,13 @@ pub fn playerbots_quest_loop_fixture_make_target_friendly(
         .find(character_guid)
         .ok_or("Character is absent")?;
     character.faction_template = FRIENDLY_FIXTURE_FACTION;
-    rows.guid().update(character);
+    character.update(ctx);
     let mut target = rows
         .guid()
         .find(target_guid)
         .ok_or("quest target is absent")?;
     target.faction_template = FRIENDLY_FIXTURE_FACTION;
-    rows.guid().update(target);
+    target.update(ctx);
     Ok(())
 }
 
@@ -2926,7 +2896,7 @@ pub fn playerbots_quest_fixture_deplete_gameobject(
         .find(gameobject_guid(gameobject_entry))
         .ok_or("GameObject missing")?;
     row.state = 1;
-    rows.guid().update(row);
+    row.update(ctx);
     Ok(())
 }
 
@@ -2948,7 +2918,7 @@ pub fn playerbots_quest_fixture_move_gameobject(
     row.grid_x = grid_x;
     row.grid_y = grid_y;
     row.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    rows.guid().update(row);
+    row.update(ctx);
     Ok(())
 }
 
@@ -3072,7 +3042,7 @@ pub fn playerbots_recovery_fixture_clear_one_inventory_slot(
         .filter(character_guid)
         .find(|item| item.entry == INVENTORY_FILLER)
         .ok_or("inventory filler missing")?;
-    items.guid().delete(filler.guid);
+    crate::tables::ItemInstance::delete(ctx, filler.guid);
     if !crate::actor::has_free_slot(ctx, character_guid) {
         return Err("one inventory slot did not become available".to_string());
     }
@@ -3112,7 +3082,7 @@ pub fn playerbots_recovery_fixture_arm_gameobject_respawn(
     gameobject.state = 1;
     gameobject.respawn_at_micros = (ctx.timestamp.to_micros_since_unix_epoch() as u64)
         .saturating_add(u64::from(delay_seconds) * 1_000_000);
-    rows.guid().update(gameobject);
+    gameobject.update(ctx);
     Ok(())
 }
 
@@ -3134,7 +3104,7 @@ pub fn playerbots_recovery_fixture_position_simple_gameobject(
     gameobject.grid_x = grid_x;
     gameobject.grid_y = grid_y;
     gameobject.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    rows.guid().update(gameobject);
+    gameobject.update(ctx);
     Ok(())
 }
 
@@ -3158,7 +3128,7 @@ pub fn playerbots_recovery_fixture_remove_simple_gameobject(
     if gameobjects.guid().find(guid).is_none() {
         return Err("simple GameObject is absent".to_string());
     }
-    gameobjects.guid().delete(guid);
+    crate::tables::GameObject::delete(ctx, guid);
     Ok(())
 }
 
@@ -3198,7 +3168,7 @@ pub fn playerbots_recovery_fixture_restore_simple_gameobject(
     if rows.guid().find(destination.guid).is_some() {
         return Err("simple GameObject is already present".to_string());
     }
-    rows.insert(crate::tables::GameObject {
+    crate::tables::GameObject {
         guid: destination.guid,
         template_entry: template.entry,
         map_id: destination.map_id,
@@ -3217,7 +3187,8 @@ pub fn playerbots_recovery_fixture_restore_simple_gameobject(
         rotation_1: 0.0,
         rotation_2: 0.0,
         rotation_3: 0.0,
-    });
+    }
+    .insert(ctx);
     Ok(())
 }
 

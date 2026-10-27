@@ -5,7 +5,7 @@
 use super::pkg_playerbots_bot;
 use crate::tables::{
     game_area_trigger, game_areatrigger_teleport, game_character, game_group,
-    game_group_member_partition, game_group_roster_revision, game_world_entity,
+    game_group_member_partition, game_group_roster_revision,
 };
 use spacetimedb::{reducer, ReducerContext, Table, TimeDuration};
 
@@ -31,7 +31,7 @@ fn place_body(
     entity.grid_x = gx;
     entity.grid_y = gy;
     entity.cell = lyracore_shared::spatial::grid_cell_id(gx, gy);
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     Ok(())
 }
 

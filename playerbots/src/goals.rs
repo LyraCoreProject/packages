@@ -13,7 +13,7 @@ use crate::tables::{
     game_character, game_character_quest, game_corpse_loot, game_creature_loot,
     game_creature_quest, game_creature_spline, game_creature_template, game_group,
     game_group_member, game_melee_attack, game_quest_event_requirement, game_quest_objective,
-    game_quest_template, game_threat, game_world_entity,
+    game_quest_template, game_threat,
 };
 
 /// How long a bot waits between decisions. The tick pass fires every half second; a bot that
@@ -2175,7 +2175,7 @@ fn follow_across_partitions(
     moved.map_id = leader.map_id;
     moved.instance_id = leader.instance_id;
     place(&mut moved, leader.x, leader.y, leader.z);
-    ctx.db.game_world_entity().guid().update(moved);
+    moved.update(ctx);
     if let Some(mut character) = crate::actor::character_by_guid(ctx, me.guid) {
         character.map_id = leader.map_id;
         character.x = leader.x;
