@@ -215,11 +215,11 @@ fn playerbots_catalog_is_named_versioned_and_shared_by_starter_classes() {
     );
     let header = node.query_rows("SELECT * FROM pkg_playerbots_quest_catalog");
     assert_eq!(header.len(), 1);
-    assert_eq!(header[0]["name"], "starting-areas-supported-v2");
-    assert_eq!(header[0]["revision"], "2");
+    assert_eq!(header[0]["name"], "starting-areas-supported-v3");
+    assert_eq!(header[0]["revision"], "3");
     assert_eq!(header[0]["quest_count"], "22");
     assert_eq!(header[0]["reference_source_revision"], "unknown");
-    assert!(header[0]["blueprint_revision"].contains("d2083bcd"));
+    assert!(header[0]["blueprint_revision"].contains("a8ce8ecc"));
     let mut seeds = node.query_rows(
         "SELECT class, fixture_seed, catalog_revision, quest_order FROM pkg_playerbots_catalog_seed",
     );
@@ -233,7 +233,7 @@ fn playerbots_catalog_is_named_versioned_and_shared_by_starter_classes() {
     );
     assert!(seeds
         .iter()
-        .all(|row| row["catalog_revision"] == "2" && row["quest_order"].contains("3904")));
+        .all(|row| row["catalog_revision"] == "3" && row["quest_order"].contains("3904")));
     assert_eq!(
         node.query_rows("SELECT quest_entry FROM pkg_playerbots_catalog_quest")
             .len(),
@@ -709,7 +709,7 @@ fn playerbots_quest_objective_survives_combat_and_refreshes_changed_evidence() {
         .clone();
     assert_eq!(before_detail["quest_entry"], "7");
     assert_eq!(before_detail["actual_ender_entry"], "197");
-    assert_eq!(before_detail["catalog_revision"], "2");
+    assert_eq!(before_detail["catalog_revision"], "3");
     assert!(before_detail["destination_evidence_revision"].starts_with("observed-catalog-v1:"));
 
     node.assert_call("playerbots_fixture_runner_damage", &[CREATURE_6, bot, "1"]);
@@ -1236,6 +1236,10 @@ fn playerbots_missing_quest_target_retry_keeps_a_queued_return_home() {
         + 30_000_000;
     node.assert_sql(&format!(
         "UPDATE pkg_playerbots_runner SET next_eligible_micros = {delayed_until}, movement_due_micros = {} WHERE character_guid = {bot}", i64::MAX
+    ));
+    // The retry moved its due time from the runner row into the movement queue.
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_movement SET due_micros = {delayed_until} WHERE character_guid = {bot}"
     ));
     node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
     let waiting = runner(&node, &bot);

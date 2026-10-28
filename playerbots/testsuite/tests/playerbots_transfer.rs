@@ -136,6 +136,7 @@ fn capture(fixture: &TransferFixture, case: &str) -> serde_json::Value {
         "landing": node.query_rows("SELECT trigger_id, target_map, x, y, z, o, name FROM game_areatrigger_teleport WHERE trigger_id = 78"),
         "exit_source_volume": node.query_rows("SELECT id, map_id, x, y, z, radius, box_length, box_width, box_height, box_yaw FROM game_area_trigger WHERE id = 119"),
         "exit_landing": node.query_rows("SELECT trigger_id, target_map, x, y, z, o, name FROM game_areatrigger_teleport WHERE trigger_id = 119"),
+        "relocation": node.query_rows(&format!("SELECT * FROM game_character_relocation WHERE character_guid = {companion}")),
         "intent": node.query_rows(&format!("SELECT id, bot_guid, destination_map, destination_instance, controller_generation FROM game_bot_transfer_intent WHERE bot_guid = {companion}")),
         "action": node.query_rows(&format!("SELECT kind, target_guid, spell_id, quest_entry, cast_id, outcome FROM pkg_playerbots_action WHERE character_guid = {companion}")),
         "movement": node.query_rows(&format!("SELECT guid, sx, sy, dx, dy, start_micros, dur_ms FROM game_creature_spline WHERE guid = {companion}")),
@@ -204,14 +205,11 @@ fn playerbots_companion_enters_the_areatrigger_with_normalized_transfer_state() 
     );
     assert_eq!(
         evidence["intent"].as_array().unwrap().len(),
-        1,
+        0,
         "{evidence}"
     );
-    assert_eq!(evidence["intent"][0]["destination_map"], "36", "{evidence}");
-    assert_eq!(
-        evidence["intent"][0]["destination_instance"], "5098078",
-        "{evidence}"
-    );
+    assert_eq!(evidence["bot"][0]["map_id"], "36", "{evidence}");
+    assert_eq!(evidence["bot"][0]["instance_id"], "5098078", "{evidence}");
     assert_eq!(
         evidence["source_instance"][0]["party_id"], "5098000",
         "{evidence}"
@@ -227,7 +225,9 @@ fn playerbots_companion_enters_the_areatrigger_with_normalized_transfer_state() 
     );
     assert_eq!(evidence["character"][0]["x"], "-14.5732", "{evidence}");
     assert_eq!(evidence["character"][0]["y"], "-385.475", "{evidence}");
-    assert_eq!(evidence["bot"].as_array().unwrap().len(), 0, "{evidence}");
+    assert_eq!(evidence["bot"].as_array().unwrap().len(), 1, "{evidence}");
+    assert_eq!(evidence["bot"][0]["x"], "-14.5732", "{evidence}");
+    assert_eq!(evidence["bot"][0]["y"], "-385.475", "{evidence}");
     assert_eq!(
         evidence["pending_cast"].as_array().unwrap().len(),
         0,
@@ -307,18 +307,18 @@ fn playerbots_companion_enters_the_areatrigger_with_normalized_transfer_state() 
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
-fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() {
+fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_relocation_authority() {
     let fixture = fixture("playerbots-transfer-entry-replay", 2);
     fixture
         .node
         .assert_call("playerbots_fixture_runner_pass_once", &[&fixture.companion]);
     let first = capture(&fixture, "entry-replay-first");
-    let intent = first["intent"]
+    let relocation = first["relocation"]
         .as_array()
-        .and_then(|intents| intents.first())
-        .unwrap_or_else(|| panic!("initial Transfer Intent absent: {first}"));
-    let intent_id = intent["id"].as_str().unwrap().to_string();
-    let generation = intent["controller_generation"]
+        .and_then(|rows| rows.first())
+        .unwrap_or_else(|| panic!("initial relocation receipt absent: {first}"));
+    let relocation_id = relocation["id"].as_str().unwrap().to_string();
+    let generation = relocation["controller_generation"]
         .as_str()
         .unwrap()
         .to_string();
@@ -330,7 +330,7 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
             "36",
             "5098078",
             &generation,
-            &intent_id,
+            &relocation_id,
         ],
     );
     let replayed = capture(&fixture, "entry-replay-exact");
@@ -347,7 +347,7 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
             "36",
             "5098078",
             &generation,
-            &intent_id,
+            &relocation_id,
         ],
     );
     fixture.node.assert_call(
@@ -362,7 +362,7 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
             "36",
             "5098078",
             &generation,
-            &intent_id,
+            &relocation_id,
         ],
     );
     fixture.node.assert_call(
@@ -378,7 +378,7 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
             "36",
             "5098078",
             &changed_generation,
-            &intent_id,
+            &relocation_id,
         ],
     );
     let final_state = capture(&fixture, "entry-replay-refusals");
@@ -433,15 +433,15 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
 
     assert!(exact.status.success(), "{evidence}");
     assert_eq!(
-        evidence["exact_replay"]["state"]["intent"], evidence["first"]["intent"],
-        "an exact replay must retain the sole durable Transfer Intent: {evidence}"
+        evidence["exact_replay"]["state"]["relocation"], evidence["first"]["relocation"],
+        "an exact replay must retain the completed relocation receipt: {evidence}"
     );
     assert!(!disabled.status.success(), "{evidence}");
     assert!(
         evidence["disabled_replay"]["output"]
             .as_str()
             .unwrap()
-            .contains("session-less Transfer is disabled"),
+            .contains("CannotAct: session-less Transfer is disabled for this Character"),
         "{evidence}"
     );
     assert!(!record_only.status.success(), "{evidence}");
@@ -449,7 +449,7 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
         evidence["record_only_replay"]["output"]
             .as_str()
             .unwrap()
-            .contains("session-less Transfer is disabled"),
+            .contains("CannotAct: session-less Transfer is disabled for this Character"),
         "{evidence}"
     );
     assert!(!changed.status.success(), "{evidence}");
@@ -457,12 +457,12 @@ fn playerbots_sessionless_areatrigger_replay_keeps_its_exact_intent_authority() 
         evidence["changed_generation_replay"]["output"]
             .as_str()
             .unwrap()
-            .contains("TransferPending"),
+            .contains("OtherPartition: AreaTrigger is on another map"),
         "{evidence}"
     );
     assert_eq!(
-        evidence["final"]["intent"], evidence["first"]["intent"],
-        "refused replays must not replace the admitted Transfer Intent: {evidence}"
+        evidence["final"]["bot"], evidence["first"]["bot"],
+        "refused replays must not move the arrived companion: {evidence}"
     );
 }
 
@@ -511,15 +511,17 @@ fn playerbots_companion_uses_the_audited_deadmines_exit_route() {
         .node
         .assert_call("playerbots_fixture_runner_pass_once", &[&fixture.companion]);
     let exited = capture(&fixture, "deadmines-exit-entered");
-    assert_eq!(exited["intent"].as_array().unwrap().len(), 1, "{exited}");
-    assert_eq!(exited["intent"][0]["destination_map"], "0", "{exited}");
-    assert_eq!(exited["intent"][0]["destination_instance"], "0", "{exited}");
+    assert_eq!(exited["intent"].as_array().unwrap().len(), 0, "{exited}");
+    assert_eq!(exited["bot"][0]["map_id"], "0", "{exited}");
+    assert_eq!(exited["bot"][0]["instance_id"], "0", "{exited}");
     assert_eq!(exited["character"][0]["map_id"], "0", "{exited}");
     assert_eq!(
         exited["character"][0]["pending_instance_id"], "0",
         "{exited}"
     );
-    assert!(exited["bot"].as_array().unwrap().is_empty(), "{exited}");
+    assert_eq!(exited["bot"].as_array().unwrap().len(), 1, "{exited}");
+    assert_eq!(exited["bot"][0]["x"], "-11208.7", "{exited}");
+    assert_eq!(exited["bot"][0]["y"], "1675.9", "{exited}");
     assert_eq!(
         exited["runner"][0]["generation"]
             .as_str()
@@ -644,8 +646,8 @@ fn playerbots_transfer_advances_generation_and_rejects_the_source_cast_completio
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
-fn playerbots_pending_transfer_intent_keeps_the_admitted_instance_lease() {
-    let fixture = fixture("playerbots-transfer-intent-holds-instance", 2);
+fn playerbots_arrived_companion_keeps_the_admitted_instance_occupied() {
+    let fixture = fixture("playerbots-transfer-arrival-holds-instance", 2);
     fixture
         .node
         .assert_call("playerbots_fixture_runner_pass_once", &[&fixture.companion]);
@@ -657,13 +659,13 @@ fn playerbots_pending_transfer_intent_keeps_the_admitted_instance_lease() {
     );
     std::fs::write(
         support::log_dir().join(format!(
-            "{}-intent-holds-instance-refusal.txt",
+            "{}-arrival-holds-instance-refusal.txt",
             fixture.node.shard_name()
         )),
         &refusal_text,
     )
     .unwrap();
-    let evidence = capture(&fixture, "intent-holds-instance");
+    let evidence = capture(&fixture, "arrival-holds-instance");
 
     assert!(!refusal.status.success(), "{evidence}");
     assert!(refusal_text.contains("occupied or claimed"), "{evidence}");
@@ -674,10 +676,12 @@ fn playerbots_pending_transfer_intent_keeps_the_admitted_instance_lease() {
     );
     assert_eq!(
         evidence["intent"].as_array().unwrap().len(),
-        1,
+        0,
         "{evidence}"
     );
-    assert_eq!(evidence["bot"].as_array().unwrap().len(), 0, "{evidence}");
+    assert_eq!(evidence["bot"].as_array().unwrap().len(), 1, "{evidence}");
+    assert_eq!(evidence["bot"][0]["map_id"], "36", "{evidence}");
+    assert_eq!(evidence["bot"][0]["instance_id"], "5098078", "{evidence}");
 }
 
 #[test]
@@ -750,7 +754,7 @@ fn playerbots_legacy_crossing_releases_runner_when_its_party_leaves() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
-fn playerbots_legacy_crossing_uses_the_runner_transfer_checkpoint() {
+fn playerbots_legacy_crossing_completes_the_runner_transfer_checkpoint() {
     let fixture = fixture("playerbots-transfer-legacy-checkpoint", 2);
     fixture.node.assert_call(
         "playerbots_controller_transition_fixture_stage_legacy",
@@ -759,15 +763,18 @@ fn playerbots_legacy_crossing_uses_the_runner_transfer_checkpoint() {
     fixture
         .node
         .assert_call("playerbots_fixture_runner_pass_once", &[&fixture.companion]);
+    fixture
+        .node
+        .assert_call("playerbots_fixture_runner_pass_once", &[&fixture.companion]);
     let evidence = capture(&fixture, "legacy-checkpoint");
 
     assert_eq!(
         evidence["intent"].as_array().unwrap().len(),
-        1,
+        0,
         "{evidence}"
     );
     assert!(
-        evidence["intent"][0]["controller_generation"]
+        evidence["relocation"][0]["controller_generation"]
             .as_str()
             .unwrap()
             .parse::<u64>()
@@ -775,11 +782,10 @@ fn playerbots_legacy_crossing_uses_the_runner_transfer_checkpoint() {
             > 0,
         "{evidence}"
     );
-    assert!(
-        evidence["runner"][0]["transfer_checkpoint"]
-            .as_str()
-            .unwrap()
-            .contains("5098078"),
+    assert_eq!(evidence["bot"][0]["map_id"], "36", "{evidence}");
+    assert_eq!(evidence["bot"][0]["instance_id"], "5098078", "{evidence}");
+    assert_eq!(
+        evidence["runner"][0]["transfer_checkpoint"], "(none = ())",
         "{evidence}"
     );
     assert!(

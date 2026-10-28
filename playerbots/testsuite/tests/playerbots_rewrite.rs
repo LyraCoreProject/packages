@@ -100,24 +100,21 @@ fn fixture_role(name: &str, count: &str, role: &str) -> (Standalone, Vec<String>
 fn playerbots_a_long_bot_cast_waits_for_core_completion() {
     let (node, bots) = fixture("playerbots-cast", "1");
     let bot = &bots[0];
+    let casts =
+        support::LiveEvents::subscribe(&node, "game_spell_cast_event_live", "caster_guid > 0");
     node.assert_call("playerbots_fixture_cast", &[bot, bot]);
     let pending = node.query_rows("SELECT scheduled_id, caster_guid FROM game_pending_cast");
     assert_eq!(pending.len(), 1, "a five-second heal must leave a cast bar");
     assert_eq!(
-        node.query_rows(&format!(
-            "SELECT kind FROM game_spell_cast_event WHERE caster_guid = {bot}"
-        ))
-        .iter()
-        .filter(|r| r["kind"] == "1")
-        .count(),
+        casts
+            .rows(&node)
+            .iter()
+            .filter(|r| r["kind"] == "1")
+            .count(),
         1
     );
     assert!(
-        node.query_rows(&format!(
-            "SELECT kind FROM game_spell_cast_event WHERE caster_guid = {bot}"
-        ))
-        .iter()
-        .all(|r| r["kind"] != "2"),
+        casts.rows(&node).iter().all(|r| r["kind"] != "2"),
         "the cast has not resolved yet"
     );
     node.assert_call("playerbots_fixture_resume", &[bot]);
@@ -134,9 +131,7 @@ fn playerbots_a_long_bot_cast_waits_for_core_completion() {
         node.query_rows("SELECT scheduled_id FROM game_pending_cast")
             .is_empty()
     });
-    let events = node.query_rows(&format!(
-        "SELECT kind FROM game_spell_cast_event WHERE caster_guid = {bot}"
-    ));
+    let events = casts.rows(&node);
     assert_eq!(events.iter().filter(|r| r["kind"] == "2").count(), 1);
     assert!(
         node.query_rows(&format!(
@@ -383,21 +378,11 @@ fn assert_attack_action(
     );
 }
 
-fn playerbot_combat_events(
-    node: &Standalone,
-    attacker: &str,
-    target: &str,
-) -> Vec<std::collections::BTreeMap<String, String>> {
-    node.query_rows(&format!(
-        "SELECT id, attacker_guid, target_guid, damage FROM game_combat_event \
-         WHERE attacker_guid = {attacker} AND target_guid = {target}"
-    ))
-}
-
-fn combat_event_boundary(node: &Standalone, attacker: &str, target: &str) -> u64 {
-    playerbot_combat_events(node, attacker, target)
+fn combat_event_boundary(events: &support::LiveEvents, node: &Standalone) -> u64 {
+    events
+        .rows(node)
         .iter()
-        .filter_map(|row| row["id"].parse::<u64>().ok())
+        .map(|row| row["id"].parse::<u64>().unwrap())
         .max()
         .unwrap_or(0)
 }
@@ -441,6 +426,11 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
         ["guid"]
         .clone();
 
+    let combat = support::LiveEvents::subscribe(
+        &node,
+        "game_combat_event_live",
+        &format!("attacker_guid = {warrior} AND target_guid = {target}"),
+    );
     let refusal_body_before = playerbot_body(&node, &warrior);
     let refusal_spline_before = playerbot_spline(&node, &warrior);
     node.assert_call("playerbots_fixture_attack", &[&warrior, "999999999"]);
@@ -465,12 +455,12 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     });
     node.assert_call("playerbots_fixture_position", &[&warrior, "1211"]);
     let before_turn = playerbot_body(&node, &warrior);
-    let first_event_boundary = combat_event_boundary(&node, &warrior, &target);
+    let first_event_boundary = combat_event_boundary(&combat, &node);
     let accepted = observe_runner_attack(&node, &warrior);
     let after_turn = playerbot_body(&node, &warrior);
     let mut landed = Vec::new();
     let swung = poll_until(POLL_TIMEOUT, || {
-        landed = playerbot_combat_events(&node, &warrior, &target);
+        landed = combat.rows(&node);
         positive_combat_event_after(&landed, first_event_boundary)
     });
     let melee = playerbot_melee(&node, &warrior);
@@ -480,7 +470,7 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     let target_spline_before_refacing = playerbot_spline(&node, &target);
     let before_refacing = playerbot_body(&node, &warrior);
     let melee_before_refacing = melee.clone();
-    let second_event_boundary = combat_event_boundary(&node, &warrior, &target);
+    let second_event_boundary = combat_event_boundary(&combat, &node);
     let accepted_after_refacing = observe_runner_attack(&node, &warrior);
     let after_refacing = playerbot_body(&node, &warrior);
     let target_after_refacing = playerbot_body(&node, &target);
@@ -489,7 +479,7 @@ fn playerbots_an_admitted_sessionless_attack_faces_its_exact_target_before_swing
     let melee_immediate_after_refacing = playerbot_melee(&node, &warrior);
     let mut landed_after_refacing = Vec::new();
     let swung_after_refacing = poll_until(POLL_TIMEOUT, || {
-        landed_after_refacing = playerbot_combat_events(&node, &warrior, &target);
+        landed_after_refacing = combat.rows(&node);
         positive_combat_event_after(&landed_after_refacing, second_event_boundary)
     });
     let melee_after_refacing = playerbot_melee(&node, &warrior);
@@ -668,6 +658,8 @@ fn playerbots_route_evidence_distinguishes_arrival_from_a_planned_leg() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_instant_casts_resolve_synchronously_and_channels_are_explicitly_refused() {
     let (node, bots) = fixture("playerbots-cast-instant", "1");
+    let casts =
+        support::LiveEvents::subscribe(&node, "game_spell_cast_event_live", "caster_guid > 0");
     node.assert_call(
         "playerbots_fixture_cast_mode",
         &[&bots[0], &bots[0], "false"],
@@ -679,7 +671,7 @@ fn playerbots_instant_casts_resolve_synchronously_and_channels_are_explicitly_re
         node.query_rows("SELECT outcome FROM pkg_playerbots_action")[0]["outcome"],
         "(castResolved = ())"
     );
-    let events = node.query_rows("SELECT kind FROM game_spell_cast_event");
+    let events = casts.rows(&node);
     assert_eq!(events.iter().filter(|r| r["kind"] == "2").count(), 1);
     node.assert_call(
         "playerbots_fixture_cast_mode",
@@ -699,6 +691,8 @@ fn playerbots_instant_casts_resolve_synchronously_and_channels_are_explicitly_re
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_cast_completion_rechecks_range_and_stale_handles_cannot_cancel() {
     let (node, bots) = fixture("playerbots-cast-terminal-range", "2");
+    let casts =
+        support::LiveEvents::subscribe(&node, "game_spell_cast_event_live", "caster_guid > 0");
     node.assert_call("playerbots_fixture_cast", &[&bots[0], &bots[1]]);
     let pending = node.query_rows("SELECT scheduled_id FROM game_pending_cast");
     let id = pending[0]["scheduled_id"].parse::<u64>().unwrap();
@@ -722,10 +716,7 @@ fn playerbots_cast_completion_rechecks_range_and_stale_handles_cannot_cancel() {
     let result = node.query_rows("SELECT cast_id, outcome FROM pkg_playerbots_action");
     assert_eq!(result[0]["cast_id"], id.to_string());
     assert!(result[0]["outcome"].contains("outOfRange"), "{result:?}");
-    assert!(node
-        .query_rows("SELECT kind FROM game_spell_cast_event")
-        .iter()
-        .all(|r| r["kind"] != "2"));
+    assert!(casts.rows(&node).iter().all(|r| r["kind"] != "2"));
     record_observations(&node);
 }
 
@@ -980,6 +971,8 @@ fn playerbots_initial_credit_observation_preserves_an_existing_stall() {
 fn playerbots_core_cast_replacement_finishes_the_original_handle() {
     let (node, bots) = fixture("playerbots-cast-replacement", "1");
     let bot = &bots[0];
+    let casts =
+        support::LiveEvents::subscribe(&node, "game_spell_cast_event_live", "caster_guid > 0");
     node.assert_call("playerbots_fixture_cast", &[bot, bot]);
     let original =
         node.query_rows("SELECT scheduled_id FROM game_pending_cast")[0]["scheduled_id"].clone();
@@ -1000,7 +993,8 @@ fn playerbots_core_cast_replacement_finishes_the_original_handle() {
     assert_eq!(outcome[0]["cast_id"], original);
     assert_eq!(outcome[0]["outcome"], "(cancelled = ())");
     assert_eq!(
-        node.query_rows("SELECT is_interrupted FROM game_spell_cast_event")
+        casts
+            .rows(&node)
             .iter()
             .filter(|r| r["is_interrupted"] == "true")
             .count(),

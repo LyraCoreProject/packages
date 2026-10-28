@@ -1067,12 +1067,6 @@ fn a_member_never_leaves_and_never_asks_whether_to() {
     assert!(!asked, "only a leader's answer is ever used");
 }
 
-// ---- teardown --------------------------------------------------------------------------------
-
-/// Teardown leaves zero rows. A quester writes two kinds of durable row a wandering bot never
-/// did — its quest log, and the corpse a death leaves — and both have to go when the Operator
-/// despawns the population. Neither is this Package's table, so this pins that the core sweeps
-/// them rather than adding a sweep of our own.
 #[test]
 fn a_despawn_takes_the_quest_log_and_the_corpse_with_it() {
     assert!(
@@ -1084,7 +1078,7 @@ fn a_despawn_takes_the_quest_log_and_the_corpse_with_it() {
         .expect("module/src/world.rs is core, never an optional drop-in");
     let body = code_of(&src, "pub(crate) fn cascade_delete_character(");
     assert!(
-        body.contains("game_corpse()"),
+        body.contains("crate::Corpse::delete(ctx, crate::corpse::corpse_guid_for(character_guid))"),
         "`cascade_delete_character` no longer deletes the corpse, so a bot despawned as a \
          ghost would leave one standing in a field forever"
     );

@@ -31,8 +31,9 @@ module, so keep item names dungeon-prefixed.
 - Firing the Defias Cannon breaches the Iron Clad Door.
 - Mr. Smite rearms at his chest at 66% and 33% health: dual Reavers, then his two-hand hammer.
 
-Entries and positions are dump-verified against classic-db z2815. Omitted: Smite's stomp stun (no
-vanilla data row backs it).
+Creature, GameObject and weapon entries were checked against vmangos commit
+`464179081673cfd240f7ffe7f0daf96bca0b5a70`. The private verification fixture uses authored
+positions. Smite's stomp sequence remains unsupported.
 
 Door and encounter rows persist in the Module across a Standalone restart. A restart preserves
 open doors for completed encounters and closed doors for unfinished encounters.
@@ -58,7 +59,7 @@ the CLI's safe integer range. After setup, each stage resolves its subjects in t
 the production kill, damage, or gameobject use path, and checks the durable outcome in the same
 transaction.
 Core's `module/tests/deadmines_package.rs` also calls these stages to check the boss deaths,
-cannon, and Smite's weapon changes:
+cannon, Smite's weapon changes, and both yells through a speech event subscription:
 
 ```sh
 cd /path/to/LyraCore

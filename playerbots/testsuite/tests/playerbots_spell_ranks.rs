@@ -8,8 +8,8 @@ use support::Standalone;
 
 fn insert_row(node: &Standalone, table: &str, row: BTreeMap<String, String>) {
     let columns = match table {
-        "game_spell" => "spell_id,name,power_type,cost,cast_time_ms,gcd_ms,cooldown_ms,range_yd,duration_ms,school_mask,dispel_type,mechanic,max_stacks,aura_interrupt,attributes,spell_level,max_level,is_negative,cast_flags,stances,family_name,family_flags,proc_flags,proc_chance,proc_charges",
-        "game_spell_effect" => "id,spell_id,effect_index,kind,base_points,die_sides,per_level,period_ms,target,radius_yd,chain_targets,trigger_spell,effect_mechanic,p_0,p_0_kind,p_1,script_id,enters_combat",
+        "game_spell" => "spell_id,name,power_type,cost,cast_time_ms,gcd_ms,cooldown_ms,range_yd,duration_ms,school_mask,dispel_type,mechanic,max_stacks,aura_interrupt,attributes,spell_level,max_level,is_negative,cast_flags,stances,family_name,family_flags,proc_flags,proc_chance,proc_charges,max_duration_ms",
+        "game_spell_effect" => "id,spell_id,effect_index,kind,base_points,die_sides,per_level,period_ms,target,radius_yd,chain_targets,trigger_spell,effect_mechanic,p_0,p_0_kind,p_1,script_id,enters_combat,points_per_combo",
         _ => panic!("unsupported fixture table"),
     };
     let values = columns
@@ -99,6 +99,12 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
     ));
     let enemy =
         &node.query_rows("SELECT guid FROM game_creature_spawn WHERE entry = 5098090")[0]["guid"];
+    let table = if class == "1" {
+        "game_spell_cast_event_live"
+    } else {
+        "game_spell_impact_event_live"
+    };
+    let events = support::LiveEvents::subscribe(&node, table, &format!("caster_guid = {guid}"));
     node.assert_call(
         "playerbots_fixture_runner_damage_and_park",
         &[guid, enemy, "1"],
@@ -120,15 +126,14 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
     assert!(
         support::poll_until(Duration::from_secs(20), || {
             node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
-            let table = if class == "1" { "game_spell_cast_event" } else { "game_spell_impact_event" };
-            node.query_rows(&format!("SELECT spell_id, damage FROM {table} WHERE caster_guid = {guid}"))
+            events.rows(&node)
             .iter().any(|row| row["spell_id"] == expected.to_string()
                 && row["damage"].parse::<u32>().unwrap() > 0)
         }),
         "learned rank {expected} was selected but dealt no damage: runner={:?}; actions={:?}; casts={:?}",
         node.query_rows(&format!("SELECT chosen, last_outcome, foreground FROM pkg_playerbots_runner WHERE character_guid = {guid}")),
         node.query_rows(&format!("SELECT spell_id, outcome FROM pkg_playerbots_action WHERE character_guid = {guid}")),
-        node.query_rows(&format!("SELECT spell_id, is_completion, is_interrupted, damage FROM game_spell_cast_event WHERE caster_guid = {guid}")),
+        events.rows(&node),
     );
 }
 

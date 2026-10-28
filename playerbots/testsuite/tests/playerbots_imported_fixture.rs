@@ -140,6 +140,8 @@ fn prepare(fixture: NavigationFixture) -> Standalone {
         "creature-ai",
         "globals",
         "spellmeta",
+        "spell",
+        "dbc",
     ] {
         node.assert_call(
             "stamp_import_meta",
@@ -264,6 +266,31 @@ fn playerbots_imported_stage_skips_a_blocked_scatter_point() {
     assert_eq!(manifests[0]["source_revision"], SOURCE);
     assert_eq!(manifests[0]["dump_sha256"], DUMP);
     assert!(manifests[0]["started_micros"].contains("none"));
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_imported_stage_requires_the_spell_snapshot_identity() {
+    let node = prepare(NavigationFixture::Candidate19Blocked);
+    node.assert_sql("DELETE FROM game_import_meta WHERE family = 'spell'");
+    let missing = stage(&node);
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("missing the spell import"));
+    node.assert_call(
+        "stamp_import_meta",
+        &[
+            "\"spell\"",
+            "\"3333333333333333333333333333333333333333\"",
+            &serde_json::to_string(DUMP).unwrap(),
+            "1",
+        ],
+    );
+    let different = stage(&node);
+    assert!(!different.status.success());
+    assert!(String::from_utf8_lossy(&different.stderr).contains("different spell inputs"));
+    assert!(node
+        .query_rows("SELECT character_guid FROM pkg_playerbots_bot")
+        .is_empty());
 }
 
 #[test]

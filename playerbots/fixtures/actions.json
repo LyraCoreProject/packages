@@ -13,8 +13,8 @@
     "starter_role_creature_entries": [5098001, 5098002, 5098003],
     "starter_role_levels": [5, 10],
     "starter_role_training_level_reference": {
-      "source": "local classic-db-full.sql",
-      "sha256": "d2083bcd2670451279cbf93af138eadae04c6d183a4cd0ff0357047e4a565de6",
+      "source": "local vmangos SQLite",
+      "sha256": "a8ce8ecc8e9c9d00dfe23321d0763cf8aee19677c836f1e1b9acc15fb1fbd5c9",
       "use": "source-derived level facts only; not imported World Shard evidence",
       "spells": {
         "133": 1,

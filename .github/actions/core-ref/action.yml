@@ -1,9 +1,9 @@
 name: Paired Core revision
-description: Select a same-name Core branch when present, otherwise use the required revision.
+description: Keep the required Core revision for main; pair other branches with Core.
 inputs:
   fallback:
     description: Core revision required by this collection.
-    required: true
+    default: f0e09dab8e06ca0ebfb1ed708575290824dbefa5
 outputs:
   ref:
     description: Exact paired commit or required Core revision.
@@ -15,16 +15,22 @@ runs:
       shell: bash
       env:
         BRANCH: ${{ github.head_ref || github.ref_name }}
+        BASE_BRANCH: ${{ github.base_ref }}
         FALLBACK: ${{ inputs.fallback }}
       run: |
-        if [ "$BRANCH" = main ]; then
+        if [ "$BRANCH" = main ] || [ "$BASE_BRANCH" = main ]; then
           echo "ref=$FALLBACK" >> "$GITHUB_OUTPUT"
-        elif paired=$(git ls-remote --exit-code --heads https://github.com/LyraCoreProject/LyraCore "refs/heads/$BRANCH"); then
-          echo "ref=${paired%%[[:space:]]*}" >> "$GITHUB_OUTPUT"
-        else
-          status=$?
-          if [ "$status" -ne 2 ]; then
-            exit "$status"
-          fi
-          echo "ref=$FALLBACK" >> "$GITHUB_OUTPUT"
+          exit 0
         fi
+        candidates=("$BRANCH" "$BASE_BRANCH")
+        for candidate in "${candidates[@]}"; do
+          [ -n "$candidate" ] || continue
+          if paired=$(git ls-remote --exit-code --heads https://github.com/LyraCoreProject/LyraCore "refs/heads/$candidate"); then
+            echo "ref=${paired%%[[:space:]]*}" >> "$GITHUB_OUTPUT"
+            exit 0
+          else
+            status=$?
+            [ "$status" -eq 2 ] || exit "$status"
+          fi
+        done
+        echo "ref=$FALLBACK" >> "$GITHUB_OUTPUT"

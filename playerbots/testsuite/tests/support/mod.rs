@@ -3,6 +3,11 @@ pub mod evidence;
 #[allow(dead_code)]
 pub mod pb002;
 
+#[allow(dead_code)]
+mod events;
+#[allow(unused_imports)]
+pub use events::LiveEvents;
+
 pub use lyracore_test_support::*;
 
 /// Stage an active class buff before a test starts a movement, quest, or lifecycle decision.

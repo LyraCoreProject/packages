@@ -785,7 +785,7 @@ fn release_inventory_space(ctx: &ReducerContext, row: &mut AcceptanceInventoryFa
         row.space_release_error = Some("inventory filler missing".to_string());
         return;
     };
-    ctx.db.game_item_instance().guid().delete(filler.guid);
+    crate::tables::ItemInstance::delete(ctx, filler.guid);
     if crate::actor::has_free_slot(ctx, row.character_guid) {
         row.space_released_micros = Some(now);
     } else {
@@ -1706,7 +1706,7 @@ fn prepare_inventory_fault(ctx: &ReducerContext, character_guid: u64) -> Result<
         return Err("acceptance inventory filler count is outside its bounded setup".to_string());
     }
     for filler in fillers {
-        items.guid().delete(filler.guid);
+        crate::tables::ItemInstance::delete(ctx, filler.guid);
     }
     if !crate::actor::has_free_slot(ctx, character_guid) {
         return Err("acceptance inventory setup did not restore a free slot".to_string());
@@ -1985,7 +1985,7 @@ fn stage_journey_for(
     entity.grid_x = grid_x;
     entity.grid_y = grid_y;
     entity.cell = lyracore_shared::spatial::grid_cell_id(grid_x, grid_y);
-    ctx.db.game_world_entity().guid().update(entity);
+    entity.update(ctx);
     let entity = ctx
         .db
         .game_world_entity()
@@ -2193,7 +2193,6 @@ fn stage_level_gap_sources(
     let template = templates.insert(template);
 
     let spawns = ctx.db.game_creature_spawn();
-    let entities = ctx.db.game_world_entity();
     let mut source_guids = [299, 69, 38]
         .into_iter()
         .map(fixture_creature_guid)
@@ -2234,7 +2233,7 @@ fn stage_level_gap_sources(
         }
         spawns.guid().delete(guid);
         spawns.insert(spawn);
-        entities.guid().delete(guid);
+        crate::tables::WorldEntity::delete(ctx, guid);
         crate::package::fixture::insert_creature_entity(ctx, entity);
         source_guids.push(guid);
     }
@@ -2250,18 +2249,21 @@ fn stage_level_gap_history(ctx: &ReducerContext, character_guid: u64) -> Result<
             .filter((character_guid, quest_entry))
             .collect::<Vec<_>>()
         {
-            quests.id().delete(row.id);
+            crate::tables::CharacterQuest::delete(ctx, row.id);
         }
-        quests.insert(crate::tables::CharacterQuest {
-            id: 0,
-            character_guid,
-            owner_identity,
-            quest_entry,
-            counts: Vec::new(),
-            rewarded: true,
-            deadline_micros: 0,
-            failed: false,
-        });
+        crate::tables::CharacterQuest::insert(
+            ctx,
+            crate::tables::CharacterQuest {
+                id: 0,
+                character_guid,
+                owner_identity,
+                quest_entry,
+                counts: Vec::new(),
+                rewarded: true,
+                deadline_micros: 0,
+                failed: false,
+            },
+        );
     }
     Ok(())
 }

@@ -56,7 +56,7 @@ struct Party {
     actor: String,
 }
 
-fn setup(mode: u8) -> Party {
+fn setup(mode: u8) -> (Party, Instant) {
     let mut node = Standalone::start(&format!("playerbots-transfer-orders-{mode}"));
     node.publish_module();
     node.assert_call("claim_operator", &[]);
@@ -87,6 +87,8 @@ fn setup(mode: u8) -> Party {
         mages[1].clone(),
     ];
     node.assert_call("playerbots_fixture_prepare", &[]);
+    // The fixture schedules movement sixty seconds after this lower time bound.
+    let started = Instant::now();
     node.assert_call(
         "playerbots_transfer_orders_stage",
         &[&bots[0], &bots[1], &bots[2], &bots[3], &leader],
@@ -157,7 +159,7 @@ fn setup(mode: u8) -> Party {
             ],
         );
     }
-    party
+    (party, started)
 }
 
 fn snapshot(party: &Party, phase: &str, mode: u8) -> serde_json::Value {
@@ -190,9 +192,9 @@ fn snapshot(party: &Party, phase: &str, mode: u8) -> serde_json::Value {
         "collection_dirty": !git(&package, &["status", "--porcelain"]).is_empty(),
         "package_content_identity": content.finalize().to_hex().to_string(),
         "module_wasm_identity": blake3::hash(support::module_bytes()).to_hex().to_string(),
-        "partition_input_scope": "declared later Realm inputs applied through the Module mirror; real Gateway crossing and return route remain separate",
+        "partition_input_scope": "declared party partitions within one Shard; AreaTrigger entry relocates the companion immediately",
         "geometry": "declared flat source navigation at the audited trigger 78 coordinates; no imported floor or client claim",
-        "movement_schedule": "next ordinary Core movement tick declared sixty seconds before orders; Target cancellation must remove the retained leg before that tick",
+        "movement_schedule": "ordinary Core movement tick scheduled sixty seconds after fixture staging; Target cancellation must remove the retained leg before that tick",
         "source_audit": "pb010-imported-portal-source-14cda70a",
         "partitions": party.node.query_rows("SELECT * FROM game_group_member_partition WHERE group_id = 5098000"),
         "portal": party.node.query_rows("SELECT * FROM game_area_trigger WHERE id = 78"),
@@ -382,9 +384,7 @@ fn assert_remote_inputs(
 }
 
 fn order_decisions(mode: u8) {
-    // The fixture schedules its movement tick sixty seconds after this lower time bound.
-    let started = Instant::now();
-    let party = setup(mode);
+    let (party, started) = setup(mode);
     let target_started = support::poll_until(Duration::from_secs(10), || {
         party
             .node
@@ -491,10 +491,10 @@ fn order_decisions(mode: u8) {
         }
         let follows_crossing = index == 0 || (mode == 1 && index == 2);
         if follows_crossing {
-            assert_eq!(current["intent"].as_array().unwrap().len(), 1, "{after}");
-            assert_eq!(current["intent"][0]["destination_map"], "36");
-            assert_eq!(current["intent"][0]["destination_instance"], "5098078");
-            assert!(current["entity"].as_array().unwrap().is_empty());
+            assert_eq!(current["intent"].as_array().unwrap().len(), 0, "{after}");
+            assert_eq!(current["entity"][0]["map_id"], "36");
+            assert_eq!(current["entity"][0]["instance_id"], "5098078");
+            assert_eq!(current["entity"].as_array().unwrap().len(), 1);
             let generation = old["runner"]["generation"]
                 .as_str()
                 .unwrap()
@@ -503,17 +503,7 @@ fn order_decisions(mode: u8) {
                 + 1;
             assert_eq!(current["runner"]["generation"], generation.to_string());
             assert_eq!(
-                current["intent"][0]["controller_generation"],
-                generation.to_string()
-            );
-            let checkpoint = current["runner"]["transfer_checkpoint"].as_str().unwrap();
-            let member = if index == 2 {
-                &party.bots[1]
-            } else {
-                &party.leader
-            };
-            assert!(
-                checkpoint.contains(&format!("member_guid = {member}")),
+                current["runner"]["transfer_checkpoint"], "(none = ())",
                 "{after}"
             );
             assert!(current["cast"].as_array().unwrap().is_empty());
