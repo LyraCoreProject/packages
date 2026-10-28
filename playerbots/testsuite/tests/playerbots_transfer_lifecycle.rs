@@ -70,7 +70,6 @@ fn capture(node: &Standalone, guid: &str, case: &str, wasm: &[u8]) -> serde_json
         "runner": node.query_rows(&format!("SELECT * FROM pkg_playerbots_runner WHERE character_guid = {guid}")),
         "entity": node.query_rows(&format!("SELECT guid, health, max_health, level, xp, money, x, y, z, map_id, instance_id FROM game_world_entity WHERE guid = {guid}")),
         "pending_cast": node.query_rows(&format!("SELECT * FROM game_pending_cast WHERE caster_guid = {guid}")),
-        "spell_events": node.query_rows(&format!("SELECT kind, spell_id FROM game_spell_cast_event WHERE caster_guid = {guid} AND spell_id = {HEAL}")),
         "actions": node.query_rows(&format!("SELECT * FROM pkg_playerbots_action WHERE character_guid = {guid}")),
         "splines": node.query_rows(&format!("SELECT * FROM game_creature_spline WHERE guid = {guid}")),
         "movement_schedule": node.query_rows("SELECT * FROM game_creature_move_schedule"),
@@ -392,8 +391,7 @@ fn runner(node: &Standalone, guid: &str) -> BTreeMap<String, String> {
     rows.remove(0)
 }
 
-// A custom section changes the published program identity without changing executable code.
-// Equal program hashes skip database update in SpacetimeDB 2.7.1.
+// SpacetimeDB 2.7.1 needs a new Wasm hash; a custom section preserves executable code.
 fn replacement_bytes(node: &Standalone) -> Vec<u8> {
     let name = b"playerbots-lifecycle-replacement";
     let mut wasm = support::module_bytes().to_vec();
@@ -421,7 +419,6 @@ fn playerbots_module_replacement_retains_one_cast_and_controller_generation() {
         ["character_guid"]
         .clone();
     node.assert_call("playerbots_fixture_prepare", &[]);
-    node.assert_sql("DELETE FROM game_event_reaper_schedule");
     node.assert_sql(&format!(
         "UPDATE game_spell SET cast_time_ms = 30000 WHERE spell_id = {HEAL}"
     ));
@@ -430,6 +427,11 @@ fn playerbots_module_replacement_retains_one_cast_and_controller_generation() {
     ));
     node.assert_call("playerbots_fixture_runner_stage", &[&guid, "true"]);
     node.assert_call("playerbots_fixture_runner_select_cohort", &[&guid]);
+    let events = support::LiveEvents::subscribe(
+        &node,
+        "game_spell_cast_event_live",
+        &format!("caster_guid = {guid} AND spell_id = {HEAL}"),
+    );
     let started = poll_until(Duration::from_secs(20), || {
         node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
         runner(&node, &guid)["foreground"].contains("cast")
@@ -475,9 +477,17 @@ fn playerbots_module_replacement_retains_one_cast_and_controller_generation() {
         completed["runner"][0]["objective_sequence"],
         before["runner"][0]["objective_sequence"]
     );
-    let events = completed["spell_events"].as_array().unwrap();
-    assert_eq!(events.iter().filter(|row| row["kind"] == "1").count(), 1);
-    assert_eq!(events.iter().filter(|row| row["kind"] == "2").count(), 1);
+    let events = events.rows(&node);
+    assert_eq!(
+        events.iter().filter(|row| row["kind"] == "1").count(),
+        1,
+        "{events:?}"
+    );
+    assert_eq!(
+        events.iter().filter(|row| row["kind"] == "2").count(),
+        1,
+        "{events:?}"
+    );
 }
 
 fn stage_completed_quest(node: &Standalone, guid: &str) {

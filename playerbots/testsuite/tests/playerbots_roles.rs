@@ -20,6 +20,7 @@ const PRECEDING_PACKAGE_IDENTITY: &str =
     "573c5856e3a261e073a7bd414e2183efa7f6dcec823a47d0c190d29b1aab3db4";
 
 struct RolesFixture {
+    casts: support::LiveEvents,
     node: Standalone,
     warrior: String,
     priest: String,
@@ -173,10 +174,13 @@ fn known(node: &Standalone, guid: &str, spell: u32) -> bool {
         .is_empty()
 }
 
-fn cast_events(node: &Standalone, guid: &str, spell: u32) -> Vec<BTreeMap<String, String>> {
-    node.query_rows(&format!(
-        "SELECT * FROM game_spell_cast_event WHERE caster_guid = {guid} AND spell_id = {spell}"
-    ))
+fn cast_events(fixture: &RolesFixture, guid: &str, spell: u32) -> Vec<BTreeMap<String, String>> {
+    fixture
+        .casts
+        .rows(&fixture.node)
+        .into_iter()
+        .filter(|row| row["caster_guid"] == guid && row["spell_id"] == spell.to_string())
+        .collect()
 }
 
 fn active_auras(node: &Standalone, guid: &str, spell: u32) -> Vec<BTreeMap<String, String>> {
@@ -320,7 +324,10 @@ fn fixture(name: &str, level: u32) -> RolesFixture {
         node.assert_call("playerbots_fixture_provision_steps", &[guid, "32"]);
     }
     node_evidence(&node, "provisioned");
+    let casts =
+        support::LiveEvents::subscribe(&node, "game_spell_cast_event_live", "caster_guid > 0");
     RolesFixture {
+        casts,
         node,
         warrior,
         priest,
@@ -427,7 +434,7 @@ fn playerbots_level_five_roles_obey_classic_level_gates_and_never_pull_from_sele
     let tank = runner(node, &fixture.warrior);
     assert!(tank["chosen"].contains("tankFight"), "{tank:?}");
     assert!(tank["companion_fight_target_guid"].contains(target));
-    assert!(cast_events(node, &fixture.warrior, 355).is_empty());
+    assert!(cast_events(&fixture, &fixture.warrior, 355).is_empty());
     assert!(!node
         .query_rows(&format!(
             "SELECT * FROM game_melee_attack WHERE attacker_guid = {} AND target_guid = {target}",
@@ -439,11 +446,11 @@ fn playerbots_level_five_roles_obey_classic_level_gates_and_never_pull_from_sele
     evidence(&fixture, "priest-engaged");
     let healer = runner(node, &fixture.priest);
     assert!(healer["chosen"].contains("damageFight"), "{healer:?}");
-    assert!(cast_events(node, &fixture.priest, 585).is_empty());
+    assert!(cast_events(&fixture, &fixture.priest, 585).is_empty());
 
     let mage_cast = poll_until(POLL_TIMEOUT, || {
         pass(node, &fixture.mage);
-        !cast_events(node, &fixture.mage, 133).is_empty()
+        !cast_events(&fixture, &fixture.mage, 133).is_empty()
     });
     evidence(&fixture, "mage-engaged");
     assert!(mage_cast);
@@ -625,7 +632,7 @@ fn playerbots_tank_repairs_range_and_completes_a_real_taunt() {
     }));
     let cast = poll_until(POLL_TIMEOUT, || {
         pass(node, &fixture.warrior);
-        cast_events(node, &fixture.warrior, 355)
+        cast_events(&fixture, &fixture.warrior, 355)
             .iter()
             .any(|event| event["target_guid"] == *target)
     });
@@ -699,7 +706,7 @@ fn playerbots_active_renew_keeps_its_tick_and_allows_another_heal() {
         .unwrap();
     assert!(poll_until(POLL_TIMEOUT, || {
         pass(node, &fixture.priest);
-        cast_events(node, &fixture.priest, 2050)
+        cast_events(&fixture, &fixture.priest, 2050)
             .iter()
             .any(|event| {
                 event["target_guid"] == fixture.leader
@@ -772,7 +779,7 @@ fn playerbots_buffs_and_repeated_pulls_retain_roles_through_rest_los_and_death()
         .unwrap();
     let heal_cast = poll_until(POLL_TIMEOUT, || {
         pass(node, &fixture.priest);
-        !cast_events(node, &fixture.priest, 139).is_empty()
+        !cast_events(&fixture, &fixture.priest, 139).is_empty()
     });
     let healed = poll_until(POLL_TIMEOUT, || {
         entity(node, &fixture.leader)["health"]
@@ -1306,10 +1313,10 @@ fn playerbots_a_stronger_buff_family_member_prevents_a_weaker_maintenance_cast()
             &[&fixture.leader, target],
         );
     }
-    let before = cast_events(node, &fixture.priest, 1243).len();
+    let before = cast_events(&fixture, &fixture.priest, 1243).len();
     pass(node, &fixture.priest);
     evidence(&fixture, "stronger-family-active");
-    assert_eq!(cast_events(node, &fixture.priest, 1243).len(), before);
+    assert_eq!(cast_events(&fixture, &fixture.priest, 1243).len(), before);
     assert!(!node
         .query_rows(&format!(
             "SELECT spell_id FROM game_aura WHERE target_guid = {} AND spell_id = 21562",
