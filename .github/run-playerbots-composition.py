@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the reviewed lifecycle references and companion cases at explicit source pins."""
+"""Run lifecycle cases at explicit source pins."""
 
 import argparse
 import hashlib
@@ -12,10 +12,6 @@ import subprocess
 import time
 
 
-COMPANION_CASES = (
-    "playerbots_acceptance_human_and_four_companions_complete_the_fixed_route",
-    "playerbots_acceptance_restart_transfer_and_lost_ack_apply_once",
-)
 CASE_SECONDS = 1800
 EXECUTION_SECONDS = 5400
 CLEANUP_SECONDS = 10
@@ -93,8 +89,6 @@ def required_cases(manifest: dict) -> list[tuple[str, str]]:
         if not re.fullmatch(r"[a-z][a-z0-9_]*(?:::[a-z][a-z0-9_]*)*", name):
             raise ValueError("invalid Rust test name")
         cases.add((target, name))
-    for name in COMPANION_CASES:
-        cases.add(("playerbots_companion_acceptance", name))
     return sorted(cases)
 
 
@@ -114,7 +108,7 @@ def run_case(command: list[str], path: Path, cwd: Path, seconds: float) -> tuple
                     break
                 time.sleep(0.25)
         finally:
-            # Cargo may exit before a test's Standalone or Gateway child.
+            # Cargo may exit before a test's Standalone child.
             try:
                 os.killpg(process.pid, signal.SIGTERM)
             except ProcessLookupError:

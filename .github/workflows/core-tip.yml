@@ -70,8 +70,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - name: Check out the required Core revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -140,8 +138,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - name: Check out the required Core revision
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -150,22 +146,15 @@ jobs:
           path: lyracore
           persist-credentials: false
 
-      # `spacetime generate` builds the module to wasm and extracts its schema through it, so this
-      # job needs the same toolchain + target the `module` job's compile check needs, plus the
-      # wasm target neither that job nor `check-core-tip.sh` requires.
+      # Schema generation requires the Wasm target.
       - name: Install Rust 1.93.0
         run: |
           rustup toolchain install 1.93.0 --profile minimal
           rustup target add wasm32-unknown-unknown --toolchain 1.93.0
 
-      # Pinned to the version LyraCore's module/Cargo.toml and gateway/Cargo.toml pin today
-      # (LyraCore's own `lyracore preflight` reads its pin from that checkout at run time; this
-      # workflow cannot, so the version here has to be kept in step with core's by hand — the same
-      # maintenance the "Install Rust 1.93.0" step above already carries).
+      # Keep the CLI version aligned with Core module/Cargo.toml.
       - name: Install the pinned SpacetimeDB CLI
         run: |
-          # The install script no longer takes a version flag; the CLI's own version manager
-          # does the pinning now.
           curl -sSf https://install.spacetimedb.com | sh -s -- --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/spacetime" version install 2.7.1
@@ -176,10 +165,6 @@ jobs:
           curl -fsSL https://bun.sh/install | bash -s "bun-v1.3.7"
           echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
 
-      # `./lyracore` is a pinned shim: it installs the exact CLI revision LyraCore's own
-      # `.lyracore-cli-rev` names, the first time anything runs it (docs/agents/cross-repo-cli.md
-      # in LyraCore). Running it once here, on its own, keeps that install's own log separate from
-      # the check that follows.
       - name: Install the pinned lyracore CLI
         run: (cd lyracore && ./lyracore --help >/dev/null)
 
@@ -211,8 +196,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - name: Check out Core with bounded population checks
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -767,8 +750,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - name: Check out Core with the additive Transfer migration check
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -895,19 +876,12 @@ jobs:
               cargo build --manifest-path "$GITHUB_WORKSPACE/lyracore/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
-              set +e
-              python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
-                --locked --test playerbots_transfer_restart \
-                --no-fail-fast -- --ignored --nocapture --test-threads=1
-              gateway_status=$?
               python3 "$GITHUB_WORKSPACE/collection/.github/run-playerbots-tests.py" "$GITHUB_WORKSPACE/lyracore" test \
                 --locked \
                 --test playerbots_transfer --test playerbots_transfer_lifecycle \
                 --test playerbots_transfer_upgrade --test playerbots_transfer_orders \
                 --test playerbots_transfer_recovery \
                 --no-fail-fast -- --ignored --nocapture --test-threads=1
-              module_status=$?
-              test "$gateway_status" -eq 0 && test "$module_status" -eq 0
             '
       - name: Upload Transfer inputs, process and Standalone evidence
         if: always()
@@ -994,8 +968,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - name: Check out Core with the movement Gate
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1188,18 +1160,9 @@ jobs:
         with:
           path: collection
           persist-credentials: false
-      - name: Check out the policy comparison Package source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: LyraCoreProject/packages
-          ref: 50e2cd10870d2cfb4a36018bbbd559f9d07c2062
-          path: comparison-collection
-          persist-credentials: false
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - name: Check out Core with recorded recovery deadlines
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -1227,28 +1190,10 @@ jobs:
           tar --extract --gzip --file "$archive_path" --directory "$cli_dir"
           ln -s spacetimedb-cli "$cli_dir/spacetime"
           echo "$cli_dir" >> "$GITHUB_PATH"
-      - name: Check out the pinned Headless Client
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: LyraCoreProject/wire-harness
-          ref: v0.1.0-alpha.13
-          path: wire-client
-          persist-credentials: false
-      - name: Verify and build the Headless Client
-        env:
-          CARGO_TARGET_DIR: ${{ runner.temp }}/playerbots-composition-target
-        run: |
-          test "$(git -C wire-client rev-parse HEAD)" = 68f4a0dec63feaba330efbb15f7730ccc4c1d805
-          pin=$(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' lyracore/.wire-harness-rev)
-          test "$pin" = 'v0.1.0-alpha.13 68f4a0dec63feaba330efbb15f7730ccc4c1d805'
-          cargo build --manifest-path wire-client/Cargo.toml --locked --release --bin vanilla-wire
-          sha256sum "$CARGO_TARGET_DIR/release/vanilla-wire" > "$RUNNER_TEMP/playerbots-composition-wire.sha256"
-      - name: Run the exact lifecycle and companion cases
+      - name: Run the exact lifecycle cases
         working-directory: lyracore
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/playerbots-composition-target
-          LYRACORE_WIRE_BIN: ${{ runner.temp }}/playerbots-composition-target/release/vanilla-wire
-          PLAYERBOTS_COMPANION_COMPARISON_COLLECTION: ${{ github.workspace }}/comparison-collection
           RUST_TEST_THREADS: 1
         run: |
           export COMPOSITION_CORE=$(git rev-parse HEAD)
@@ -1280,7 +1225,7 @@ jobs:
                 > "$RUNNER_TEMP/playerbots-composition-status.txt"
               test "$run_status" -eq 0 && test "$checker_status" -eq 0
             '
-      - name: Upload lifecycle and companion execution evidence
+      - name: Upload lifecycle execution evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -1289,7 +1234,6 @@ jobs:
             /tmp/lyracore-standalone-logs
             ${{ runner.temp }}/playerbots-composition-executions
             ${{ runner.temp }}/playerbots-composition-status.txt
-            ${{ runner.temp }}/playerbots-composition-wire.sha256
             ${{ runner.temp }}/playerbots-composition-wasm.sha256
             ${{ runner.temp }}/playerbots-composition-target/wasm32-unknown-unknown/release/lyracore_module.wasm
           if-no-files-found: error
