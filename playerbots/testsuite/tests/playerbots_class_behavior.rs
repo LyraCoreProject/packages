@@ -87,6 +87,11 @@ fn playerbots_starter_casters_apply_and_retain_their_buffs_solo_and_grouped() {
 fn playerbots_heroic_strike_fires_through_the_ordinary_melee_swing() {
     for grouped in [false, true] {
         let (node, guid) = fixture("1", "0", grouped, true);
+        let casts = support::LiveEvents::subscribe(
+            &node,
+            "game_spell_cast_event_live",
+            &format!("caster_guid = {guid} AND spell_id = 78"),
+        );
         pass(&node, &guid);
         assert!(
             support::poll_until(Duration::from_secs(8), || {
@@ -98,8 +103,11 @@ fn playerbots_heroic_strike_fires_through_the_ordinary_melee_swing() {
         );
         assert!(
             support::poll_until(Duration::from_secs(8), || {
-                node.query_rows(&format!("SELECT spell_id, is_interrupted, is_completion FROM game_spell_cast_event WHERE caster_guid = {guid}"))
-                .iter().any(|event| event["spell_id"] == "78" && event["is_completion"] == "true" && event["is_interrupted"] == "false")
+                casts.rows(&node).iter().any(|event| {
+                    event["spell_id"] == "78"
+                        && event["is_completion"] == "true"
+                        && event["is_interrupted"] == "false"
+                })
             }),
             "queued Heroic Strike never fired"
         );
@@ -107,7 +115,7 @@ fn playerbots_heroic_strike_fires_through_the_ordinary_melee_swing() {
             "SELECT power, next_swing_spell FROM game_world_entity WHERE guid = {guid}"
         ))[0];
         assert_eq!(me["next_swing_spell"], "0");
-        let strikes = node.query_rows(&format!("SELECT damage, target_guid, is_completion, is_interrupted FROM game_spell_cast_event WHERE caster_guid = {guid} AND spell_id = 78"));
+        let strikes = casts.rows(&node);
         let strike = strikes
             .iter()
             .find(|event| event["is_completion"] == "true" && event["is_interrupted"] == "false")
@@ -235,11 +243,16 @@ fn playerbots_starter_casters_finish_attacks_solo_and_in_parties() {
     for (class, role, spell) in [("5", "1", "585"), ("8", "2", "133")] {
         for grouped in [false, true] {
             let (node, guid) = fixture(class, role, grouped, true);
+            let impacts = support::LiveEvents::subscribe(
+                &node,
+                "game_spell_impact_event_live",
+                &format!("caster_guid = {guid}"),
+            );
             pass(&node, &guid);
             assert!(
                 support::poll_until(Duration::from_secs(20), || {
                     pass(&node, &guid);
-                    node.query_rows(&format!("SELECT spell_id, damage FROM game_spell_impact_event WHERE caster_guid = {guid}"))
+                    impacts.rows(&node)
                     .iter().any(|event| event["spell_id"] == spell && event["damage"].parse::<u32>().unwrap() > 0)
                 }),
                 "class {class} did not deal spell damage, grouped={grouped}; runner={:?}; actions={:?}; entity={:?}",

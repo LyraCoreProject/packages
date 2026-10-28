@@ -641,9 +641,9 @@
       "action": "Transfer",
       "lifecycle": "success",
       "case": {
-        "target": "playerbots_transfer_restart",
-        "name": "playerbots_companion_enters_and_exits_deadmines_through_real_gateway_routes",
-        "source": "tests/playerbots_transfer_restart.rs"
+        "target": "playerbots_transfer",
+        "name": "playerbots_companion_enters_the_areatrigger_with_normalized_transfer_state",
+        "source": "tests/playerbots_transfer.rs"
       }
     },
     {
@@ -687,11 +687,6 @@
     {
       "target": "playerbots_action_lifecycle",
       "name": "playerbots_expired_quest_does_not_preempt_resurrection_or_defense",
-      "source": "tests/playerbots_action_lifecycle.rs"
-    },
-    {
-      "target": "playerbots_action_lifecycle",
-      "name": "playerbots_admitted_transfer_ignores_an_unrelated_expired_objective",
       "source": "tests/playerbots_action_lifecycle.rs"
     },
     {

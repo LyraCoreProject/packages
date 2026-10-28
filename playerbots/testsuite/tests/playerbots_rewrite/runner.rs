@@ -1305,7 +1305,11 @@ fn playerbots_runner_record_only_observes_without_gameplay_and_freeze_holds_posi
 fn playerbots_runner_retains_a_cast_across_real_pushback_and_resumes_home() {
     let (node, bots) = fixture("playerbots-runner-pushback", "1");
     let bot = &bots[0];
-    node.assert_sql("DELETE FROM game_event_reaper_schedule");
+    let casts = support::LiveEvents::subscribe(
+        &node,
+        "game_spell_cast_event_live",
+        &format!("caster_guid = {bot}"),
+    );
     node.assert_call("playerbots_fixture_runner_stage", &[bot, "true"]);
     select(&node, bot, "frozen");
     select(&node, bot, "cohort");
@@ -1345,9 +1349,7 @@ fn playerbots_runner_retains_a_cast_across_real_pushback_and_resumes_home() {
         .contains(&start["scheduled_id"])));
     assert!(poll_until(POLL_TIMEOUT, || runner(&node, bot)["objective"]
         .contains("completed")));
-    let events = node.query_rows(&format!(
-        "SELECT kind FROM game_spell_cast_event WHERE caster_guid = {bot}"
-    ));
+    let events = casts.rows(&node);
     assert_eq!(events.iter().filter(|e| e["kind"] == "1").count(), 1);
     assert_eq!(events.iter().filter(|e| e["kind"] == "2").count(), 1);
     assert_eq!(runner(&node, bot)["objective_sequence"], objective_id);
@@ -1688,7 +1690,12 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         node.assert_call("playerbots_fixture_roles_priest_mana", &[&bot]);
         node.assert_call("playerbots_fixture_runner_clear_navigation", &[&bot]);
         node.assert_call("playerbots_fixture_runner_select_cohort", &[&bot]);
-        (node, bot)
+        let casts = support::LiveEvents::subscribe(
+            &node,
+            "game_spell_cast_event_live",
+            &format!("caster_guid = {bot}"),
+        );
+        (node, bot, casts)
     };
     let recovery_actions = |node: &Standalone, bot: &str| {
         node.query_rows(&format!(
@@ -1700,18 +1707,19 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
             "SELECT scheduled_id, caster_guid, spell_id, target_guid FROM game_pending_cast WHERE caster_guid = {bot} AND spell_id = {spell}"
         ))
     };
-    let recovery_effect = |node: &Standalone, bot: &str| {
-        node.query_rows(&format!(
-            "SELECT caster_guid, spell_id, target_guid, kind, is_completion, healed FROM game_spell_cast_event WHERE caster_guid = {bot} AND spell_id = 2050 AND target_guid = {bot}"
-        ))
-        .iter()
-        .any(|event| {
-            event["kind"] == "2"
+    let recovery_effect = |node: &Standalone, bot: &str, casts: &support::LiveEvents| {
+        casts.rows(node).iter().any(|event| {
+            event["spell_id"] == "2050"
+                && event["target_guid"] == bot
+                && event["kind"] == "2"
                 && event["is_completion"] == "true"
                 && event["healed"].parse::<u32>().unwrap() > 0
         })
     };
-    let save_readiness = |node: &Standalone, phase: &str, bot: &str| {
+    let save_readiness = |node: &Standalone,
+                          phase: &str,
+                          bot: &str,
+                          casts: &support::LiveEvents| {
         let evidence = serde_json::json!({
             "runner": runner(node, bot),
             "actions": node.query_rows(&format!(
@@ -1720,9 +1728,7 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
             "pending_cast": node.query_rows(&format!(
                 "SELECT scheduled_id, caster_guid, spell_id, target_guid FROM game_pending_cast WHERE caster_guid = {bot}"
             )),
-            "cast_events": node.query_rows(&format!(
-                "SELECT caster_guid, spell_id, target_guid, kind, is_completion, healed FROM game_spell_cast_event WHERE caster_guid = {bot}"
-            )),
+            "cast_events": casts.rows(node),
             "cooldown": node.query_rows(&format!(
                 "SELECT caster_guid, ready_at FROM game_spell_cooldown WHERE caster_guid = {bot}"
             )),
@@ -1737,25 +1743,26 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         std::fs::write(path, serde_json::to_vec_pretty(&evidence).unwrap()).unwrap();
         evidence
     };
-    let recovery_completed = |node: &Standalone, bot: &str| {
+    let recovery_completed = |node: &Standalone, bot: &str, casts: &support::LiveEvents| {
         assert!(poll_until(POLL_TIMEOUT, || {
             pending(node, bot, 2050).is_empty()
                 && recovery_actions(node, bot).iter().any(|action| {
                     action["cast_id"] != "0" && action["outcome"] == "(castResolved = ())"
                 })
-                && recovery_effect(node, bot)
+                && recovery_effect(node, bot, casts)
         }));
     };
-    let complete_recovery = |node: &Standalone, bot: &str, phase: &str| {
-        node.assert_call(
-            "playerbots_fixture_runner_start_and_retain_recovery",
-            &[bot],
-        );
-        recovery_completed(node, bot);
-        save_readiness(node, phase, bot)
-    };
+    let complete_recovery =
+        |node: &Standalone, bot: &str, phase: &str, casts: &support::LiveEvents| {
+            node.assert_call(
+                "playerbots_fixture_runner_start_and_retain_recovery",
+                &[bot],
+            );
+            recovery_completed(node, bot, casts);
+            save_readiness(node, phase, bot, casts)
+        };
 
-    let (mana_node, mana_bot) = setup("playerbots-recovery-readiness-mana");
+    let (mana_node, mana_bot, mana_casts) = setup("playerbots-recovery-readiness-mana");
     mana_node.assert_call(
         "playerbots_fixture_companion_move",
         &[&target, "1375", "1200"],
@@ -1768,15 +1775,21 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         "playerbots_fixture_runner_insufficient_recovery_power_and_pass_once",
         &[&mana_bot],
     );
-    let mana_wait = save_readiness(&mana_node, "mana-recovery-waits", &mana_bot);
+    let mana_wait = save_readiness(&mana_node, "mana-recovery-waits", &mana_bot, &mana_casts);
     assert!(
         recovery_actions(&mana_node, &mana_bot).is_empty(),
         "{mana_wait}"
     );
     mana_node.assert_call("playerbots_fixture_roles_priest_mana", &[&mana_bot]);
-    complete_recovery(&mana_node, &mana_bot, "mana-recovery-completed");
+    complete_recovery(
+        &mana_node,
+        &mana_bot,
+        "mana-recovery-completed",
+        &mana_casts,
+    );
 
-    let (cooldown_node, cooldown_bot) = setup("playerbots-recovery-readiness-cooldown");
+    let (cooldown_node, cooldown_bot, cooldown_casts) =
+        setup("playerbots-recovery-readiness-cooldown");
     cooldown_node.assert_call(
         "playerbots_fixture_companion_move",
         &[&target, "1375", "1200"],
@@ -1789,7 +1802,12 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         "playerbots_fixture_runner_cooldown_and_pass_once",
         &[&cooldown_bot],
     );
-    let cooldown_wait = save_readiness(&cooldown_node, "cooldown-recovery-waits", &cooldown_bot);
+    let cooldown_wait = save_readiness(
+        &cooldown_node,
+        "cooldown-recovery-waits",
+        &cooldown_bot,
+        &cooldown_casts,
+    );
     assert_eq!(
         cooldown_wait["cooldown"].as_array().unwrap().len(),
         1,
@@ -1800,9 +1818,14 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         "{cooldown_wait}"
     );
     std::thread::sleep(Duration::from_secs(2));
-    complete_recovery(&cooldown_node, &cooldown_bot, "cooldown-recovery-completed");
+    complete_recovery(
+        &cooldown_node,
+        &cooldown_bot,
+        "cooldown-recovery-completed",
+        &cooldown_casts,
+    );
 
-    let (cast_node, cast_bot) = setup("playerbots-recovery-readiness-pending-defense");
+    let (cast_node, cast_bot, cast_casts) = setup("playerbots-recovery-readiness-pending-defense");
     cast_node.assert_call(
         "playerbots_fixture_runner_damage_and_park",
         &[&cast_bot, &target, "1"],
@@ -1811,8 +1834,13 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         "playerbots_fixture_runner_pending_defense_then_recovery",
         &[&cast_bot],
     );
-    recovery_completed(&cast_node, &cast_bot);
-    save_readiness(&cast_node, "ready-recovery-preempts-defense", &cast_bot);
+    recovery_completed(&cast_node, &cast_bot, &cast_casts);
+    save_readiness(
+        &cast_node,
+        "ready-recovery-preempts-defense",
+        &cast_bot,
+        &cast_casts,
+    );
 }
 
 #[test]
@@ -2249,6 +2277,11 @@ fn playerbots_runner_expired_home_does_not_cancel_a_tactical_cast() {
     ))[0]["health"]
         .parse::<u32>()
         .unwrap();
+    let casts = support::LiveEvents::subscribe(
+        &node,
+        "game_spell_cast_event_live",
+        &format!("caster_guid = {bot}"),
+    );
     node.assert_call(
         "playerbots_fixture_runner_expire_home_during_live_recovery_cast",
         &[bot],
@@ -2263,9 +2296,7 @@ fn playerbots_runner_expired_home_does_not_cancel_a_tactical_cast() {
             "pending_cast": node.query_rows(&format!(
                 "SELECT scheduled_id, caster_guid, spell_id, target_guid FROM game_pending_cast WHERE caster_guid = {bot}"
             )),
-            "cast_events": node.query_rows(&format!(
-                "SELECT id, caster_guid, spell_id, target_guid, kind, is_completion, healed FROM game_spell_cast_event WHERE caster_guid = {bot}"
-            )),
+            "cast_events": casts.rows(&node),
             "entity": node.query_rows(&format!(
                 "SELECT guid, health, max_health, x, y, z FROM game_world_entity WHERE guid = {bot}"
             )),

@@ -250,6 +250,7 @@ fn evidence(node: &Standalone, case: &str) {
 
 fn policy_gameplay_state(
     node: &Standalone,
+    casts: &support::LiveEvents,
     priest: &str,
     leader: &str,
     ally: &str,
@@ -261,8 +262,7 @@ fn policy_gameplay_state(
                 "SELECT * FROM game_world_entity WHERE guid = {guid}"
             ));
             if guid == ally {
-                // Core health regeneration may advance independently. The assertion below keeps
-                // this ally inside the exact Heal policy premise.
+                // Regeneration is independent; the caller checks that the ally still needs Heal.
                 rows[0].remove("health");
             }
             rows
@@ -281,9 +281,7 @@ fn policy_gameplay_state(
         "pending_casts": node.query_rows(&format!(
             "SELECT * FROM game_pending_cast WHERE caster_guid = {priest}"
         )),
-        "cast_events": node.query_rows(&format!(
-            "SELECT * FROM game_spell_cast_event WHERE caster_guid = {priest}"
-        )),
+        "cast_events": casts.rows(node),
         "melee": node.query_rows("SELECT * FROM game_melee_attack"),
         "splines": node.query_rows(&format!(
             "SELECT * FROM game_creature_spline WHERE guid = {priest}"
@@ -365,7 +363,12 @@ fn record_policy_comparison(node: &Standalone, priest: &str, leader: &str, ally:
 
     verify_legacy_comparison();
 
-    let gameplay_before = policy_gameplay_state(node, priest, leader, ally);
+    let casts = support::LiveEvents::subscribe(
+        node,
+        "game_spell_cast_event_live",
+        &format!("caster_guid = {priest}"),
+    );
+    let gameplay_before = policy_gameplay_state(node, &casts, priest, leader, ally);
     for field in ["pending_casts", "melee"] {
         assert_eq!(gameplay_before[field], serde_json::json!([]), "{field}");
     }
@@ -413,7 +416,7 @@ fn record_policy_comparison(node: &Standalone, priest: &str, leader: &str, ally:
             recorded_chosen = Some(recorded["chosen"].clone());
         }
         assert_eq!(
-            policy_gameplay_state(node, priest, leader, ally),
+            policy_gameplay_state(node, &casts, priest, leader, ally),
             gameplay_before
         );
     }
