@@ -8,8 +8,8 @@ use support::Standalone;
 
 fn insert_row(node: &Standalone, table: &str, row: BTreeMap<String, String>) {
     let columns = match table {
-        "game_spell" => "spell_id,name,power_type,cost,cast_time_ms,gcd_ms,cooldown_ms,range_yd,duration_ms,school_mask,dispel_type,mechanic,max_stacks,aura_interrupt,attributes,spell_level,max_level,is_negative,cast_flags,stances,family_name,family_flags,proc_flags,proc_chance,proc_charges",
-        "game_spell_effect" => "id,spell_id,effect_index,kind,base_points,die_sides,per_level,period_ms,target,radius_yd,chain_targets,trigger_spell,effect_mechanic,p_0,p_0_kind,p_1,script_id,enters_combat",
+        "game_spell" => "spell_id,name,power_type,cost,cast_time_ms,gcd_ms,cooldown_ms,range_yd,duration_ms,school_mask,dispel_type,mechanic,max_stacks,aura_interrupt,attributes,spell_level,max_level,is_negative,cast_flags,stances,family_name,family_flags,proc_flags,proc_chance,proc_charges,max_duration_ms",
+        "game_spell_effect" => "id,spell_id,effect_index,kind,base_points,die_sides,per_level,period_ms,target,radius_yd,chain_targets,trigger_spell,effect_mechanic,p_0,p_0_kind,p_1,script_id,enters_combat,points_per_combo",
         _ => panic!("unsupported fixture table"),
     };
     let values = columns
