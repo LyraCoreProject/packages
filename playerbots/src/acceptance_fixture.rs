@@ -2118,7 +2118,8 @@ pub fn playerbots_acceptance_stage_journey(ctx: &ReducerContext, seed: u64) -> R
     }
 
     super::playerbots_spawn_class_role(ctx, 1, 1_200.0, 1_200.0, 50.0, plan.class, plan.role)?;
-    let mut bots = ctx.db.pkg_playerbots_bot().iter().take(2);
+    let bot_table = ctx.db.pkg_playerbots_bot();
+    let mut bots = bot_table.iter().take(2);
     let bot = bots.next().ok_or("acceptance spawn did not create a bot")?;
     if bots.next().is_some() {
         return Err("acceptance spawn created more than one bot".to_string());
