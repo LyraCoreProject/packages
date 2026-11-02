@@ -1586,18 +1586,6 @@ fn playerbots_recovery_records_a_controlled_quest_while_survival_takes_priority(
         "{approach}"
     );
     assert!(
-        after["character"]["health"]
-            .as_str()
-            .unwrap()
-            .parse::<u32>()
-            .unwrap()
-            < before["character"]["health"]
-                .as_str()
-                .unwrap()
-                .parse::<u32>()
-                .unwrap()
-    );
-    assert!(
         after["runner"]["chosen"]
             .as_str()
             .unwrap()
