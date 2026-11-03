@@ -299,7 +299,8 @@ pub(crate) fn order_purchase(ctx: &ReducerContext, guid: u64, vendor_guid: u64, 
     });
 }
 
-/// The role score of what this inventory type would replace on the bot; `None` for a third ring.
+/// The role score of what this inventory type would replace on the bot; `None` for a third ring
+/// or a slot the bot's role never fills.
 #[allow(dead_code, reason = "an API for other Packages")]
 pub(crate) fn slot_score(ctx: &ReducerContext, guid: u64, inventory_type: u8) -> Option<f32> {
     let bot = ctx
@@ -308,7 +309,19 @@ pub(crate) fn slot_score(ctx: &ReducerContext, guid: u64, inventory_type: u8) ->
         .by_character()
         .filter(guid)
         .next()?;
-    replaced_score(ctx, profile(&bot), guid, inventory_type)
+    let profile = profile(&bot);
+    role_fills(profile, inventory_type)
+        .then(|| replaced_score(ctx, profile, guid, inventory_type))?
+}
+
+// Held off-hand items carry caster stats, and only a tank or a healer carries a shield.
+fn role_fills(profile: Profile, inventory_type: u8) -> bool {
+    use Profile::*;
+    match inventory_type {
+        23 => matches!(profile, Healer | Caster),
+        14 => matches!(profile, Tank | Healer),
+        _ => true,
+    }
 }
 
 /// An ordered purchase, which a bot carries out even mid-fight: a wave mode may never pause.
@@ -444,5 +457,15 @@ mod tests {
         assert_eq!(slots_for(17), &[15, 16]);
         assert_eq!(slots_for(20), slots_for(5));
         assert!(slots_for(18).is_empty(), "a bag is not gear");
+    }
+
+    #[test]
+    fn only_casters_hold_off_hand_items_and_only_tanks_and_healers_carry_shields() {
+        assert!(!role_fills(Profile::Tank, 23));
+        assert!(!role_fills(Profile::Melee, 23));
+        assert!(role_fills(Profile::Caster, 23));
+        assert!(role_fills(Profile::Tank, 14));
+        assert!(!role_fills(Profile::Melee, 14));
+        assert!(role_fills(Profile::Melee, 13));
     }
 }
