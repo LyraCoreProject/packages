@@ -3075,6 +3075,18 @@ fn execute(
                 ),
             }
         }
+        Action::Buy(purchase) => match super::shopping::execute(ctx, me.guid, purchase) {
+            Ok(()) => state.last_outcome = RunnerOutcome::Accepted,
+            Err(reason) => {
+                spacetimedb::log::info!("bot {} did not buy {}: {reason}", me.guid, purchase.item);
+                state.failure(
+                    Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
+                    now,
+                );
+                state.retry_candidate = Some(candidate.id);
+                state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            }
+        },
         action @ (Action::AcceptQuest(_)
         | Action::TurnInQuest(_)
         | Action::LootCreature(_)

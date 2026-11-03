@@ -15,6 +15,13 @@ pub enum Action {
     UseGameObject(QuestInteraction),
     LootGameObject(QuestLoot),
     Transfer(TransferAction),
+    Buy(Purchase),
+}
+
+#[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Purchase {
+    pub vendor: u64,
+    pub item: u32,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -80,6 +87,7 @@ pub enum Reason {
     TransferPosition,
     Transfer,
     Grind,
+    Shopping,
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
