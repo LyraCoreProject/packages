@@ -141,7 +141,7 @@ pub(crate) mod cond {
     pub(crate) const ALWAYS: u8 = 0;
     /// Fire when a hostile unit is attacking a party member other than this bot.
     pub(crate) const ENEMY_ON_ALLY: u8 = 1;
-    /// Fire when this bot does not already carry the spell's own aura.
+    /// Fire when this bot lacks the spell's aura or stance; an instant one also fires mid-fight.
     pub(crate) const SELF_MISSING_AURA: u8 = 2;
     /// Fire when a party member is below `threshold_pct` health. Targets that member.
     pub(crate) const ALLY_HP_BELOW_PCT: u8 = 3;
@@ -149,7 +149,7 @@ pub(crate) mod cond {
     pub(crate) const ALLY_MISSING_AURA: u8 = 4;
     /// Fire when a party member with the tank role is engaged. Targets what the tank fights.
     pub(crate) const TANK_ENGAGED: u8 = 5;
-    /// Fire when at least `threshold_pct` hostile units are engaged with the party.
+    /// Fire when `threshold_pct` engaged enemies would be hit; see README "Behaviour is data".
     pub(crate) const ENEMIES_ENGAGED_GE_N: u8 = 6;
 }
 
@@ -435,22 +435,37 @@ fn config_parsed<T: std::str::FromStr>(ctx: &ReducerContext, key: &str, fallback
 ///
 /// Idempotent twice over. The Config seeding helper only inserts when the row is absent, so an
 /// Operator's edited value survives a republish. Existing class/role rows change only when both
-/// tables exactly match the preceding shipped catalogue. Record that check once so later Operator
-/// deletions cannot be mistaken for an old catalogue.
+/// tables exactly match a catalogue this Package shipped. The revision records that check once, so
+/// later Operator deletions cannot be mistaken for an old catalogue.
 pub(crate) fn ensure_defaults(ctx: &ReducerContext) {
     crate::actor::reconcile_starter_role_spell_levels(ctx);
     for (key, value) in CONFIG_DEFAULTS {
         crate::package::ensure_config_default(ctx, PACKAGE, key, value);
     }
     quest_catalog::ensure_catalog(ctx);
-    if config_value(ctx, "class_defaults_revision").is_none() {
-        if ctx.db.pkg_playerbots_kit().count() > 0 || ctx.db.pkg_playerbots_rotation().count() > 0 {
-            upgrade_starter_role_defaults(ctx);
-        } else {
+    let revision = config_value(ctx, "class_defaults_revision");
+    if revision.as_deref() != Some(CLASS_DEFAULTS_REVISION) {
+        let empty = ctx.db.pkg_playerbots_kit().count() == 0
+            && ctx.db.pkg_playerbots_rotation().count() == 0;
+        if (revision.is_none() && empty) || holds_a_shipped_catalogue(ctx) {
             seed_class_role_data(ctx);
         }
+        set_config(ctx, "class_defaults_revision", CLASS_DEFAULTS_REVISION);
     }
-    crate::package::ensure_config_default(ctx, PACKAGE, "class_defaults_revision", "1");
+}
+
+/// Raise it when [`DEFAULT_ROTATIONS`] changes; keep the old rows in [`shipped_catalogues`].
+const CLASS_DEFAULTS_REVISION: &str = "2";
+
+fn set_config(ctx: &ReducerContext, key: &str, value: &str) {
+    let rows = ctx.db.game_package_config();
+    match rows.by_package_key().filter((PACKAGE, key)).next() {
+        Some(mut row) => {
+            row.value = value.to_string();
+            rows.id().update(row);
+        }
+        None => crate::package::ensure_config_default(ctx, PACKAGE, key, value),
+    }
 }
 
 type RotationSeed = (u8, u8, u8, u32, u8, u8);
@@ -476,10 +491,6 @@ const STARTER_ROLE_ROTATIONS: &[RotationSeed] = &[
     (class::MAGE, ROLE_DPS, 20, 168, cond::SELF_MISSING_AURA, 0),
 ];
 
-fn is_starter_role_rotation(row: &RotationSeed) -> bool {
-    STARTER_ROLE_ROTATIONS.contains(row)
-}
-
 fn kit_for(rotations: impl IntoIterator<Item = RotationSeed>) -> Vec<(u8, u8, u32)> {
     let mut kit = Vec::new();
     for (class, role, _, spell_id, _, _) in rotations {
@@ -490,13 +501,35 @@ fn kit_for(rotations: impl IntoIterator<Item = RotationSeed>) -> Vec<(u8, u8, u3
     kit
 }
 
-/// Advance only exact shipped catalogues. Operator edits to either table remain authoritative.
-fn upgrade_starter_role_defaults(ctx: &ReducerContext) {
-    let stored_rotations: Vec<_> = ctx
+/// Each shipped revision, also without Heroic Strike, and also without the starter-role rows.
+fn shipped_catalogues() -> Vec<Vec<RotationSeed>> {
+    let mut shapes = Vec::new();
+    for catalogue in [REVISION_1_ROTATIONS, DEFAULT_ROTATIONS] {
+        shapes.push(catalogue.to_vec());
+        for without_starter_roles in [false, true] {
+            shapes.push(
+                catalogue
+                    .iter()
+                    .copied()
+                    .filter(|row| {
+                        row.3 != 78
+                            && (!without_starter_roles || !STARTER_ROLE_ROTATIONS.contains(row))
+                    })
+                    .collect(),
+            );
+        }
+    }
+    shapes
+}
+
+/// Only unedited shipped rows may be replaced; an Operator edit keeps its rows.
+fn holds_a_shipped_catalogue(ctx: &ReducerContext) -> bool {
+    let bound = REVISION_1_ROTATIONS.len().max(DEFAULT_ROTATIONS.len()) + 1;
+    let mut rotations: Vec<RotationSeed> = ctx
         .db
         .pkg_playerbots_rotation()
         .iter()
-        .take(DEFAULT_ROTATIONS.len() + 1)
+        .take(bound)
         .map(|row| {
             (
                 row.class,
@@ -508,64 +541,83 @@ fn upgrade_starter_role_defaults(ctx: &ReducerContext) {
             )
         })
         .collect();
-    let stored_kit: Vec<_> = ctx
+    let mut kit: Vec<_> = ctx
         .db
         .pkg_playerbots_kit()
         .iter()
-        .take(DEFAULT_ROTATIONS.len() + 1)
+        .take(bound)
         .map(|row| (row.class, row.role, row.spell_id))
         .collect();
-    let additions = default_additions(&stored_rotations, &stored_kit);
-    for (class, role, priority, spell_id, condition, threshold_pct) in additions {
-        ctx.db.pkg_playerbots_rotation().insert(PlayerbotsRotation {
-            id: 0,
-            class,
-            role,
-            priority,
-            spell_id,
-            condition,
-            threshold_pct,
-        });
-        ctx.db.pkg_playerbots_kit().insert(PlayerbotsKit {
-            id: 0,
-            class,
-            role,
-            spell_id,
-        });
-    }
+    rotations.sort_unstable();
+    kit.sort_unstable();
+    is_shipped(&rotations, &kit)
 }
 
-fn default_additions(rotations: &[RotationSeed], kit: &[(u8, u8, u32)]) -> Vec<RotationSeed> {
-    let mut stored = rotations.to_vec();
-    let mut stored_kit = kit.to_vec();
-    stored.sort_unstable();
-    stored_kit.sort_unstable();
-    for before_starter_roles in [false, true] {
-        let mut preceding: Vec<_> = DEFAULT_ROTATIONS
-            .iter()
-            .copied()
-            .filter(|row| row.3 != 78 && (!before_starter_roles || !is_starter_role_rotation(row)))
-            .collect();
-        let mut preceding_kit = kit_for(preceding.iter().copied());
-        preceding.sort_unstable();
-        preceding_kit.sort_unstable();
-        if stored == preceding && stored_kit == preceding_kit {
-            return DEFAULT_ROTATIONS
-                .iter()
-                .copied()
-                .filter(|row| !preceding.contains(row))
-                .collect();
-        }
-    }
-    vec![]
+fn is_shipped(rotations: &[RotationSeed], kit: &[(u8, u8, u32)]) -> bool {
+    shipped_catalogues().into_iter().any(|mut shape| {
+        let mut shape_kit = kit_for(shape.iter().copied());
+        shape.sort_unstable();
+        shape_kit.sort_unstable();
+        shape == rotations && shape_kit == kit
+    })
 }
 
 /// The shipped `(class, role)` rotations, and the kit each one implies.
 ///
 /// `(class, role, priority, spell_id, condition, threshold_pct)`. The Paladin trio is the proof
 /// that the table, not the code, decides the fight: one class, three roles, three rotations.
-const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
-    // Warrior tank: taunt what is hitting somebody else, otherwise build threat.
+#[rustfmt::skip]
+const DEFAULT_ROTATIONS: &[RotationSeed] = &[
+    // Warrior tank: Defensive Stance, Taunt for allies, Thunder Clap if that stance allows it.
+    (class::WARRIOR, ROLE_TANK, 0, 71, cond::SELF_MISSING_AURA, 0),
+    (class::WARRIOR, ROLE_TANK, 0, 355, cond::ENEMY_ON_ALLY, 0),
+    (class::WARRIOR, ROLE_TANK, 1, 6343, cond::ENEMIES_ENGAGED_GE_N, 2),
+    (class::WARRIOR, ROLE_TANK, 1, 6572, cond::ALWAYS, 0),
+    (class::WARRIOR, ROLE_TANK, 2, 1160, cond::ENEMIES_ENGAGED_GE_N, 2),
+    (class::WARRIOR, ROLE_TANK, 3, 7386, cond::ALWAYS, 0),
+    (class::WARRIOR, ROLE_TANK, 5, 845, cond::ENEMIES_ENGAGED_GE_N, 2),
+    (class::WARRIOR, ROLE_TANK, 10, 78, cond::ALWAYS, 0),
+    (class::WARRIOR, ROLE_TANK, 20, 6673, cond::SELF_MISSING_AURA, 0),
+    // Priest healer: the best direct heal it knows when badly hurt, a shield and Renew otherwise.
+    (class::PRIEST, ROLE_HEALER, 0, 2061, cond::ALLY_HP_BELOW_PCT, 50),
+    (class::PRIEST, ROLE_HEALER, 1, 2054, cond::ALLY_HP_BELOW_PCT, 50),
+    (class::PRIEST, ROLE_HEALER, 2, 2050, cond::ALLY_HP_BELOW_PCT, 50),
+    (class::PRIEST, ROLE_HEALER, 3, 17, cond::ALLY_HP_BELOW_PCT, 70),
+    (class::PRIEST, ROLE_HEALER, 4, 139, cond::ALLY_HP_BELOW_PCT, 80),
+    (class::PRIEST, ROLE_HEALER, 10, 585, cond::ALWAYS, 0),
+    (class::PRIEST, ROLE_HEALER, 20, 1243, cond::ALLY_MISSING_AURA, 0),
+    (class::PRIEST, ROLE_HEALER, 21, 588, cond::SELF_MISSING_AURA, 0),
+    // Mage damage: Frost Nova and Arcane Explosion on a pack around it, otherwise its nukes.
+    (class::MAGE, ROLE_DPS, 0, 122, cond::ENEMIES_ENGAGED_GE_N, 2),
+    (class::MAGE, ROLE_DPS, 1, 1449, cond::ENEMIES_ENGAGED_GE_N, 3),
+    (class::MAGE, ROLE_DPS, 2, 2136, cond::ALWAYS, 0),
+    (class::MAGE, ROLE_DPS, 10, 133, cond::ALWAYS, 0),
+    (class::MAGE, ROLE_DPS, 20, 168, cond::SELF_MISSING_AURA, 0),
+    (class::MAGE, ROLE_DPS, 21, 1459, cond::ALLY_MISSING_AURA, 0),
+    // Paladin tank: vanilla Paladins have no taunt, so the peel is a stun on what hits an ally.
+    (class::PALADIN, ROLE_TANK, 0, 853, cond::ENEMY_ON_ALLY, 0),
+    (class::PALADIN, ROLE_TANK, 1, 20154, cond::SELF_MISSING_AURA, 0),
+    (class::PALADIN, ROLE_TANK, 2, 26573, cond::ENEMIES_ENGAGED_GE_N, 2),
+    (class::PALADIN, ROLE_TANK, 3, 20271, cond::ALWAYS, 0),
+    (class::PALADIN, ROLE_TANK, 20, 25780, cond::SELF_MISSING_AURA, 0),
+    (class::PALADIN, ROLE_TANK, 21, 465, cond::SELF_MISSING_AURA, 0),
+    // Paladin healer: Holy Light when badly hurt, Flash of Light once known, then blessings.
+    (class::PALADIN, ROLE_HEALER, 0, 635, cond::ALLY_HP_BELOW_PCT, 50),
+    (class::PALADIN, ROLE_HEALER, 1, 19750, cond::ALLY_HP_BELOW_PCT, 85),
+    (class::PALADIN, ROLE_HEALER, 2, 635, cond::ALLY_HP_BELOW_PCT, 80),
+    (class::PALADIN, ROLE_HEALER, 20, 19740, cond::ALLY_MISSING_AURA, 0),
+    (class::PALADIN, ROLE_HEALER, 21, 465, cond::SELF_MISSING_AURA, 0),
+    // Paladin damage: keep the seal up and spend it on what the tank holds.
+    (class::PALADIN, ROLE_DPS, 0, 853, cond::ENEMY_ON_ALLY, 0),
+    (class::PALADIN, ROLE_DPS, 1, 20154, cond::SELF_MISSING_AURA, 0),
+    (class::PALADIN, ROLE_DPS, 2, 26573, cond::ENEMIES_ENGAGED_GE_N, 3),
+    (class::PALADIN, ROLE_DPS, 3, 20271, cond::TANK_ENGAGED, 0),
+    (class::PALADIN, ROLE_DPS, 20, 7294, cond::SELF_MISSING_AURA, 0),
+    (class::PALADIN, ROLE_DPS, 21, 19740, cond::SELF_MISSING_AURA, 0),
+];
+
+/// Revision 1 of the catalogue, kept so a Shard that still holds it moves to the current one.
+const REVISION_1_ROTATIONS: &[RotationSeed] = &[
     (class::WARRIOR, ROLE_TANK, 0, 355, cond::ENEMY_ON_ALLY, 0),
     (class::WARRIOR, ROLE_TANK, 1, 7386, cond::ALWAYS, 0),
     (class::WARRIOR, ROLE_TANK, 10, 78, cond::ALWAYS, 0),
@@ -577,7 +629,6 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
         cond::SELF_MISSING_AURA,
         0,
     ),
-    // Priest healer: a heal over time first, a direct heal when a member is really hurt.
     (
         class::PRIEST,
         ROLE_HEALER,
@@ -603,12 +654,8 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
         cond::ALLY_MISSING_AURA,
         0,
     ),
-    // Mage damage.
     (class::MAGE, ROLE_DPS, 0, 133, cond::ALWAYS, 0),
     (class::MAGE, ROLE_DPS, 20, 168, cond::SELF_MISSING_AURA, 0),
-    // Paladin tank: vanilla Paladins have no taunt, so the peel is a stun on whatever is hitting a
-    // party member. Consecration needs a ground-target engine the core does not have yet, so the
-    // row is seeded and simply never passes its condition today.
     (class::PALADIN, ROLE_TANK, 0, 853, cond::ENEMY_ON_ALLY, 0),
     (
         class::PALADIN,
@@ -627,7 +674,6 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
         3,
     ),
     (class::PALADIN, ROLE_TANK, 3, 20271, cond::ALWAYS, 0),
-    // Paladin healer: heal the hurt, then keep the party blessed.
     (
         class::PALADIN,
         ROLE_HEALER,
@@ -644,7 +690,6 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
         cond::ALLY_MISSING_AURA,
         0,
     ),
-    // Paladin damage: keep the seal up, spend it on what the tank holds.
     (
         class::PALADIN,
         ROLE_DPS,
@@ -659,6 +704,12 @@ const DEFAULT_ROTATIONS: &[(u8, u8, u8, u32, u8, u8)] = &[
 fn seed_class_role_data(ctx: &ReducerContext) {
     let kits = ctx.db.pkg_playerbots_kit();
     let rotations = ctx.db.pkg_playerbots_rotation();
+    for row in kits.iter().collect::<Vec<_>>() {
+        kits.id().delete(row.id);
+    }
+    for row in rotations.iter().collect::<Vec<_>>() {
+        rotations.id().delete(row.id);
+    }
     for (class, role, priority, spell_id, condition, threshold_pct) in
         DEFAULT_ROTATIONS.iter().copied()
     {
@@ -901,6 +952,52 @@ fn spawn_level(ctx: &ReducerContext) -> u8 {
     min + (max - min) / 2
 }
 
+/// Spawns one Cohort bot of `class` and `role` on `map_id`, for a Package that recruits companions
+/// for a player. The caller puts it in the player's party.
+#[allow(dead_code, reason = "an API for other Packages")]
+pub(crate) fn spawn_companion(
+    ctx: &ReducerContext,
+    class: u8,
+    role: u8,
+    map_id: u32,
+    at: (f32, f32, f32),
+) -> Result<u64, String> {
+    ensure_defaults(ctx);
+    if !can_fill_role(ctx, class, role) {
+        return Err(cannot_fill_role_message(class, role));
+    }
+    let level = spawn_level(ctx);
+    spawn_one(
+        ctx,
+        (BOT_RACE, class),
+        role,
+        role_name_stem(role),
+        map_id,
+        at,
+        level,
+    )
+}
+
+/// Whether `guid` is one of this Package's bots.
+#[allow(dead_code, reason = "an API for other Packages")]
+pub(crate) fn is_bot(ctx: &ReducerContext, guid: u64) -> bool {
+    ctx.db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(&guid)
+        .next()
+        .is_some()
+}
+
+/// Removes one bot the way `playerbots_despawn_all` removes them all.
+#[allow(dead_code, reason = "an API for other Packages")]
+pub(crate) fn despawn(ctx: &ReducerContext, guid: u64) {
+    if is_bot(ctx, guid) {
+        let _ = crate::actor::leave_group_for(ctx, guid);
+        crate::package::character::cascade_delete_character(ctx, guid);
+    }
+}
+
 // ---- Operator verbs ---------------------------------------------------------------------------
 
 /// Spawn `count` bots at `(x, y, z)`, cycling the roles so the batch forms a working party.
@@ -1101,6 +1198,45 @@ mod tests {
             tank, healer,
             "the Paladin tank and healer must not share one rotation"
         );
+    }
+
+    #[test]
+    fn every_pair_fits_the_rotation_and_kit_limits() {
+        for (class, role, _) in default_kit() {
+            let rows = DEFAULT_ROTATIONS
+                .iter()
+                .filter(|row| row.0 == class && row.1 == role)
+                .count();
+            let kit = default_kit()
+                .iter()
+                .filter(|row| row.0 == class && row.1 == role)
+                .count();
+            assert!(rows <= 12 && kit <= 12, "class {class} role {role}");
+        }
+    }
+
+    fn sorted(rows: &[RotationSeed]) -> (Vec<RotationSeed>, Vec<(u8, u8, u32)>) {
+        let mut rotations = rows.to_vec();
+        let mut kit = kit_for(rows.iter().copied());
+        rotations.sort_unstable();
+        kit.sort_unstable();
+        (rotations, kit)
+    }
+
+    #[test]
+    fn only_an_unedited_shipped_catalogue_is_replaced() {
+        for catalogue in [REVISION_1_ROTATIONS, DEFAULT_ROTATIONS] {
+            let (rotations, kit) = sorted(catalogue);
+            assert!(is_shipped(&rotations, &kit));
+            let without_strike: Vec<_> = catalogue.iter().copied().filter(|r| r.3 != 78).collect();
+            let (rotations, kit) = sorted(&without_strike);
+            assert!(is_shipped(&rotations, &kit));
+        }
+        let mut edited = REVISION_1_ROTATIONS.to_vec();
+        edited[0].2 = 77;
+        let (rotations, kit) = sorted(&edited);
+        assert!(!is_shipped(&rotations, &kit));
+        assert!(!is_shipped(&[], &[]));
     }
 
     #[test]

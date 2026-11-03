@@ -80,6 +80,17 @@ casts, in priority order, and under what condition. Both are rows. A SQL `UPDATE
 changes how a bot fights while the realm is up, with no republish. The Paladin is the worked example:
 one class, three roles, three different rotations, no code that knows the difference.
 
+One list serves every level. A row the bot cannot cast yet, because of its level or stance, is
+refused, and the next row fires. A self-buff row covers stances too: the bot casts the stance when
+it stands outside it. An instant self-buff, such as a shout, seal or stance, is recast mid-fight.
+An area row (`ENEMIES_ENGAGED_GE_N`) fires when enough engaged enemies would be hit. For a spell
+with no range, such as Arcane Explosion or Consecration, that means enemies within its radius of
+the bot that lack its aura, and the bot casts it on itself.
+
+The shipped rows carry a revision in this Package's Config. A Shard whose rows still match an
+earlier shipped catalogue exactly moves to the current one. Any Operator edit keeps its rows as
+they are.
+
 A `(class, role)` pair with no kit rows is a pairing this Package cannot fill, and the spawn verb
 refuses it by name. Adding kit rows for a new pairing makes it legal.
 
