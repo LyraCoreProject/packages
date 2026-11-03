@@ -568,9 +568,10 @@ fn is_shipped(rotations: &[RotationSeed], kit: &[(u8, u8, u32)]) -> bool {
 /// that the table, not the code, decides the fight: one class, three roles, three rotations.
 #[rustfmt::skip]
 const DEFAULT_ROTATIONS: &[RotationSeed] = &[
-    // Warrior tank: hold Defensive Stance, taunt what hits somebody else, otherwise build threat.
+    // Warrior tank: Defensive Stance, Taunt for allies, Thunder Clap if that stance allows it.
     (class::WARRIOR, ROLE_TANK, 0, 71, cond::SELF_MISSING_AURA, 0),
     (class::WARRIOR, ROLE_TANK, 0, 355, cond::ENEMY_ON_ALLY, 0),
+    (class::WARRIOR, ROLE_TANK, 1, 6343, cond::ENEMIES_ENGAGED_GE_N, 2),
     (class::WARRIOR, ROLE_TANK, 1, 6572, cond::ALWAYS, 0),
     (class::WARRIOR, ROLE_TANK, 2, 1160, cond::ENEMIES_ENGAGED_GE_N, 2),
     (class::WARRIOR, ROLE_TANK, 3, 7386, cond::ALWAYS, 0),

@@ -1474,10 +1474,10 @@ fn playerbots_populated_pb006_state_upgrades_roles_without_replacing_operator_ca
             .any(|row| { row["spell_id"] == spell_id && row["spell_level"] == spell_level }));
     }
 
-    // An unedited shipped catalogue is replaced by the current one: 39 rows and a 38-spell kit.
+    // An unedited shipped catalogue is replaced by the current one: 40 rows and a 39-spell kit.
     assert_ne!(upgraded_rotations, preceding_rotations);
-    assert_eq!(upgraded_rotations.len(), 39);
-    assert_eq!(upgraded_kit.len(), 38);
+    assert_eq!(upgraded_rotations.len(), 40);
+    assert_eq!(upgraded_kit.len(), 39);
     for (class, role, priority, spell, condition) in [
         (WARRIOR, TANK, "10", "78", "0"),
         ("1", TANK, "20", "6673", "2"),
