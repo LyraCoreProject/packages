@@ -38,6 +38,7 @@ mod target_claims;
 mod transfer;
 pub(crate) use actions::*;
 pub(crate) use provisioning::*;
+pub(crate) use shopping::*;
 pub(crate) use quest_catalog::*;
 pub(crate) use runner::*;
 #[cfg(feature = "debug_reducers")]

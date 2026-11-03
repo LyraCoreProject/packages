@@ -1,13 +1,13 @@
-//! Bots buy and wear better gear from a vendor near them while no fight is on.
+//! Bots buy and wear better gear from nearby vendors, and carry out purchases other Packages order.
 
 use super::decision::{Action, ActionNode, MoveTarget, Purchase, Reason};
-use super::{class, PlayerbotsBot, ROLE_HEALER, ROLE_TANK};
+use super::{class, pkg_playerbots_bot, PlayerbotsBot, ROLE_HEALER, ROLE_TANK};
 use crate::tables::{
     game_item_enchantment, game_item_instance, game_item_random_property, game_item_template,
     game_npc_vendor, game_world_entity, ItemTemplate, WorldEntity,
 };
 use lyracore_shared::item_property as stat;
-use spacetimedb::ReducerContext;
+use spacetimedb::{table, ReducerContext, Table};
 
 const SHOP_RADIUS_YD: f32 = 30.0;
 // The core's interaction range is 10 yards; a bot stops a little inside it.
@@ -15,6 +15,8 @@ const VENDOR_REACH_YD: f32 = 8.0;
 const VENDOR_LIMIT: usize = 4;
 const STOCK_LIMIT: usize = 64;
 const PRIORITY: i32 = 150;
+// Above a fight (650 to 700) and below a heal (800), so a healer still heals first.
+const ORDER_PRIORITY: i32 = 760;
 // A smaller gain is noise from rounding, and buying on it would churn gold.
 const MIN_GAIN: f32 = 1.0;
 const ITEM_CLASS_WEAPON: u8 = 2;
@@ -271,21 +273,94 @@ fn best_purchase(ctx: &ReducerContext, bot: &PlayerbotsBot, me: &WorldEntity) ->
     best.map(|(_, _, purchase)| purchase)
 }
 
-pub(super) fn candidate(
+/// A purchase another Package asks of a bot, such as a gamble whose item the bot cannot price.
+#[table(accessor = pkg_playerbots_purchase_order)]
+pub struct PurchaseOrder {
+    #[primary_key]
+    pub character_guid: u64,
+    pub vendor_guid: u64,
+    pub item_entry: u32,
+}
+
+crate::character_owned!(delete, fn sweep_delete_pkg_playerbots_purchase_order(ctx, character_guid) {
+    ctx.db.pkg_playerbots_purchase_order().character_guid().delete(character_guid);
+});
+crate::character_owned!(not_transported, fn sweep_transfer_pkg_playerbots_purchase_order());
+
+/// Asks a bot to buy one item out of combat and wear it if better; replaces any earlier order.
+#[allow(dead_code, reason = "an API for other Packages")]
+pub(crate) fn order_purchase(ctx: &ReducerContext, guid: u64, vendor_guid: u64, item_entry: u32) {
+    let orders = ctx.db.pkg_playerbots_purchase_order();
+    orders.character_guid().delete(guid);
+    orders.insert(PurchaseOrder {
+        character_guid: guid,
+        vendor_guid,
+        item_entry,
+    });
+}
+
+/// The role score of what this inventory type would replace on the bot; `None` for a third ring.
+#[allow(dead_code, reason = "an API for other Packages")]
+pub(crate) fn slot_score(ctx: &ReducerContext, guid: u64, inventory_type: u8) -> Option<f32> {
+    let bot = ctx
+        .db
+        .pkg_playerbots_bot()
+        .by_character()
+        .filter(guid)
+        .next()?;
+    replaced_score(ctx, profile(&bot), guid, inventory_type)
+}
+
+/// An ordered purchase, which a bot carries out even mid-fight: a wave mode may never pause.
+pub(super) fn ordered(
+    ctx: &ReducerContext,
+    me: &WorldEntity,
+    objective: u64,
+) -> Option<ActionNode> {
+    let order = ctx
+        .db
+        .pkg_playerbots_purchase_order()
+        .character_guid()
+        .find(me.guid)?;
+    let purchase = Purchase {
+        vendor: order.vendor_guid,
+        item: order.item_entry,
+    };
+    let node = buy_node(ctx, me, purchase, ORDER_PRIORITY, objective);
+    if node.is_none() {
+        ctx.db
+            .pkg_playerbots_purchase_order()
+            .character_guid()
+            .delete(me.guid);
+    }
+    node
+}
+
+/// The best upgrade a nearby vendor stocks, which a bot buys only while no fight is on.
+pub(super) fn browse(
     ctx: &ReducerContext,
     bot: &PlayerbotsBot,
     me: &WorldEntity,
     objective: u64,
 ) -> Option<ActionNode> {
-    let purchase = best_purchase(ctx, bot, me)?;
-    let mut buy = ActionNode::ready(Action::Buy(purchase), Reason::Shopping, PRIORITY);
-    buy.candidate.id.objective = objective;
+    buy_node(ctx, me, best_purchase(ctx, bot, me)?, PRIORITY, objective)
+}
+
+fn buy_node(
+    ctx: &ReducerContext,
+    me: &WorldEntity,
+    purchase: Purchase,
+    priority: i32,
+    objective: u64,
+) -> Option<ActionNode> {
     let vendor = ctx.db.game_world_entity().guid().find(purchase.vendor)?;
+    let mut buy = ActionNode::ready(Action::Buy(purchase), Reason::Shopping, priority);
+    buy.candidate.id.objective = objective;
     if (me.x - vendor.x).powi(2) + (me.y - vendor.y).powi(2) > VENDOR_REACH_YD.powi(2) {
         let mut approach = ActionNode::ready(
             Action::Move(MoveTarget::Entity(purchase.vendor)),
             Reason::Shopping,
-            PRIORITY,
+            priority,
         );
         approach.candidate.id.objective = objective;
         buy.prerequisites.push(approach);
@@ -293,21 +368,61 @@ pub(super) fn candidate(
     Some(buy)
 }
 
-/// Buys the item, then wears it; a refused equip leaves it in the bags.
-pub(super) fn execute(ctx: &ReducerContext, guid: u64, purchase: Purchase) -> Result<(), String> {
-    crate::actor::buy_item(ctx, guid, purchase.vendor, purchase.item, 1).map_err(String::from)?;
-    let slot = ctx
-        .db
+fn carried(ctx: &ReducerContext, guid: u64) -> Vec<(u64, u8)> {
+    ctx.db
         .game_item_instance()
         .by_owner_guid()
         .filter(guid)
-        .filter(|item| {
-            item.entry == purchase.item && lyracore_shared::item::is_carried_slot(item.slot)
-        })
-        .map(|item| item.slot)
-        .min()
-        .ok_or("the bought item is not in the bags")?;
-    crate::actor::equip_item(ctx, guid, slot).map_err(|refusal| format!("{refusal:?}"))
+        .filter(|item| lyracore_shared::item::is_carried_slot(item.slot))
+        .map(|item| (item.guid, item.slot))
+        .collect()
+}
+
+/// Buys the item, then wears what it yields (a gamble swaps it) if it fills a gap or scores higher.
+pub(super) fn execute(ctx: &ReducerContext, guid: u64, purchase: Purchase) -> Result<(), String> {
+    ctx.db
+        .pkg_playerbots_purchase_order()
+        .character_guid()
+        .delete(guid);
+    let before = carried(ctx, guid);
+    crate::actor::buy_item(ctx, guid, purchase.vendor, purchase.item, 1).map_err(String::from)?;
+    let (Some(bot), Some(me)) = (
+        ctx.db
+            .pkg_playerbots_bot()
+            .by_character()
+            .filter(guid)
+            .next(),
+        ctx.db.game_world_entity().guid().find(guid),
+    ) else {
+        return Ok(());
+    };
+    let profile = profile(&bot);
+    for (item_guid, slot) in carried(ctx, guid) {
+        if before.iter().any(|(old, _)| *old == item_guid) {
+            continue;
+        }
+        let Some(item) = ctx.db.game_item_instance().guid().find(item_guid) else {
+            continue;
+        };
+        let Some(template) = ctx.db.game_item_template().entry().find(item.entry) else {
+            continue;
+        };
+        if !wearable(ctx, &me, &template) {
+            continue;
+        }
+        let Some(current) = replaced_score(ctx, profile, guid, template.inventory_type) else {
+            continue;
+        };
+        let fills_empty_slot = slots_for(template.inventory_type)
+            .iter()
+            .any(|&slot| equipped_score(ctx, profile, guid, slot).is_none());
+        if fills_empty_slot
+            || score(ctx, profile, &template, item.random_property_id) - current >= MIN_GAIN
+        {
+            crate::actor::equip_item(ctx, guid, slot).map_err(|refusal| format!("{refusal:?}"))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

@@ -235,8 +235,9 @@ pub(super) fn strategy(
     } else if !party.enemies.is_empty() {
         candidates.push(node(Action::Hold, Reason::CrowdControl, 750, objective));
     } else if !in_combat {
-        candidates.extend(super::shopping::candidate(ctx, bot, me, objective));
+        candidates.extend(super::shopping::browse(ctx, bot, me, objective));
     }
+    candidates.extend(super::shopping::ordered(ctx, me, objective));
     candidates.push(follow);
     Ok(CompanionSelection {
         strategy: Strategy {
