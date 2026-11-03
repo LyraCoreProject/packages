@@ -94,6 +94,15 @@ they are.
 A `(class, role)` pair with no kit rows is a pairing this Package cannot fill, and the spawn verb
 refuses it by name. Adding kit rows for a new pairing makes it legal.
 
+## Shopping
+
+A companion bot with no fight on buys gear from a vendor within 30 yards and wears it at once. It
+buys the affordable item with the largest gain in its role's score: Stamina and armor for a tank,
+Intellect and Spirit for a healer or caster, Strength, Agility and weapon damage for melee. It
+buys only what it can wear, only when the gain is at least one point, and fills a ring or
+trinket slot only when one is empty. An item without stats, such as a mystery offer, scores
+nothing, so a bot never gambles.
+
 ## Provisioning
 
 Spawn and level-up arm a class-and-role profile. They do not grant anything. The next admitted

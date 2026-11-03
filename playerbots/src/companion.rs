@@ -184,14 +184,15 @@ pub(super) fn strategy(
     retained_buff_target: Option<u64>,
 ) -> Result<CompanionSelection, RoleReadError> {
     let follow = follow(party, follow_member_guid, me, objective);
+    let in_combat = !party.enemies.is_empty()
+        || me.combat_until_ms > (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u64;
     let support = class_behavior::support(
         ctx,
         bot,
         me,
         SupportContext {
             party: Some(party),
-            in_combat: !party.enemies.is_empty()
-                || me.combat_until_ms > (ctx.timestamp.to_micros_since_unix_epoch() / 1000) as u64,
+            in_combat,
             permits_healing: survival_permits_healing,
             heal_target: retained_heal_target,
             buff_target: retained_buff_target,
@@ -233,7 +234,10 @@ pub(super) fn strategy(
         )?);
     } else if !party.enemies.is_empty() {
         candidates.push(node(Action::Hold, Reason::CrowdControl, 750, objective));
+    } else if !in_combat {
+        candidates.extend(super::shopping::browse(ctx, bot, me, objective));
     }
+    candidates.extend(super::shopping::ordered(ctx, me, objective));
     candidates.push(follow);
     Ok(CompanionSelection {
         strategy: Strategy {

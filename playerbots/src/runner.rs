@@ -2081,9 +2081,21 @@ fn run(
     let mut companion_fight_target = previous_fight_target;
     let mut companion_buff_target = state.companion_buff_target_guid;
     if me.dead {
+        // A companion waits for a res, or the mode's own revive, while its party fights on.
+        let party_alive = party.as_ref().is_some_and(|party| {
+            !party.enemies.is_empty()
+                && party.members.iter().any(|member| {
+                    member.character_guid != me.guid
+                        && member.unit.as_ref().is_some_and(|unit| !unit.dead)
+                })
+        });
         strategies.push(strategy(
             Trigger::Always,
-            node(Action::Resurrect, Reason::Resurrection, 1000),
+            if party_alive {
+                node(Action::Hold, Reason::Resurrection, 1000)
+            } else {
+                node(Action::Resurrect, Reason::Resurrection, 1000)
+            },
         ));
     } else {
         strategies.push(strategy(Trigger::LowHealth, survival));
@@ -3075,6 +3087,18 @@ fn execute(
                 ),
             }
         }
+        Action::Buy(purchase) => match super::shopping::execute(ctx, me.guid, purchase) {
+            Ok(()) => state.last_outcome = RunnerOutcome::Accepted,
+            Err(reason) => {
+                spacetimedb::log::info!("bot {} did not buy {}: {reason}", me.guid, purchase.item);
+                state.failure(
+                    Failure::ActionRefused(crate::actor::ActionRefusalKind::Other),
+                    now,
+                );
+                state.retry_candidate = Some(candidate.id);
+                state.next_eligible_micros = now.saturating_add(DEFER_INTERVAL);
+            }
+        },
         action @ (Action::AcceptQuest(_)
         | Action::TurnInQuest(_)
         | Action::LootCreature(_)

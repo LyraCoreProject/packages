@@ -108,7 +108,7 @@ pub(super) fn work(purpose: Candidate) -> Option<Work> {
         return None;
     }
     match purpose.id.action {
-        Action::Hold | Action::Resurrect => None,
+        Action::Hold | Action::Resurrect | Action::Buy(_) => None,
         Action::Transfer(transfer) => Some(Work::AreaTrigger(transfer.trigger)),
         Action::Attack(target) => Some(Work::Fight(target)),
         Action::Cast(cast) => Some(match purpose.id.reason {
