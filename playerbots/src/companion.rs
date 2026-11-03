@@ -2,7 +2,7 @@
 
 use super::class_behavior::{self, Fight, FightFallback, SupportContext};
 use super::decision::{Action, ActionNode, MoveTarget, Reason, Strategy, Trigger};
-use super::{pkg_playerbots_bot, PlayerbotsBot, ROLE_TANK};
+use super::{class, pkg_playerbots_bot, PlayerbotsBot, ROLE_TANK};
 use spacetimedb::ReducerContext;
 
 pub use super::class_behavior::RoleReadError;
@@ -216,7 +216,8 @@ pub(super) fn strategy(
                     && target.attacking_party
                     && target.current_target_guid != Some(me.guid),
                 tank_engaged: target.party_has_threat,
-                fallback: if tank {
+                // A melee class swings between casts; a caster holds its ground.
+                fallback: if tank || matches!(bot.class, class::WARRIOR | class::PALADIN) {
                     FightFallback::Melee
                 } else {
                     FightFallback::Hold

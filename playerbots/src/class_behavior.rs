@@ -6,11 +6,13 @@ use super::{
     cond, pkg_playerbots_personality, pkg_playerbots_rotation, PlayerbotsBot, PlayerbotsRotation,
     ROLE_HEALER,
 };
-use crate::tables::{game_spell, game_spell_effect, game_world_entity};
+use crate::tables::{game_spell, game_spell_effect, game_threat, game_world_entity};
+use lyracore_shared::spell::taxonomy::{E_SET_STANCE, KIND_AURA_BIT};
 use spacetimedb::ReducerContext;
 
 const ROTATION_LIMIT: usize = 12;
 const MELEE_RANGE_YD: f32 = 4.0;
+const ENEMY_LIMIT: usize = 24;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RoleReadError {
@@ -208,6 +210,9 @@ fn buff_target(
     retained: Option<u64>,
 ) -> Result<Option<u64>, RoleReadError> {
     if row.condition == cond::SELF_MISSING_AURA {
+        if let Some(stance) = stance_set_by(ctx, row.spell_id) {
+            return Ok((me.stance != stance).then_some(me.guid));
+        }
         return Ok(buff_missing(ctx, me.guid, row.spell_id, me.level as u8)?.then_some(me.guid));
     }
     if row.condition != cond::ALLY_MISSING_AURA {
@@ -243,6 +248,17 @@ fn buff_target(
         }
     }
     Ok(target)
+}
+
+// A stance leaves no aura, so a stance row is satisfied by the bot standing in it.
+fn stance_set_by(ctx: &ReducerContext, spell: u32) -> Option<u8> {
+    ctx.db
+        .game_spell_effect()
+        .by_spell()
+        .filter(spell)
+        .take(3)
+        .find(|effect| effect.kind == E_SET_STANCE)
+        .map(|effect| effect.p0.clamp(0, i32::from(u8::MAX)) as u8)
 }
 
 fn maintenance(
@@ -294,7 +310,8 @@ struct HealingSelection {
     target: Option<u64>,
 }
 
-fn periodic_heal_only(ctx: &ReducerContext, spell: u32) -> bool {
+// Renew and Power Word: Shield heal only through their aura, so a target that carries it waits.
+fn aura_only_heal(ctx: &ReducerContext, spell: u32) -> bool {
     let effects: Vec<_> = ctx
         .db
         .game_spell_effect()
@@ -305,7 +322,7 @@ fn periodic_heal_only(ctx: &ReducerContext, spell: u32) -> bool {
     effects.len() <= 3
         && effects
             .iter()
-            .any(|effect| effect.kind == crate::actor::A_PERIODIC_HEAL)
+            .any(|effect| effect.kind & KIND_AURA_BIT != 0)
         && !effects.iter().any(|effect| {
             matches!(
                 effect.kind,
@@ -344,10 +361,10 @@ fn healing(
         if targets.is_empty() {
             continue;
         }
-        let periodic_only = periodic_heal_only(ctx, row.spell_id);
+        let aura_only = aura_only_heal(ctx, row.spell_id);
         let mut target = None;
         for guid in targets {
-            if !periodic_only || buff_missing(ctx, guid, row.spell_id, me.level as u8)? {
+            if !aura_only || buff_missing(ctx, guid, row.spell_id, me.level as u8)? {
                 target = Some(guid);
                 break;
             }
@@ -390,6 +407,7 @@ fn healing(
     })
 }
 
+/// An instant, harmless self spell such as a shout, seal or stance; recast mid-fight.
 pub(super) fn combat_buff(ctx: &ReducerContext, spell: u32) -> bool {
     ctx.db
         .game_spell()
@@ -397,7 +415,6 @@ pub(super) fn combat_buff(ctx: &ReducerContext, spell: u32) -> bool {
         .find(spell)
         .is_some_and(|spell| {
             spell.cast_time_ms == 0
-                && spell.power_type == lyracore_shared::packing::power_type::RAGE
                 && !spell.is_negative
                 && spell.cast_flags & crate::actor::SPELL_ATTR_CHANNELED == 0
         })
@@ -485,15 +502,32 @@ pub(super) fn combat(
             objective,
         ));
     }
+    let mut engaged = None;
     for row in rotation_rows(
         ctx,
         bot,
-        &[cond::ALWAYS, cond::ENEMY_ON_ALLY, cond::TANK_ENGAGED],
+        &[
+            cond::ALWAYS,
+            cond::ENEMY_ON_ALLY,
+            cond::TANK_ENGAGED,
+            cond::ENEMIES_ENGAGED_GE_N,
+        ],
     )? {
         if (row.condition == cond::ENEMY_ON_ALLY && !fight.protecting_ally)
             || (row.condition == cond::TANK_ENGAGED && !fight.tank_engaged)
         {
             continue;
+        }
+        let mut target = fight.target;
+        if row.condition == cond::ENEMIES_ENGAGED_GE_N {
+            let enemies = engaged.get_or_insert_with(|| engaged_enemies(ctx, me));
+            let (reached, centred) = area_reach(ctx, me, row.spell_id, enemies);
+            if reached < usize::from(row.threshold_pct.max(1)) {
+                continue;
+            }
+            if centred {
+                target = me.guid;
+            }
         }
         let position_reason = match reason {
             Reason::TankFight => Reason::MeleePosition,
@@ -504,7 +538,7 @@ pub(super) fn combat(
             ctx,
             me,
             CastAction {
-                target: fight.target,
+                target,
                 spell: row.spell_id,
             },
             reason,
@@ -518,6 +552,86 @@ pub(super) fn combat(
         }
     }
     Ok(attack)
+}
+
+struct Enemy {
+    guid: u64,
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+/// The living enemies engaged with this bot's party, or with the bot alone when it has none.
+fn engaged_enemies(ctx: &ReducerContext, me: &crate::tables::WorldEntity) -> Vec<Enemy> {
+    let partition = (me.map_id, me.instance_id);
+    if let Ok(Some(facts)) = crate::actor::party_facts(ctx, me.guid) {
+        return facts
+            .enemies
+            .iter()
+            .filter(|enemy| enemy.health > 0 && (enemy.map_id, enemy.instance_id) == partition)
+            .map(|enemy| Enemy {
+                guid: enemy.guid,
+                x: enemy.x,
+                y: enemy.y,
+                z: enemy.z,
+            })
+            .collect();
+    }
+    let entities = ctx.db.game_world_entity();
+    ctx.db
+        .game_threat()
+        .by_source()
+        .filter(me.guid)
+        .take(ENEMY_LIMIT)
+        .filter_map(|threat| entities.guid().find(threat.creature_guid))
+        .filter(|enemy| !enemy.dead && (enemy.map_id, enemy.instance_id) == partition)
+        .map(|enemy| Enemy {
+            guid: enemy.guid,
+            x: enemy.x,
+            y: enemy.y,
+            z: enemy.z,
+        })
+        .collect()
+}
+
+/// Enemies an area row reaches and whether it centres on the caster (README "Behaviour is data").
+fn area_reach(
+    ctx: &ReducerContext,
+    me: &crate::tables::WorldEntity,
+    spell: u32,
+    enemies: &[Enemy],
+) -> (usize, bool) {
+    let radius = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(spell)
+        .filter(|header| header.range_yd == 0)
+        .map(|_| {
+            ctx.db
+                .game_spell_effect()
+                .by_spell()
+                .filter(spell)
+                .take(3)
+                .map(|effect| effect.radius_yd)
+                .fold(0.0f32, f32::max)
+        })
+        .filter(|radius| *radius > 0.0);
+    let Some(radius) = radius else {
+        return (enemies.len(), false);
+    };
+    let reached = enemies
+        .iter()
+        .filter(|enemy| {
+            (me.x - enemy.x).powi(2) + (me.y - enemy.y).powi(2) + (me.z - enemy.z).powi(2)
+                <= radius * radius
+                && !matches!(
+                    crate::actor::buff_status(ctx, enemy.guid, spell, me.level as u8),
+                    crate::actor::BuffStatus::Satisfied
+                )
+        })
+        .count();
+    (reached, true)
 }
 
 pub(super) struct Support {
