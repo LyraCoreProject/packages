@@ -102,6 +102,13 @@ fn preceding_transfer() -> PrecedingTransfer {
     ] {
         assert_eq!(manifest[field], expected, "preceding manifest {field}");
     }
+    assert_eq!(
+        manifest["schedule_control_sha256"],
+        sha256(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.github/fixtures/baseline-schedule.rs"
+        )))
+    );
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
     assert_eq!(manifest["rust"], "1.97.1");
@@ -270,9 +277,8 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         ready
     });
     node.assert_call("playerbots_fixture_freeze", &[&guid]);
-    // A Runner pass on the World tick after publish would backfill the claim index before the
-    // read below, so the upgraded rows are observed exactly as the migration left them.
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    // Stop automatic backfill so the read observes the rows left by migration.
+    node.clear_schedule("game_creature_move_schedule");
     let before = state(&node, &guid, &companion);
     let before_pid = node.process_id();
     save(

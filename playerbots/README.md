@@ -745,6 +745,16 @@ publishes that preceding Wasm, populates real bot, goal, quest and action rows, 
 same private Standalone to the current Wasm. It records both Wasm identities and asserts the old
 rows survive, selector defaults apply, and backfill takes bounded passes.
 
+SpacetimeDB 2.14 rejects SQL writes to scheduled tables. Current fixtures stop schedules through
+Core's `clear_schedule` test API. CI builds the older Runner, capacity, movement, target-claim and
+Transfer migration baselines with `.github/build-baseline-with-schedule-control.py CORE COMMAND`.
+This wrapper temporarily adds an Operator-only debug reducer from
+`.github/fixtures/baseline-schedule.rs`, runs the build, and restores the source even if the build
+fails. Historical gameplay and table layouts stay intact; these are instrumented test binaries.
+The build log records the fixture SHA-256, and the Transfer manifest also records and verifies it.
+The external accepted PB011 artifact test still requires its original runtime and is not covered
+by this fixture adaptation.
+
 The debug-only `playerbots_load_stage(count, seed)` prepares a fresh roster of 10, 25 or 100 bots
 in a repeating Warrior, Priest and Mage sequence. It records each position, class, role and first
 due offset. The declared flat terrain and navigation cells cannot replace existing input.
@@ -765,5 +775,5 @@ The checks cover solo and grouped starter casts, healing, buff retention, queued
 and preservation of Operator rotation edits. They do not establish attended client acceptance.
 
 Capacity scheduling requires Core `9863e59d2b8cfc91fa9f731be8380a09a1d273af` or a descendant. It adds the
-partition and creature-entry index used by crowded target searches. CI pins that integration
+partition and creature-entry index used by crowded target searches. CI selects the paired Core
 revision and retains the earlier revisions used by migration tests.

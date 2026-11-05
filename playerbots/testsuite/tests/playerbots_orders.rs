@@ -394,7 +394,7 @@ fn wait_for_melee_range(node: &Standalone, guid: &str, target: &str) {
 fn playerbots_companions_receive_turns_without_starving_older_background_work() {
     let fixture = fixture("playerbots-orders-scheduler");
     let node = &fixture.node;
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     let companions = [&fixture.warrior, &fixture.priest, &fixture.mage];
     for guid in companions {
         issue(&fixture, &format!("follow|{guid}"), guid, false);

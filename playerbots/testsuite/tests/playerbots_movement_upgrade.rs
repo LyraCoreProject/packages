@@ -97,7 +97,7 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
         ["foreground"]
         .contains("movement")));
     node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     let before = runner(&node, &bot);
     assert_ne!(before["movement_due_micros"], i64::MAX.to_string());
     node.publish_module_bytes(current);
@@ -159,7 +159,7 @@ fn playerbots_waypoint_upgrade_preserves_an_existing_single_leg() {
     node.assert_call("playerbots_fixture_prepare", &[]);
     let bot = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot")[0]["character_guid"]
         .clone();
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
     node.assert_call("playerbots_fixture_move", &[&bot, "1240"]);
     let before = node.query_rows(&format!(

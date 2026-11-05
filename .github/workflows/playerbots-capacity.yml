@@ -103,6 +103,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/capacity-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/preceding-capacity-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-capacity-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-capacity-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/capacity-baseline.wasm"
@@ -113,6 +115,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/movement-baseline-target
         run: |
           "$GITHUB_WORKSPACE/preceding-movement-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-movement-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-movement-core" \
             cargo build --locked --release --target wasm32-unknown-unknown \
             -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/movement-baseline.wasm"
@@ -124,6 +128,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/runner-baseline-target
         run: |
           "$GITHUB_WORKSPACE/preceding-runner-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-runner-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-runner-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-runner-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/runner-baseline.wasm"

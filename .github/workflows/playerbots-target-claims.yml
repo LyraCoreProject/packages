@@ -76,6 +76,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/claim-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/baseline-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/baseline-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/baseline-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/claim-baseline.wasm"
