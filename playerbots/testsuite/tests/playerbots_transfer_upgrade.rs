@@ -410,11 +410,19 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         }
     }
     assert_eq!(expected_characters, after["character"], "character");
+    let mut expected_casts = before["pending_cast"].clone();
+    for cast in expected_casts.as_array_mut().unwrap() {
+        assert!(cast
+            .as_object_mut()
+            .unwrap()
+            .insert("item_target_guid".into(), serde_json::json!("0"))
+            .is_none());
+    }
+    assert_eq!(expected_casts, after["pending_cast"], "pending_cast");
     for field in [
         "orders",
         "retained_quest",
         "quests",
-        "pending_cast",
         "provisioning",
         "bot_intents",
         "source_escrows",

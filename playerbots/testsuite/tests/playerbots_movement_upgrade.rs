@@ -126,15 +126,17 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
     );
     assert_eq!(runner(&node, &bot), migrated);
     node.assert_call("debug_repair_after_publish", &[]);
-    assert!(poll_until(Duration::from_secs(8), || (position(
-        &node, &bot
-    ) - 1238.0)
-        .abs()
-        < 0.1));
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
-    assert!(node
-        .query_rows("SELECT * FROM pkg_playerbots_movement")
-        .is_empty());
+    assert!(
+        poll_until(Duration::from_secs(8), || {
+            (position(&node, &bot) - 1238.0).abs() < 0.1
+                && node
+                    .query_rows("SELECT * FROM pkg_playerbots_movement")
+                    .is_empty()
+        }),
+        "retained movement did not finish: runner={:?}, queue={:?}",
+        runner(&node, &bot),
+        node.query_rows("SELECT * FROM pkg_playerbots_movement")
+    );
     std::fs::write(
         support::log_dir().join(format!("{}-migration.json", node.shard_name())),
         serde_json::to_vec_pretty(
