@@ -78,8 +78,8 @@ jobs:
           path: lyracore
           persist-credentials: false
 
-      - name: Install Rust 1.93.0
-        run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
 
       - name: Read the checked Core revision's Package API version
         id: package-api
@@ -147,10 +147,10 @@ jobs:
           persist-credentials: false
 
       # Schema generation requires the Wasm target.
-      - name: Install Rust 1.93.0
+      - name: Install Rust 1.97.1
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
 
       # Keep the CLI version aligned with Core module/Cargo.toml.
       - name: Install the pinned SpacetimeDB CLI
@@ -179,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
+      RUSTUP_TOOLCHAIN: 1.97.1
       SPACETIME_VERSION: 2.7.1
       SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
       CARGO_BUILD_JOBS: 2
@@ -205,8 +205,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
@@ -733,7 +733,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
+      RUSTUP_TOOLCHAIN: 1.97.1
       SPACETIME_VERSION: 2.7.1
       SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
       CARGO_BUILD_JOBS: 2
@@ -759,8 +759,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
@@ -947,7 +947,7 @@ jobs:
                 playerbots_acceptance_mage_seed_783008008_completes_the_whole_journey
                 playerbots_acceptance_mage_seed_783008009_completes_the_whole_journey
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
+      RUSTUP_TOOLCHAIN: 1.97.1
       SPACETIME_VERSION: 2.7.1
       SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
       CARGO_BUILD_JOBS: 2
@@ -977,8 +977,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
@@ -1146,7 +1146,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
+      RUSTUP_TOOLCHAIN: 1.97.1
       SPACETIME_VERSION: 2.7.1
       SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
       CARGO_BUILD_JOBS: 2
@@ -1179,8 +1179,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
