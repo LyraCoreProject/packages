@@ -263,6 +263,7 @@ fn playerbots_recovery_changes_a_stalled_attack_then_defers_without_false_progre
     node.publish_module();
     record_inputs(&node);
     let guid = prepare(&node);
+    support::stage_playerbot_buff(&node, &guid);
     let armed = poll_until(POLL_TIMEOUT, || {
         node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
         let chosen = row(
