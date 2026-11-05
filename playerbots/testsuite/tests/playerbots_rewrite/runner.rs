@@ -2864,3 +2864,46 @@ fn playerbots_movement_does_not_climb_a_steep_model_face() {
         "walk climbed a steep model face: {positions:?}"
     );
 }
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_despawn_rolls_back_when_a_roster_character_has_another_owner() {
+    let (node, bots) = fixture("playerbots-despawn-owner", "2");
+    for bot in &bots {
+        select(&node, bot, "frozen");
+    }
+    node.assert_call("provision_account", &["\"LEGACY\"", "[]", "[]"]);
+    let account =
+        node.query_rows("SELECT id FROM game_account WHERE username = 'LEGACY'")[0]["id"].clone();
+    node.assert_sql(&format!(
+        "UPDATE game_character SET account_id = {account} WHERE guid = {}",
+        bots[1]
+    ));
+    let before = node.query_rows("SELECT guid, account_id FROM game_character");
+    let roster = node.query_rows("SELECT * FROM pkg_playerbots_bot");
+    let output = node.call("playerbots_despawn_all", &[]);
+    assert!(
+        !output.status.success(),
+        "despawn accepted another Account's Character"
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("another Package"), "{text}");
+    assert_eq!(
+        node.query_rows("SELECT guid, account_id FROM game_character"),
+        before
+    );
+    assert_eq!(node.query_rows("SELECT * FROM pkg_playerbots_bot"), roster);
+    for bot in &bots {
+        assert_eq!(
+            node.query_rows(&format!(
+                "SELECT guid FROM game_world_entity WHERE guid = {bot}"
+            ))
+            .len(),
+            1
+        );
+    }
+}

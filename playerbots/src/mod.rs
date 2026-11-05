@@ -975,9 +975,6 @@ crate::game_package_characters!(fn playerbots_characters(ctx) {
         .collect()
 });
 
-/// Remove every bot: the Character and everything it owns, through the same cascade a real
-/// Character deletion uses. The roster row and the personality row go with it through their own
-/// sweeps, so there is one delete path and nothing to keep in step with it.
 #[reducer]
 pub fn playerbots_despawn_all(ctx: &ReducerContext) -> Result<(), String> {
     crate::package::require_operator(ctx)?;
@@ -988,10 +985,7 @@ pub fn playerbots_despawn_all(ctx: &ReducerContext) -> Result<(), String> {
         .map(|bot| bot.character_guid)
         .collect();
     for guid in guids {
-        // A bot in a party must leave it first: the cascade deletes the Character, and a member row
-        // pointing at a Character that no longer exists is a party the survivors cannot dissolve.
-        let _ = crate::actor::leave_group_for(ctx, guid);
-        crate::package::character::cascade_delete_character(ctx, guid);
+        crate::package::delete_character(ctx, PACKAGE, guid)?;
     }
     Ok(())
 }

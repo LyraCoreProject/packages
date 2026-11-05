@@ -21,10 +21,16 @@ Every verb is Operator-gated. Call them with `spacetime call <database> -- <verb
 | `playerbots_spawn_class_role N x y z class role` | Spawn `N` bots of one class and role. Refuses a pairing this Package has no kit for. |
 | `playerbots_spawn_starting_area area N controller` | Spawn 1 through 50 level-one bots at imported race/class starts. Accepts Cohort or Frozen control; missing walkable ground refuses the entire batch. |
 | `playerbots_populate` | Top the population up to `population_count`. Idempotent. |
-| `playerbots_despawn_all` | Delete every bot Character and everything it owns. |
+| `playerbots_despawn_all` | Delete this Shard's Package-owned bots and queue Realm cleanup. A protected Character refuses the entire batch. |
 | `playerbots_migrate_legacy_controllers [guids]` | Move one sorted batch of at most 16 eligible populated Legacy bots to Cohort. Transfer-owned rows wait for a later batch. |
 
 Roles are `0` tank, `1` healer, `2` damage.
+
+Despawn uses Core's Package deletion API. Realm name, Group, guild and directory cleanup settles
+asynchronously and survives Host restart. Pending Transfer or relocation, Account Claims, Guild
+Leaders and unsettled economic work refuse deletion. A bot on a legacy Account that this Package
+does not own also refuses; reconcile its ownership before retrying. Revoked action consent does not
+prevent deletion. Any refusal rolls back the entire despawn call, including earlier bots in the batch.
 
 Nothing populates on its own. A realm gets bots when its Operator asks for them.
 
