@@ -398,14 +398,16 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         assert_eq!(after[runner]["movement_due_micros"], i64::MAX.to_string());
         assert_eq!(after[runner]["path_pending"], "false");
     }
-    // The pinned predecessor predates the persisted watched-faction selection.
+    // The pinned predecessor lacks watched-faction selection and rest display state.
     let mut expected_characters = before["character"].clone();
     for character in expected_characters.as_array_mut().unwrap() {
-        assert!(character
-            .as_object_mut()
-            .unwrap()
-            .insert("watched_faction_index".into(), serde_json::json!("-1"))
-            .is_none());
+        for (field, default) in [("watched_faction_index", "-1"), ("rest_state", "0")] {
+            assert!(character
+                .as_object_mut()
+                .unwrap()
+                .insert(field.into(), serde_json::json!(default))
+                .is_none());
+        }
     }
     assert_eq!(expected_characters, after["character"], "character");
     for field in [
