@@ -78,8 +78,8 @@ jobs:
           path: lyracore
           persist-credentials: false
 
-      - name: Install Rust 1.93.0
-        run: rustup toolchain install 1.93.0 --profile minimal --component rustfmt --component clippy
+      - name: Install Rust 1.97.1
+        run: rustup toolchain install 1.97.1 --profile minimal --component rustfmt --component clippy
 
       - name: Read the checked Core revision's Package API version
         id: package-api
@@ -147,18 +147,18 @@ jobs:
           persist-credentials: false
 
       # Schema generation requires the Wasm target.
-      - name: Install Rust 1.93.0
+      - name: Install Rust 1.97.1
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
 
       # Keep the CLI version aligned with Core module/Cargo.toml.
       - name: Install the pinned SpacetimeDB CLI
         run: |
           curl -sSf https://install.spacetimedb.com | sh -s -- --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/spacetime" version install 2.7.1
-          "$HOME/.local/bin/spacetime" version use 2.7.1
+          "$HOME/.local/bin/spacetime" version install 2.14.0
+          "$HOME/.local/bin/spacetime" version use 2.14.0
 
       - name: Install the pinned Bun
         run: |
@@ -179,9 +179,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      RUSTUP_TOOLCHAIN: 1.97.1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -205,8 +205,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
@@ -245,6 +245,8 @@ jobs:
           export CARGO_TARGET_DIR="$RUNNER_TEMP/playerbots-legacy-preceding-target"
           cargo clean --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" -p lyracore-module
           "$GITHUB_WORKSPACE/preceding-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-core/Cargo.toml" \
             --locked --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/playerbots-preceding.wasm"
@@ -733,9 +735,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      RUSTUP_TOOLCHAIN: 1.97.1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -759,8 +761,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
@@ -798,6 +800,8 @@ jobs:
           "$GITHUB_WORKSPACE/preceding-transfer-collection/.github/check-core-tip.sh" \
             "$GITHUB_WORKSPACE/preceding-transfer-core" \
             bash -eu -o pipefail -c '
+              python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+                "$GITHUB_WORKSPACE/preceding-transfer-core" \
               cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-transfer-core/Cargo.toml" \
                 --locked --release --target wasm32-unknown-unknown \
                 -p lyracore-module --features=debug_reducers
@@ -857,7 +861,10 @@ jobs:
               "wasm_bytes": len(wasm),
               "wasm_sha256": hashlib.sha256(wasm).hexdigest(),
               "package_content_identity": "7b51ae0d6ab39ae35b7c4368e86baf02b9f62f2da67e42ad669caa55e2b78642",
-              "verification": "Clean merged PB-009 inputs for the populated PB-010 upgrade test.",
+              "schedule_control_sha256": hashlib.sha256(
+                  (pathlib.Path("../collection/.github/fixtures/baseline-schedule.rs")).read_bytes()
+              ).hexdigest(),
+              "verification": "Merged PB-009 gameplay and schema with test-only schedule control for SpacetimeDB 2.14.",
           }
           manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
           PY_MANIFEST
@@ -947,9 +954,9 @@ jobs:
                 playerbots_acceptance_mage_seed_783008008_completes_the_whole_journey
                 playerbots_acceptance_mage_seed_783008009_completes_the_whole_journey
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      RUSTUP_TOOLCHAIN: 1.97.1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -977,8 +984,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore
@@ -1146,9 +1153,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      RUSTUP_TOOLCHAIN: 1.97.1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -1179,8 +1186,8 @@ jobs:
           persist-credentials: false
       - name: Install the Rust toolchain and Wasm target
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: lyracore

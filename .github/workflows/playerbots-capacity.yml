@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      RUSTUP_TOOLCHAIN: 1.93.0
+      RUSTUP_TOOLCHAIN: 1.97.1
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -41,8 +41,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
@@ -83,13 +81,13 @@ jobs:
           persist-credentials: false
       - name: Install pinned Rust and SpacetimeDB
         run: |
-          rustup toolchain install 1.93.0 --profile minimal
-          rustup target add wasm32-unknown-unknown --toolchain 1.93.0
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup target add wasm32-unknown-unknown --toolchain 1.97.1
           archive="$RUNNER_TEMP/spacetime.tar.gz"
           curl --fail --location --retry 3 \
-            https://github.com/clockworklabs/SpacetimeDB/releases/download/v2.7.1/spacetime-x86_64-unknown-linux-gnu.tar.gz \
+            https://github.com/clockworklabs/SpacetimeDB/releases/download/v2.14.0/spacetime-x86_64-unknown-linux-gnu.tar.gz \
             --output "$archive"
-          printf '%s  %s\n' 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1 "$archive" | sha256sum --check --strict
+          printf '%s  %s\n' 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084 "$archive" | sha256sum --check --strict
           mkdir "$RUNNER_TEMP/spacetime"
           tar -xzf "$archive" -C "$RUNNER_TEMP/spacetime"
           ln -s spacetimedb-cli "$RUNNER_TEMP/spacetime/spacetime"
@@ -105,6 +103,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/capacity-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/preceding-capacity-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-capacity-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-capacity-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/capacity-baseline.wasm"
@@ -115,6 +115,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/movement-baseline-target
         run: |
           "$GITHUB_WORKSPACE/preceding-movement-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-movement-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-movement-core" \
             cargo build --locked --release --target wasm32-unknown-unknown \
             -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/movement-baseline.wasm"
@@ -126,6 +128,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/runner-baseline-target
         run: |
           "$GITHUB_WORKSPACE/preceding-runner-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-runner-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-runner-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-runner-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/runner-baseline.wasm"

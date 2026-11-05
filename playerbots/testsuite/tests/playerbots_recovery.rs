@@ -84,8 +84,8 @@ fn preceding_recovery() -> PrecedingRecovery {
     }
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
-    assert_eq!(manifest["rust"], "1.93.0");
-    assert_eq!(manifest["spacetimedb"], "2.7.1");
+    assert_eq!(manifest["rust"], "1.97.1");
+    assert_eq!(manifest["spacetimedb"], "2.14.0");
     assert_eq!(manifest["target"], "wasm32-unknown-unknown");
     assert_eq!(manifest["profile"], "release");
     assert_eq!(manifest["features"], serde_json::json!(["debug_reducers"]));
@@ -263,6 +263,7 @@ fn playerbots_recovery_changes_a_stalled_attack_then_defers_without_false_progre
     node.publish_module();
     record_inputs(&node);
     let guid = prepare(&node);
+    support::stage_playerbot_buff(&node, &guid);
     let armed = poll_until(POLL_TIMEOUT, || {
         node.assert_call("playerbots_fixture_runner_pass_once", &[&guid]);
         let chosen = row(

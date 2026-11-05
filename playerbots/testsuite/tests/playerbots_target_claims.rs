@@ -67,7 +67,7 @@ fn additive_claim_index_preserves_existing_runner_state() {
     node.publish_module_bytes(&baseline);
     node.assert_call("claim_operator", &[]);
     node.assert_call("install_guid_range", &["1000000"]);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call(
         "playerbots_spawn_class_role",
         &["18", "1200", "1200", "50", "1", "0"],

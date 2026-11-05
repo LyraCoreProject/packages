@@ -391,7 +391,7 @@ fn runner(node: &Standalone, guid: &str) -> BTreeMap<String, String> {
     rows.remove(0)
 }
 
-// SpacetimeDB 2.7.1 needs a new Wasm hash; a custom section preserves executable code.
+// SpacetimeDB 2.14.0 needs a new Wasm hash; a custom section preserves executable code.
 fn replacement_bytes(node: &Standalone) -> Vec<u8> {
     let name = b"playerbots-lifecycle-replacement";
     let mut wasm = support::module_bytes().to_vec();

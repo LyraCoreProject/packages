@@ -102,10 +102,17 @@ fn preceding_transfer() -> PrecedingTransfer {
     ] {
         assert_eq!(manifest[field], expected, "preceding manifest {field}");
     }
+    assert_eq!(
+        manifest["schedule_control_sha256"],
+        sha256(std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../.github/fixtures/baseline-schedule.rs"
+        )))
+    );
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
-    assert_eq!(manifest["rust"], "1.93.0");
-    assert_eq!(manifest["spacetimedb"], "2.7.1");
+    assert_eq!(manifest["rust"], "1.97.1");
+    assert_eq!(manifest["spacetimedb"], "2.14.0");
     assert_eq!(manifest["target"], "wasm32-unknown-unknown");
     assert_eq!(manifest["profile"], "release");
     assert_eq!(manifest["features"], serde_json::json!(["debug_reducers"]));
@@ -270,9 +277,8 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         ready
     });
     node.assert_call("playerbots_fixture_freeze", &[&guid]);
-    // A Runner pass on the World tick after publish would backfill the claim index before the
-    // read below, so the upgraded rows are observed exactly as the migration left them.
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    // Stop automatic backfill so the read observes the rows left by migration.
+    node.clear_schedule("game_creature_move_schedule");
     let before = state(&node, &guid, &companion);
     let before_pid = node.process_id();
     save(
@@ -392,21 +398,31 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         assert_eq!(after[runner]["movement_due_micros"], i64::MAX.to_string());
         assert_eq!(after[runner]["path_pending"], "false");
     }
-    // The pinned predecessor predates the persisted watched-faction selection.
+    // The pinned predecessor lacks watched-faction selection and rest display state.
     let mut expected_characters = before["character"].clone();
     for character in expected_characters.as_array_mut().unwrap() {
-        assert!(character
-            .as_object_mut()
-            .unwrap()
-            .insert("watched_faction_index".into(), serde_json::json!("-1"))
-            .is_none());
+        for (field, default) in [("watched_faction_index", "-1"), ("rest_state", "0")] {
+            assert!(character
+                .as_object_mut()
+                .unwrap()
+                .insert(field.into(), serde_json::json!(default))
+                .is_none());
+        }
     }
     assert_eq!(expected_characters, after["character"], "character");
+    let mut expected_casts = before["pending_cast"].clone();
+    for cast in expected_casts.as_array_mut().unwrap() {
+        assert!(cast
+            .as_object_mut()
+            .unwrap()
+            .insert("item_target_guid".into(), serde_json::json!("0"))
+            .is_none());
+    }
+    assert_eq!(expected_casts, after["pending_cast"], "pending_cast");
     for field in [
         "orders",
         "retained_quest",
         "quests",
-        "pending_cast",
         "provisioning",
         "bot_intents",
         "source_escrows",

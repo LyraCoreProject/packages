@@ -39,7 +39,7 @@ fn arg(value: &str) -> String {
 }
 
 #[test]
-#[ignore = "requires the SpacetimeDB 2.7.1 CLI, the Wasm toolchain, and the playerbots Package installed (lyracore packages add playerbots)"]
+#[ignore = "requires the SpacetimeDB 2.14.0 CLI, the Wasm toolchain, and the playerbots Package installed (lyracore packages add playerbots)"]
 fn teardown_leaves_every_bot_dormant_and_every_package_table_empty() {
     let mut node = Standalone::start("playerbots-teardown");
     node.publish_module();

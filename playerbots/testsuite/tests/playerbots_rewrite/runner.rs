@@ -41,7 +41,7 @@ fn outcomes(node: &Standalone) {
 fn moving_relocation_fixture(name: &str) -> (Standalone, String, u32) {
     let (node, bots) = fixture(name, "1");
     let bot = bots[0].clone();
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
     select(&node, &bot, "cohort");
     node.assert_call("playerbots_fixture_move", &[&bot, "1230"]);
@@ -524,7 +524,7 @@ fn stop_walking_route(node: &Standalone, bot: &str, before_stop: impl FnOnce()) 
     };
     import_obstacle_nav(node);
     park_movement(node, bot);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     let leg = node.query_rows(&format!(
         "SELECT * FROM game_creature_spline WHERE guid = {bot}"
     ));
@@ -1024,7 +1024,7 @@ fn park_movement(node: &Standalone, bot: &str) {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_poll_preserves_the_retained_runner_row() {
     let (node, bot) = parked_movement("playerbots-movement-write-volume");
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     assert!(poll_until(POLL_TIMEOUT, || {
         !node
             .query_rows(&format!(
@@ -1181,7 +1181,7 @@ fn playerbots_movement_cast_keeps_its_identity_and_holds_position() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_movement_continues_behind_a_busy_decision_queue() {
     let (node, bot) = parked_movement("playerbots-movement-busy");
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_spawn_role", &["300", "1200", "1200", "50", "1"]);
     for row in node.query_rows("SELECT character_guid FROM pkg_playerbots_bot") {
         if row["character_guid"] != bot {
@@ -1360,7 +1360,7 @@ fn playerbots_runner_retains_a_cast_across_real_pushback_and_resumes_home() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_runner_batches_due_bots_in_stable_fair_order() {
     let (node, bots) = fixture("playerbots-runner-fair", "300");
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     for bot in &bots {
         select(&node, bot, "recordOnly");
     }
@@ -1411,7 +1411,7 @@ fn playerbots_runner_migrates_populated_preceding_wasm_and_backfills_boundedly()
         .query_rows("SELECT * FROM pkg_playerbots_goal")
         .is_empty()));
     node.assert_call("playerbots_fixture_freeze", &[&bot]);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_cast", &[&bot, &bot]);
     node.assert_call("playerbots_fixture_cancel", &[&bot, "false"]);
     let roster = node.query_rows("SELECT * FROM pkg_playerbots_bot");
@@ -1465,7 +1465,7 @@ fn playerbots_runner_migrates_populated_preceding_wasm_and_backfills_boundedly()
     std::fs::write(
         path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "spacetimedb": "2.7.1",
+            "spacetimedb": "2.14.0",
             "preceding_core": "be3fa67d0f0c24749230560544a3e8e8b577f61d",
             "preceding_collection": "5724de1660a2628e88320914bdd5abb0c69da517",
             "preceding_wasm_identity": blake3::hash(&old_wasm).to_hex().to_string(),
@@ -1523,7 +1523,7 @@ fn playerbots_runner_defense_preserves_home_and_accepted_combat_is_not_progress(
     let bot = &bots[0];
     node.assert_call("playerbots_fixture_blocked_quest", &[bot]);
     node.assert_call("playerbots_fixture_runner_stage", &[bot, "false"]);
-    node.assert_sql("DELETE FROM game_melee_schedule");
+    node.clear_schedule("game_melee_schedule");
     select(&node, bot, "frozen");
     select(&node, bot, "cohort");
     let waiting = poll_until(POLL_TIMEOUT, || {
@@ -1575,7 +1575,7 @@ fn playerbots_runner_mage_defense_retains_a_valid_target_and_replaces_invalid_ta
     node.assert_call("playerbots_fixture_runner_second_attacker", &[bot]);
     node.assert_call("playerbots_fixture_runner_stage", &[bot, "false"]);
     support::stage_playerbot_buff(&node, bot);
-    node.assert_sql("DELETE FROM game_melee_schedule");
+    node.clear_schedule("game_melee_schedule");
     select(&node, bot, "frozen");
     select(&node, bot, "cohort");
     assert!(poll_until(POLL_TIMEOUT, || runner(&node, bot)["chosen"]
@@ -1686,7 +1686,7 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
         node.assert_call("playerbots_fixture_runner_prepare_smite", &[]);
         node.assert_call("playerbots_fixture_blocked_quest", &[&bot]);
         node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
-        node.assert_sql("DELETE FROM game_melee_schedule");
+        node.clear_schedule("game_melee_schedule");
         node.assert_call("playerbots_fixture_roles_priest_mana", &[&bot]);
         node.assert_call("playerbots_fixture_runner_clear_navigation", &[&bot]);
         node.assert_call("playerbots_fixture_runner_select_cohort", &[&bot]);
@@ -1850,7 +1850,7 @@ fn playerbots_runner_resurrection_clears_defense_and_resumes_retained_home() {
     let bot = &bots[0];
     node.assert_call("playerbots_fixture_blocked_quest", &[bot]);
     node.assert_call("playerbots_fixture_runner_stage", &[bot, "false"]);
-    node.assert_sql("DELETE FROM game_melee_schedule");
+    node.clear_schedule("game_melee_schedule");
     select(&node, bot, "frozen");
     node.assert_call("playerbots_fixture_runner_select_cohort", &[bot]);
     let parked_observed_micros = runner(&node, bot)["observed_micros"]
@@ -2574,7 +2574,7 @@ fn playerbots_runner_observes_tactical_movement_without_advancing_the_home_clock
     node.assert_sql(&format!(
         "UPDATE game_creature_spawn SET x = 1000 WHERE guid = {target}"
     ));
-    node.assert_sql("DELETE FROM game_melee_schedule");
+    node.clear_schedule("game_melee_schedule");
     select(&node, bot, "frozen");
     select(&node, bot, "cohort");
     node.assert_call("playerbots_fixture_runner_damage", &[bot, &target, "1"]);
@@ -2595,7 +2595,7 @@ fn playerbots_runner_observes_tactical_movement_without_advancing_the_home_clock
 fn recovery_fixture(label: &str) -> (Standalone, String) {
     let (node, bots) = fixture(label, "1");
     let bot = bots[0].clone();
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_runner_wide_recovery", &[&bot]);
     select(&node, &bot, "recordOnly");
     (node, bot)
@@ -2684,7 +2684,7 @@ fn playerbots_runner_recovery_revalidates_retained_rotation_and_spellbook_rows()
 fn playerbots_runner_wounded_comparison_preserves_large_health_ratios() {
     let (node, bots) = fixture("playerbots-runner-large-health", "1");
     let bot = &bots[0];
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_runner_stage", &[bot, "true"]);
     select(&node, bot, "recordOnly");
     node.assert_sql(&format!("UPDATE game_world_entity SET health = 1000000000, max_health = 4000000000 WHERE guid = {bot}"));
@@ -2702,7 +2702,7 @@ fn playerbots_runner_wounded_comparison_preserves_large_health_ratios() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_runner_fixture_due_helpers_preserve_other_bots() {
     let (node, bots) = fixture("playerbots-runner-fixture-scope", "2");
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     for bot in &bots {
         node.assert_call("playerbots_fixture_runner_stage", &[bot, "false"]);
         select(&node, bot, "recordOnly");
@@ -2727,7 +2727,7 @@ fn playerbots_runner_fixture_due_helpers_preserve_other_bots() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_runner_fixture_navigation_handles_both_grid_edges() {
     let (node, bots) = fixture("playerbots-runner-fixture-grid", "1");
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     for (coordinate, edge_chunks) in [
         ("17066", "0,0,0,0,,;0,0,1,0,,;0,1,0,0,,;0,1,1,0,,"),
         (
@@ -2863,4 +2863,47 @@ fn playerbots_movement_does_not_climb_a_steep_model_face() {
         positions.iter().all(|(_, z)| *z <= 52.4),
         "walk climbed a steep model face: {positions:?}"
     );
+}
+
+#[test]
+#[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
+fn playerbots_despawn_rolls_back_when_a_roster_character_has_another_owner() {
+    let (node, bots) = fixture("playerbots-despawn-owner", "2");
+    for bot in &bots {
+        select(&node, bot, "frozen");
+    }
+    node.assert_call("provision_account", &["\"LEGACY\"", "[]", "[]"]);
+    let account =
+        node.query_rows("SELECT id FROM game_account WHERE username = 'LEGACY'")[0]["id"].clone();
+    node.assert_sql(&format!(
+        "UPDATE game_character SET account_id = {account} WHERE guid = {}",
+        bots[1]
+    ));
+    let before = node.query_rows("SELECT guid, account_id FROM game_character");
+    let roster = node.query_rows("SELECT * FROM pkg_playerbots_bot");
+    let output = node.call("playerbots_despawn_all", &[]);
+    assert!(
+        !output.status.success(),
+        "despawn accepted another Account's Character"
+    );
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(text.contains("another Package"), "{text}");
+    assert_eq!(
+        node.query_rows("SELECT guid, account_id FROM game_character"),
+        before
+    );
+    assert_eq!(node.query_rows("SELECT * FROM pkg_playerbots_bot"), roster);
+    for bot in &bots {
+        assert_eq!(
+            node.query_rows(&format!(
+                "SELECT guid FROM game_world_entity WHERE guid = {bot}"
+            ))
+            .len(),
+            1
+        );
+    }
 }
