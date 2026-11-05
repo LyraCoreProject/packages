@@ -1465,7 +1465,7 @@ fn playerbots_runner_migrates_populated_preceding_wasm_and_backfills_boundedly()
     std::fs::write(
         path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "spacetimedb": "2.7.1",
+            "spacetimedb": "2.14.0",
             "preceding_core": "be3fa67d0f0c24749230560544a3e8e8b577f61d",
             "preceding_collection": "5724de1660a2628e88320914bdd5abb0c69da517",
             "preceding_wasm_identity": blake3::hash(&old_wasm).to_hex().to_string(),

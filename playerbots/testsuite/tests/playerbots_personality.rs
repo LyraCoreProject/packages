@@ -159,7 +159,7 @@ fn assert_does_not_flee(standalone: &Standalone, bot: u64, why: &str) {
 /// Runs only when requested: it builds and publishes the Wasm module, and it needs the Package
 /// whose events the scripts bind.
 #[test]
-#[ignore = "requires the SpacetimeDB 2.7.1 CLI, the Wasm toolchain, and the playerbots Package installed (lyracore packages add playerbots)"]
+#[ignore = "requires the SpacetimeDB 2.14.0 CLI, the Wasm toolchain, and the playerbots Package installed (lyracore packages add playerbots)"]
 fn a_personality_script_decides_for_a_bot_and_a_broken_one_leaves_it_on_its_row() {
     let mut standalone = Standalone::start("playerbots-personality");
     standalone.publish_module();
@@ -217,7 +217,7 @@ fn a_personality_script_decides_for_a_bot_and_a_broken_one_leaves_it_on_its_row(
 /// The artifact the Package ships has to reconcile as written — it is hand-authored, so nothing
 /// upstream of a Shard would have caught a bad identifier, event or Package name.
 #[test]
-#[ignore = "requires the SpacetimeDB 2.7.1 CLI, the Wasm toolchain, and the playerbots Package installed (lyracore packages add playerbots)"]
+#[ignore = "requires the SpacetimeDB 2.14.0 CLI, the Wasm toolchain, and the playerbots Package installed (lyracore packages add playerbots)"]
 fn the_packages_own_personality_artifact_reconciles_onto_a_shard() {
     let mut standalone = Standalone::start("playerbots-personality-shipped");
     standalone.publish_module();

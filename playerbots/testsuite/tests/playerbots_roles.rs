@@ -89,8 +89,8 @@ fn preceding_roles() -> PrecedingRoles {
     assert_eq!(manifest["playerbots_tree"], PRECEDING_PLAYERBOTS_TREE);
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
-    assert_eq!(manifest["rust"], "1.93.0");
-    assert_eq!(manifest["spacetimedb"], "2.7.1");
+    assert_eq!(manifest["rust"], "1.97.1");
+    assert_eq!(manifest["spacetimedb"], "2.14.0");
     assert_eq!(manifest["target"], "wasm32-unknown-unknown");
     assert_eq!(manifest["profile"], "release");
     assert_eq!(manifest["features"], serde_json::json!(["debug_reducers"]));
@@ -200,8 +200,8 @@ fn node_evidence(node: &Standalone, case: &str) {
     let path = support::log_dir().join(format!("{}-{case}.json", node.shard_name()));
     let record = serde_json::json!({
         "case": case,
-        "spacetimedb": "2.7.1",
-        "rust": "1.93.0",
+        "spacetimedb": "2.14.0",
+        "rust": "1.97.1",
         "tested_core": git(core, &["rev-parse", "HEAD"]),
         "tested_collection": git(&package, &["rev-parse", "HEAD"]),
         "core_dirty": !git(core, &["status", "--porcelain"]).is_empty(),

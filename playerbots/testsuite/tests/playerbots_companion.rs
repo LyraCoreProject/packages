@@ -234,7 +234,7 @@ fn evidence(node: &Standalone, case: &str) {
     let path = support::log_dir().join(format!("{}-{case}.json", node.shard_name()));
     let record = serde_json::json!({
         "case": case,
-        "spacetimedb": "2.7.1",
+        "spacetimedb": "2.14.0",
         "runner": node.query_rows("SELECT * FROM pkg_playerbots_runner"),
         "provisioning": node.query_rows("SELECT * FROM pkg_playerbots_provisioning"),
         "actions": node.query_rows("SELECT * FROM pkg_playerbots_action"),
@@ -1279,7 +1279,7 @@ fn playerbots_populated_pb002_runner_state_upgrades_with_objective_and_foregroun
     std::fs::write(
         path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "spacetimedb": "2.7.1",
+            "spacetimedb": "2.14.0",
             "preceding_build": preceding.manifest,
             "preceding_wasm_blake3": blake3::hash(&old_wasm).to_hex().to_string(),
             "current_wasm_blake3": blake3::hash(support::module_bytes()).to_hex().to_string(),
@@ -1332,7 +1332,7 @@ fn playerbots_canonical_lesser_heal_repair_preserves_changed_definitions() {
     std::fs::write(
         path,
         serde_json::to_vec_pretty(&serde_json::json!({
-            "spacetimedb": "2.7.1",
+            "spacetimedb": "2.14.0",
             "preceding_build": preceding.manifest,
             "preceding_wasm_blake3": blake3::hash(&old_wasm).to_hex().to_string(),
             "current_wasm_blake3": blake3::hash(support::module_bytes()).to_hex().to_string(),

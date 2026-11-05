@@ -157,8 +157,8 @@ jobs:
         run: |
           curl -sSf https://install.spacetimedb.com | sh -s -- --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/spacetime" version install 2.7.1
-          "$HOME/.local/bin/spacetime" version use 2.7.1
+          "$HOME/.local/bin/spacetime" version install 2.14.0
+          "$HOME/.local/bin/spacetime" version use 2.14.0
 
       - name: Install the pinned Bun
         run: |
@@ -180,8 +180,8 @@ jobs:
     timeout-minutes: 90
     env:
       RUSTUP_TOOLCHAIN: 1.97.1
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -734,8 +734,8 @@ jobs:
     timeout-minutes: 90
     env:
       RUSTUP_TOOLCHAIN: 1.97.1
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -948,8 +948,8 @@ jobs:
                 playerbots_acceptance_mage_seed_783008009_completes_the_whole_journey
     env:
       RUSTUP_TOOLCHAIN: 1.97.1
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0
@@ -1147,8 +1147,8 @@ jobs:
     timeout-minutes: 120
     env:
       RUSTUP_TOOLCHAIN: 1.97.1
-      SPACETIME_VERSION: 2.7.1
-      SPACETIME_ARCHIVE_SHA256: 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1
+      SPACETIME_VERSION: 2.14.0
+      SPACETIME_ARCHIVE_SHA256: 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084
       CARGO_BUILD_JOBS: 2
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_DEV_DEBUG: 0

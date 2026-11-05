@@ -87,9 +87,9 @@ jobs:
           rustup target add wasm32-unknown-unknown --toolchain 1.97.1
           archive="$RUNNER_TEMP/spacetime.tar.gz"
           curl --fail --location --retry 3 \
-            https://github.com/clockworklabs/SpacetimeDB/releases/download/v2.7.1/spacetime-x86_64-unknown-linux-gnu.tar.gz \
+            https://github.com/clockworklabs/SpacetimeDB/releases/download/v2.14.0/spacetime-x86_64-unknown-linux-gnu.tar.gz \
             --output "$archive"
-          printf '%s  %s\n' 9b58192135733083479f30aba47dbbbc79b51db368c46cc221baa663e9c3a2c1 "$archive" | sha256sum --check --strict
+          printf '%s  %s\n' 2d8950dc3c67910aa80aa7612efddb5ee6ed53c443573f617b3ad65fef2aa084 "$archive" | sha256sum --check --strict
           mkdir "$RUNNER_TEMP/spacetime"
           tar -xzf "$archive" -C "$RUNNER_TEMP/spacetime"
           ln -s spacetimedb-cli "$RUNNER_TEMP/spacetime/spacetime"
