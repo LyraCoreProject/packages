@@ -98,6 +98,15 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
         .contains("movement")));
     node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
     node.clear_schedule("game_creature_move_schedule");
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_runner SET movement_due_micros = {} WHERE character_guid = {bot}",
+        i64::MAX - 1
+    ));
+    let spline = node.query_rows(&format!(
+        "SELECT start_micros, dur_ms FROM game_creature_spline WHERE guid = {bot}"
+    ));
+    let arrival_micros = spline[0]["start_micros"].parse::<u128>().unwrap()
+        + u128::from(spline[0]["dur_ms"].parse::<u32>().unwrap()) * 1000;
     let before = runner(&node, &bot);
     assert_ne!(before["movement_due_micros"], i64::MAX.to_string());
     node.publish_module_bytes(current);
@@ -125,6 +134,25 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
         queue
     );
     assert_eq!(runner(&node, &bot), migrated);
+    assert!(poll_until(POLL_TIMEOUT, || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros()
+            >= arrival_micros
+    }));
+    assert!((position(&node, &bot) - 1238.0).abs() > 0.1);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_movement SET due_micros = 0 WHERE character_guid = {bot}"
+    ));
+    node.assert_call("playerbots_fixture_runner_pass", &[]);
+    assert!(
+        (position(&node, &bot) - 1238.0).abs() < 0.1,
+        "continuation must catch up the elapsed spline before planning"
+    );
+    assert!(node
+        .query_rows("SELECT * FROM pkg_playerbots_movement")
+        .is_empty());
     node.assert_call("debug_repair_after_publish", &[]);
     assert!(
         poll_until(Duration::from_secs(8), || {
