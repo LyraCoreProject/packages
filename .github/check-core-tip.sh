@@ -84,7 +84,7 @@ for package_dir in "${package_dirs[@]}"; do
 done
 
 # Check the linked Packages before any caller-selected verification command.
-cargo +1.93.0 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --test package_api_lint
+cargo +1.97.1 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --test package_api_lint
 
 # The default check: every collection Package compiles into the module. A caller that needs the
 # same linked tree for something else (e.g. the datascripts job's typegen/typecheck chain) passes
@@ -92,5 +92,5 @@ cargo +1.93.0 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --
 if [[ $# -gt 0 ]]; then
     "$@"
 else
-    cargo +1.93.0 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --lib
+    cargo +1.97.1 test --manifest-path "$core_root/Cargo.toml" -p lyracore-module --lib
 fi
