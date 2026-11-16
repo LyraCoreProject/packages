@@ -42,6 +42,7 @@ pub enum Controller {
 }
 
 #[derive(spacetimedb::SpacetimeType, Clone, Debug, PartialEq)]
+#[sats(name = "PlayerbotsDestination")]
 pub struct Destination {
     pub map_id: u32,
     pub instance_id: u64,
