@@ -1230,6 +1230,7 @@ pub fn playerbots_fixture_roles_overflow(
                     id: 0,
                     group_id: 2,
                     spell_id: 5_098_700 + index,
+                    power_rank: 0,
                 });
             }
         }

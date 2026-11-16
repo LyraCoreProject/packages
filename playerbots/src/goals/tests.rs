@@ -1074,8 +1074,8 @@ fn a_despawn_takes_the_quest_log_and_the_corpse_with_it() {
         "a bot's quest log is not swept when its Character is deleted, so despawning the \
          population would leave quest rows behind"
     );
-    let src = read_scanned("module/src/world.rs")
-        .expect("module/src/world.rs is core, never an optional drop-in");
+    let src = read_scanned("module/src/character.rs")
+        .expect("module/src/character.rs is core, never an optional drop-in");
     let body = code_of(&src, "pub(crate) fn cascade_delete_character(");
     assert!(
         body.contains("crate::Corpse::delete(ctx, crate::corpse::corpse_guid_for(character_guid))"),
