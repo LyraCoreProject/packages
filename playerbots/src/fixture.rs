@@ -1880,6 +1880,7 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
         .find(51000)
         .ok_or("seed wolf missing")?;
     template.entry = entry;
+    template.npc_flags |= lyracore_shared::constants::npc_flags::QUESTGIVER;
     ctx.db.game_creature_template().entry().delete(entry);
     let template = ctx.db.game_creature_template().insert(template);
     let spawn = crate::tables::CreatureSpawn {
