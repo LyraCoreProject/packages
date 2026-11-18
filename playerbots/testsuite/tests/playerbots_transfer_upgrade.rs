@@ -410,13 +410,19 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         }
     }
     assert_eq!(expected_characters, after["character"], "character");
+    // Its casts lack Item targets and Item cooldown overrides.
     let mut expected_casts = before["pending_cast"].clone();
     for cast in expected_casts.as_array_mut().unwrap() {
-        assert!(cast
-            .as_object_mut()
-            .unwrap()
-            .insert("item_target_guid".into(), serde_json::json!("0"))
-            .is_none());
+        for (field, default) in [
+            ("item_target_guid", "0"),
+            ("cooldown_category", "(none = ())"),
+        ] {
+            assert!(cast
+                .as_object_mut()
+                .unwrap()
+                .insert(field.into(), serde_json::json!(default))
+                .is_none());
+        }
     }
     assert_eq!(expected_casts, after["pending_cast"], "pending_cast");
     for field in [
