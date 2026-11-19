@@ -1787,7 +1787,7 @@ fn playerbots_recovery_upgrades_a_retained_quest_and_owned_cast_without_resettin
             "runner": row(node, &format!("SELECT * FROM pkg_playerbots_runner WHERE character_guid = {guid}")),
             "retained_quest": node.query_rows(&format!("SELECT * FROM pkg_playerbots_quest_objective WHERE character_guid = {guid}")),
             "quest": node.query_rows(&format!("SELECT * FROM game_character_quest WHERE character_guid = {guid}")),
-            "pending_cast": node.query_rows(&format!("SELECT * FROM game_pending_cast WHERE caster_guid = {guid}")),
+            "pending_cast": node.query_rows(&format!("SELECT * FROM game_pending_cast WHERE caster_guid = {guid}")).into_iter().map(support::upgraded_pending_cast).collect::<Vec<_>>(),
             "provisioning": node.query_rows(&format!("SELECT * FROM pkg_playerbots_provisioning WHERE character_guid = {guid}")),
             "synthetic_recovery_spell": node.query_rows("SELECT spell_id, cast_time_ms FROM game_spell WHERE spell_id = 5090100"),
         })

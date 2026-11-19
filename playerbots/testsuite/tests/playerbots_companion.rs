@@ -1257,9 +1257,13 @@ fn playerbots_populated_pb002_runner_state_upgrades_with_objective_and_foregroun
     }
     node.assert_call("playerbots_fixture_freeze", &[&bot]);
     let before = runner(&node, &bot);
-    let pending_before = node.query_rows(&format!(
-        "SELECT * FROM game_pending_cast WHERE caster_guid = {bot}"
-    ));
+    let pending_before: Vec<_> = node
+        .query_rows(&format!(
+            "SELECT * FROM game_pending_cast WHERE caster_guid = {bot}"
+        ))
+        .into_iter()
+        .map(support::upgraded_pending_cast)
+        .collect();
     assert_eq!(pending_before.len(), 1);
     assert!(before["objective"].contains("returnHome"));
     assert!(before["foreground"].contains("cast"));

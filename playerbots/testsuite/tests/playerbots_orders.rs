@@ -1895,9 +1895,13 @@ fn playerbots_populated_pb008_state_adds_empty_order_state_without_changing_curr
     let preceding_quest = node.query_rows(&format!(
         "SELECT * FROM pkg_playerbots_quest_objective WHERE character_guid = {guid}"
     ));
-    let preceding_cast = node.query_rows(&format!(
-        "SELECT * FROM game_pending_cast WHERE caster_guid = {guid}"
-    ));
+    let preceding_cast: Vec<_> = node
+        .query_rows(&format!(
+            "SELECT * FROM game_pending_cast WHERE caster_guid = {guid}"
+        ))
+        .into_iter()
+        .map(support::upgraded_pending_cast)
+        .collect();
     let preceding_bot = node.query_rows(&format!(
         "SELECT * FROM pkg_playerbots_bot WHERE character_guid = {guid}"
     ));

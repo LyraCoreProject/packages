@@ -1604,7 +1604,11 @@ fn playerbots_quest_catalog_upgrades_populated_pb002_runner_state() {
     let preceding = preceding_rows[0].clone();
     assert!(preceding["objective"].contains("returnHome"));
     assert!(preceding["foreground"].contains("cast"));
-    let preceding_cast = node.query_rows("SELECT * FROM game_pending_cast");
+    let preceding_cast: Vec<_> = node
+        .query_rows("SELECT * FROM game_pending_cast")
+        .into_iter()
+        .map(support::upgraded_pending_cast)
+        .collect();
     assert_eq!(preceding_cast.len(), 1);
     node.publish_module();
     let upgraded = node.query_rows(&format!(
