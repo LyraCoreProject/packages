@@ -254,7 +254,7 @@ fn advance(
     let Running::Movement(movement) = &foreground.running else {
         return true;
     };
-    let Some(me) = ctx.db.game_world_entity().guid().find(guid) else {
+    let Some(mut me) = ctx.db.game_world_entity().guid().find(guid) else {
         stop(ctx, guid, state);
         return true;
     };
@@ -327,7 +327,7 @@ fn advance(
         let actions::ActionOutcome::Movement(previous) = &observation.outcome else {
             return true;
         };
-        if let Some(spline) = spline {
+        if let Some(spline) = &spline {
             if spline.path.as_ref().is_some_and(|path| {
                 path.navigation != crate::actor::movement::inputs(ctx, me.map_id)
             }) {
@@ -359,6 +359,21 @@ fn advance(
             state.foreground = None;
             state.last_outcome = RunnerOutcome::Cancelled;
             return true;
+        }
+    }
+    if spline.as_ref().is_some_and(|spline| {
+        spline
+            .start_micros
+            .saturating_add(u64::from(spline.dur_ms) * 1000)
+            <= now.max(0) as u64
+            && observation
+                .as_ref()
+                .is_some_and(|owned| owned.observed_micros as u64 == spline.start_micros)
+    }) {
+        // A paused tick can leave an elapsed owned spline ahead of the stored position.
+        stop_movement(ctx, guid);
+        if let Some(current) = ctx.db.game_world_entity().guid().find(guid) {
+            me = current;
         }
     }
     let stand_off = stand_off(foreground.candidate);

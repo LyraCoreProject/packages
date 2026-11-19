@@ -21,10 +21,16 @@ Every verb is Operator-gated. Call them with `spacetime call <database> -- <verb
 | `playerbots_spawn_class_role N x y z class role` | Spawn `N` bots of one class and role. Refuses a pairing this Package has no kit for. |
 | `playerbots_spawn_starting_area area N controller` | Spawn 1 through 50 level-one bots at imported race/class starts. Accepts Cohort or Frozen control; missing walkable ground refuses the entire batch. |
 | `playerbots_populate` | Top the population up to `population_count`. Idempotent. |
-| `playerbots_despawn_all` | Delete every bot Character and everything it owns. |
+| `playerbots_despawn_all` | Delete this Shard's Package-owned bots and queue Realm cleanup. A protected Character refuses the entire batch. |
 | `playerbots_migrate_legacy_controllers [guids]` | Move one sorted batch of at most 16 eligible populated Legacy bots to Cohort. Transfer-owned rows wait for a later batch. |
 
 Roles are `0` tank, `1` healer, `2` damage.
+
+Despawn uses Core's Package deletion API. Realm name, Group, guild and directory cleanup settles
+asynchronously and survives Host restart. Pending Transfer or relocation, Account Claims, Guild
+Leaders and unsettled economic work refuse deletion. A bot on a legacy Account that this Package
+does not own also refuses; reconcile its ownership before retrying. Revoked action consent does not
+prevent deletion. Any refusal rolls back the entire despawn call, including earlier bots in the batch.
 
 Nothing populates on its own. A realm gets bots when its Operator asks for them.
 
@@ -739,6 +745,16 @@ publishes that preceding Wasm, populates real bot, goal, quest and action rows, 
 same private Standalone to the current Wasm. It records both Wasm identities and asserts the old
 rows survive, selector defaults apply, and backfill takes bounded passes.
 
+SpacetimeDB 2.14 rejects SQL writes to scheduled tables. Current fixtures stop schedules through
+Core's `clear_schedule` test API. CI builds the older Runner, capacity, movement, target-claim and
+Transfer migration baselines with `.github/build-baseline-with-schedule-control.py CORE COMMAND`.
+This wrapper temporarily adds an Operator-only debug reducer from
+`.github/fixtures/baseline-schedule.rs`, runs the build, and restores the source even if the build
+fails. Historical gameplay and table layouts stay intact; these are instrumented test binaries.
+The build log records the fixture SHA-256, and the Transfer manifest also records and verifies it.
+The external accepted PB011 artifact test still requires its original runtime and is not covered
+by this fixture adaptation.
+
 The debug-only `playerbots_load_stage(count, seed)` prepares a fresh roster of 10, 25 or 100 bots
 in a repeating Warrior, Priest and Mage sequence. It records each position, class, role and first
 due offset. The declared flat terrain and navigation cells cannot replace existing input.
@@ -759,5 +775,5 @@ The checks cover solo and grouped starter casts, healing, buff retention, queued
 and preservation of Operator rotation edits. They do not establish attended client acceptance.
 
 Capacity scheduling requires Core `9863e59d2b8cfc91fa9f731be8380a09a1d273af` or a descendant. It adds the
-partition and creature-entry index used by crowded target searches. CI pins that integration
+partition and creature-entry index used by crowded target searches. CI selects the paired Core
 revision and retains the earlier revisions used by migration tests.

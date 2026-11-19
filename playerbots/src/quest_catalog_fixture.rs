@@ -1089,6 +1089,12 @@ fn insert_creature(ctx: &ReducerContext, entry: u32, x: f32, y: f32, z: f32) -> 
     template.entry = entry;
     template.name = format!("Catalog creature {entry}");
     template.faction_template = 14;
+    if QUESTS
+        .iter()
+        .any(|&(_, _, _, starter, ender)| entry == starter || entry == ender)
+    {
+        template.npc_flags |= lyracore_shared::constants::npc_flags::QUESTGIVER;
+    }
     let template = ctx.db.game_creature_template().insert(template);
     let guid = creature_guid(entry);
     let spawn = ctx

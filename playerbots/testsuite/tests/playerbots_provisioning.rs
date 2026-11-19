@@ -72,8 +72,8 @@ fn write_evidence(node: &Standalone, name: &str, mut evidence: serde_json::Value
     let mut digest = blake3::Hasher::new();
     digest_files(&package, &mut digest);
     let fields = evidence.as_object_mut().expect("evidence object");
-    fields.insert("rust".to_string(), "1.93.0".into());
-    fields.insert("spacetimedb".to_string(), "2.7.1".into());
+    fields.insert("rust".to_string(), "1.97.1".into());
+    fields.insert("spacetimedb".to_string(), "2.14.0".into());
     fields.insert(
         "tested_core".to_string(),
         git(core, &["rev-parse", "HEAD"]).into(),

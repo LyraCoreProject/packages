@@ -41,8 +41,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
@@ -105,6 +103,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/capacity-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/preceding-capacity-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-capacity-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-capacity-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/capacity-baseline.wasm"
@@ -115,6 +115,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/movement-baseline-target
         run: |
           "$GITHUB_WORKSPACE/preceding-movement-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-movement-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-movement-core" \
             cargo build --locked --release --target wasm32-unknown-unknown \
             -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/movement-baseline.wasm"
@@ -126,6 +128,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/runner-baseline-target
         run: |
           "$GITHUB_WORKSPACE/preceding-runner-collection/.github/check-core-tip.sh" "$GITHUB_WORKSPACE/preceding-runner-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/preceding-runner-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/preceding-runner-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/runner-baseline.wasm"

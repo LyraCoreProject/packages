@@ -1029,16 +1029,24 @@ fn record_missing_target_resume(
     row: &mut AcceptanceMissingTargetFault,
     now: i64,
 ) -> bool {
-    let Some(action) = super::actions::observation(ctx, row.character_guid, ActionKind::Attack)
+    // A caster may resume with an offensive cast and never swing.
+    let respawned = row.respawned_micros.unwrap_or(i64::MAX);
+    let Some(action) = [ActionKind::Attack, ActionKind::Cast]
+        .into_iter()
+        .filter_map(|kind| super::actions::observation(ctx, row.character_guid, kind))
+        .find(|action| {
+            action.target_guid == row.target_guid
+                && action.observed_micros >= respawned
+                && matches!(
+                    action.outcome,
+                    ActionOutcome::AttackAccepted(_)
+                        | ActionOutcome::Waiting(_)
+                        | ActionOutcome::CastResolved
+                )
+        })
     else {
         return false;
     };
-    if action.target_guid != row.target_guid
-        || action.observed_micros < row.respawned_micros.unwrap_or(i64::MAX)
-        || !matches!(action.outcome, ActionOutcome::AttackAccepted(_))
-    {
-        return false;
-    }
     let Some(quest) = acceptance_quest_state(ctx, row.character_guid, row.quest_entry) else {
         return false;
     };

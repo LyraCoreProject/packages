@@ -1215,8 +1215,7 @@ fn playerbots_missing_quest_target_retry_allows_return_home_to_finish() {
 fn playerbots_missing_quest_target_retry_keeps_a_queued_return_home() {
     let (node, bot) =
         returning_home_after_missing_quest_target("playerbots-quest-queued-home-retry");
-    // Stage the recorded queue boundary, then let the ordinary controller and movement pass run.
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_sql(&format!(
         "DELETE FROM game_creature_spline WHERE guid = {bot}"
     ));
@@ -1260,7 +1259,7 @@ fn playerbots_missing_quest_target_retry_keeps_a_queued_return_home() {
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
 fn playerbots_missing_quest_target_retry_reconsiders_an_expired_home_objective() {
     let (node, bot) = returning_home_after_missing_quest_target("playerbots-quest-expired-home");
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
     retry_quest_during_return_home(&node, &bot);
     node.assert_call("playerbots_fixture_runner_expire_objective", &[&bot]);
@@ -1605,7 +1604,11 @@ fn playerbots_quest_catalog_upgrades_populated_pb002_runner_state() {
     let preceding = preceding_rows[0].clone();
     assert!(preceding["objective"].contains("returnHome"));
     assert!(preceding["foreground"].contains("cast"));
-    let preceding_cast = node.query_rows("SELECT * FROM game_pending_cast");
+    let preceding_cast: Vec<_> = node
+        .query_rows("SELECT * FROM game_pending_cast")
+        .into_iter()
+        .map(support::upgraded_pending_cast)
+        .collect();
     assert_eq!(preceding_cast.len(), 1);
     node.publish_module();
     let upgraded = node.query_rows(&format!(

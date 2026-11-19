@@ -405,8 +405,8 @@ fn preceding_quest_loops() -> PrecedingQuestLoops {
     }
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
-    assert_eq!(manifest["rust"], "1.93.0");
-    assert_eq!(manifest["spacetimedb"], "2.7.1");
+    assert_eq!(manifest["rust"], "1.97.1");
+    assert_eq!(manifest["spacetimedb"], "2.14.0");
     assert_eq!(manifest["target"], "wasm32-unknown-unknown");
     assert_eq!(manifest["profile"], "release");
     assert_eq!(manifest["features"], serde_json::json!(["debug_reducers"]));
@@ -3046,10 +3046,10 @@ fn playerbots_populated_pb004_quest_objective_and_runner_upgrade_in_place() {
         std::thread::sleep(PASS_INTERVAL);
     };
     node.assert_call("playerbots_fixture_freeze", &[&guid]);
-    let preceding_cast = query_one(
+    let preceding_cast = support::upgraded_pending_cast(query_one(
         &node,
         &format!("SELECT * FROM game_pending_cast WHERE caster_guid = {guid}"),
-    );
+    ));
     let preceding_spell = query_one(
         &node,
         "SELECT spell_id, cast_time_ms FROM game_spell WHERE spell_id = 5090100",

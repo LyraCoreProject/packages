@@ -12,21 +12,15 @@ fn insert_row(node: &Standalone, table: &str, row: BTreeMap<String, String>) {
         "game_spell_effect" => "id,spell_id,effect_index,kind,base_points,die_sides,per_level,period_ms,target,radius_yd,chain_targets,trigger_spell,effect_mechanic,p_0,p_0_kind,p_1,script_id,enters_combat,points_per_combo",
         _ => panic!("unsupported fixture table"),
     };
-    let values = columns
+    let values: Vec<(&str, String)> = columns
         .split(',')
-        .map(|key| {
-            let value = &row[key];
-            if key == "name" {
-                format!("'{}'", value.trim_matches('"').replace('\'', "''"))
-            } else {
-                value.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    node.assert_sql(&format!(
-        "INSERT INTO {table} ({columns}) VALUES ({values})"
-    ));
+        .map(|key| (key, row[key].trim_matches('"').to_owned()))
+        .collect();
+    let fields: Vec<support::Field> = values
+        .iter()
+        .map(|(key, value)| (*key, value as &dyn std::fmt::Display))
+        .collect();
+    node.insert_row(table, &fields);
 }
 
 fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected: u32, future: u32) {

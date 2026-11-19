@@ -266,7 +266,7 @@ fn movement_setup_evidence(node: &Standalone) -> serde_json::Value {
 
 fn pending_travel_request() -> (Standalone, String) {
     let node = prepare_travel(100);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_load_begin", &[]);
     node.assert_call("playerbots_fixture_runner_due", &[]);
     let mut guid = None;
@@ -314,7 +314,7 @@ fn playerbots_capacity_new_request_can_replace_a_stop_spline() {
 #[ignore = "requires SpacetimeDB and the playerbots Package on a build host"]
 fn playerbots_capacity_continuing_action_cancels_after_a_foreign_stop() {
     let node = prepare_travel(10);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_load_begin", &[]);
     let guid = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot")[0]
         ["character_guid"]
@@ -528,7 +528,7 @@ fn playerbots_capacity_upgrade_preserves_pending_movement() {
             ))
             .is_empty()
     }));
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     let query = format!("SELECT * FROM pkg_playerbots_runner WHERE character_guid = {guid}");
     let before = node.query_rows(&query);
     assert_eq!(before.len(), 1);

@@ -2033,6 +2033,7 @@ fn playerbots_action_resurrection_cancels_between_release_and_spirit_resurrectio
 fn playerbots_expired_quest_does_not_preempt_resurrection_or_defense() {
     let (resurrection_node, resurrection) =
         quest_fixture(QUEST_ROOTS[5], "expired-quest-resurrection-priority", false);
+    resurrection_node.clear_schedule("game_creature_move_schedule");
     resurrection_node.assert_call(
         "playerbots_fixture_runner_expire_objective",
         &[&resurrection],
@@ -2051,6 +2052,7 @@ fn playerbots_expired_quest_does_not_preempt_resurrection_or_defense() {
 
     let (defense_node, defense) =
         quest_fixture(QUEST_ROOTS[5], "expired-quest-defense-priority", false);
+    defense_node.clear_schedule("game_creature_move_schedule");
     defense_node.assert_call("playerbots_fixture_companion_health", &[&defense, "100"]);
     defense_node.assert_call("playerbots_fixture_runner_expire_objective", &[&defense]);
     let defense_expired = snapshot(&defense_node);

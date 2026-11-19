@@ -33,8 +33,8 @@ pub fn preceding_pb002() -> PrecedingPb002 {
     assert_eq!(manifest["collection_tree"], PB002_COLLECTION_TREE);
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
-    assert_eq!(manifest["rust"], "1.93.0");
-    assert_eq!(manifest["spacetimedb"], "2.7.1");
+    assert_eq!(manifest["rust"], "1.97.1");
+    assert_eq!(manifest["spacetimedb"], "2.14.0");
     assert_eq!(manifest["target"], "wasm32-unknown-unknown");
     assert_eq!(manifest["profile"], "release");
     assert_eq!(manifest["features"], serde_json::json!(["debug_reducers"]));

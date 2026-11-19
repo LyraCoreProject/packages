@@ -151,7 +151,7 @@ fn current_fixture(name: &str, count: &str) -> (Standalone, Vec<String>) {
     node.assert_call("claim_operator", &[]);
     node.assert_call("install_guid_range", &["1000000"]);
     node.assert_call("playerbots_spawn", &[count, "1200", "1200", "50"]);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     let mut bots = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot");
     bots.sort_by_key(|row| row["character_guid"].parse::<u64>().unwrap());
     (
@@ -536,7 +536,7 @@ fn playerbots_cutover_leaves_pending_intent_checkpoint_and_escrow_under_legacy_o
         "playerbots_transfer_fixture_stage",
         &[&companion, &leader, "2"],
     );
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call(
         "playerbots_controller_transition_fixture_stage_legacy",
         &[&companion, "false"],

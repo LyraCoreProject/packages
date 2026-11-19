@@ -112,6 +112,7 @@ fn place_live(
     instance_id: u64,
     position: (f32, f32, f32),
 ) -> Result<(), String> {
+    crate::actor::stop_movement(ctx, guid);
     let entities = ctx.db.game_world_entity();
     let mut entity = entities
         .guid()

@@ -97,7 +97,16 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
         ["foreground"]
         .contains("movement")));
     node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_runner SET movement_due_micros = {} WHERE character_guid = {bot}",
+        i64::MAX - 1
+    ));
+    let spline = node.query_rows(&format!(
+        "SELECT start_micros, dur_ms FROM game_creature_spline WHERE guid = {bot}"
+    ));
+    let arrival_micros = spline[0]["start_micros"].parse::<u128>().unwrap()
+        + u128::from(spline[0]["dur_ms"].parse::<u32>().unwrap()) * 1000;
     let before = runner(&node, &bot);
     assert_ne!(before["movement_due_micros"], i64::MAX.to_string());
     node.publish_module_bytes(current);
@@ -125,16 +134,37 @@ fn playerbots_movement_queue_survives_populated_upgrade_and_restart() {
         queue
     );
     assert_eq!(runner(&node, &bot), migrated);
-    node.assert_call("debug_repair_after_publish", &[]);
-    assert!(poll_until(Duration::from_secs(8), || (position(
-        &node, &bot
-    ) - 1238.0)
-        .abs()
-        < 0.1));
-    node.assert_call("playerbots_fixture_runner_pass_once", &[&bot]);
+    assert!(poll_until(POLL_TIMEOUT, || {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_micros()
+            >= arrival_micros
+    }));
+    assert!((position(&node, &bot) - 1238.0).abs() > 0.1);
+    node.assert_sql(&format!(
+        "UPDATE pkg_playerbots_movement SET due_micros = 0 WHERE character_guid = {bot}"
+    ));
+    node.assert_call("playerbots_fixture_runner_pass", &[]);
+    assert!(
+        (position(&node, &bot) - 1238.0).abs() < 0.1,
+        "continuation must catch up the elapsed spline before planning"
+    );
     assert!(node
         .query_rows("SELECT * FROM pkg_playerbots_movement")
         .is_empty());
+    node.assert_call("debug_repair_after_publish", &[]);
+    assert!(
+        poll_until(Duration::from_secs(8), || {
+            (position(&node, &bot) - 1238.0).abs() < 0.1
+                && node
+                    .query_rows("SELECT * FROM pkg_playerbots_movement")
+                    .is_empty()
+        }),
+        "retained movement did not finish: runner={:?}, queue={:?}",
+        runner(&node, &bot),
+        node.query_rows("SELECT * FROM pkg_playerbots_movement")
+    );
     std::fs::write(
         support::log_dir().join(format!("{}-migration.json", node.shard_name())),
         serde_json::to_vec_pretty(
@@ -159,7 +189,7 @@ fn playerbots_waypoint_upgrade_preserves_an_existing_single_leg() {
     node.assert_call("playerbots_fixture_prepare", &[]);
     let bot = node.query_rows("SELECT character_guid FROM pkg_playerbots_bot")[0]["character_guid"]
         .clone();
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     node.assert_call("playerbots_fixture_runner_stage", &[&bot, "false"]);
     node.assert_call("playerbots_fixture_move", &[&bot, "1240"]);
     let before = node.query_rows(&format!(

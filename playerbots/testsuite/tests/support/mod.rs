@@ -10,6 +10,21 @@ pub use events::LiveEvents;
 
 pub use lyracore_test_support::*;
 
+/// Give a pinned predecessor's `game_pending_cast` row the columns Core added since, at their
+/// migration defaults.
+#[allow(dead_code)]
+pub fn upgraded_pending_cast(
+    mut row: std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    for (field, default) in [
+        ("item_target_guid", "0"),
+        ("cooldown_category", "(none = ())"),
+    ] {
+        row.entry(field.into()).or_insert_with(|| default.into());
+    }
+    row
+}
+
 /// Stage an active class buff before a test starts a movement, quest, or lifecycle decision.
 /// Preserve the staged power budget. Buff selection and cooldown behavior have separate role tests.
 #[allow(dead_code)]

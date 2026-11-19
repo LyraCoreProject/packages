@@ -56,8 +56,8 @@ fn evidence(fixture: &OrdersFixture, case: &str) {
     let path = support::log_dir().join(format!("{}-{case}.json", node.shard_name()));
     let record = serde_json::json!({
         "case": case,
-        "spacetimedb": "2.7.1",
-        "rust": "1.93.0",
+        "spacetimedb": "2.14.0",
+        "rust": "1.97.1",
         "tested_core": git(root, &["rev-parse", "HEAD"]),
         "tested_collection": git(&package, &["rev-parse", "HEAD"]),
         "core_dirty": !git(root, &["status", "--porcelain"]).is_empty(),
@@ -171,8 +171,8 @@ fn preceding_orders() -> PrecedingOrders {
     }
     assert_eq!(manifest["core_dirty"], false);
     assert_eq!(manifest["collection_dirty"], false);
-    assert_eq!(manifest["rust"], "1.93.0");
-    assert_eq!(manifest["spacetimedb"], "2.7.1");
+    assert_eq!(manifest["rust"], "1.97.1");
+    assert_eq!(manifest["spacetimedb"], "2.14.0");
     assert_eq!(manifest["target"], "wasm32-unknown-unknown");
     assert_eq!(manifest["profile"], "release");
     assert_eq!(manifest["features"], serde_json::json!(["debug_reducers"]));
@@ -394,7 +394,7 @@ fn wait_for_melee_range(node: &Standalone, guid: &str, target: &str) {
 fn playerbots_companions_receive_turns_without_starving_older_background_work() {
     let fixture = fixture("playerbots-orders-scheduler");
     let node = &fixture.node;
-    node.assert_sql("DELETE FROM game_creature_move_schedule");
+    node.clear_schedule("game_creature_move_schedule");
     let companions = [&fixture.warrior, &fixture.priest, &fixture.mage];
     for guid in companions {
         issue(&fixture, &format!("follow|{guid}"), guid, false);
@@ -1895,9 +1895,13 @@ fn playerbots_populated_pb008_state_adds_empty_order_state_without_changing_curr
     let preceding_quest = node.query_rows(&format!(
         "SELECT * FROM pkg_playerbots_quest_objective WHERE character_guid = {guid}"
     ));
-    let preceding_cast = node.query_rows(&format!(
-        "SELECT * FROM game_pending_cast WHERE caster_guid = {guid}"
-    ));
+    let preceding_cast: Vec<_> = node
+        .query_rows(&format!(
+            "SELECT * FROM game_pending_cast WHERE caster_guid = {guid}"
+        ))
+        .into_iter()
+        .map(support::upgraded_pending_cast)
+        .collect();
     let preceding_bot = node.query_rows(&format!(
         "SELECT * FROM pkg_playerbots_bot WHERE character_guid = {guid}"
     ));

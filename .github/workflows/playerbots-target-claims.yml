@@ -48,8 +48,6 @@ jobs:
       - name: Select the paired Core revision
         id: core-ref
         uses: ./collection/.github/actions/core-ref
-        with:
-          fallback: 9be23cd173876445010bb33cd2ab6cf60b4a86de
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: LyraCoreProject/LyraCore
@@ -78,6 +76,8 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/claim-baseline-target
         run: |
           ../baseline/.github/check-core-tip.sh "$GITHUB_WORKSPACE/baseline-core" \
+            python3 "$GITHUB_WORKSPACE/collection/.github/build-baseline-with-schedule-control.py" \
+              "$GITHUB_WORKSPACE/baseline-core" \
             cargo build --manifest-path "$GITHUB_WORKSPACE/baseline-core/Cargo.toml" --locked \
             --release --target wasm32-unknown-unknown -p lyracore-module --features=debug_reducers
           cp "$CARGO_TARGET_DIR/wasm32-unknown-unknown/release/lyracore_module.wasm" "$RUNNER_TEMP/claim-baseline.wasm"
