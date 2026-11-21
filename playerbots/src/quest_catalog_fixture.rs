@@ -1443,6 +1443,7 @@ pub fn playerbots_quest_fixture_stage(
             count: if item == 750 { 8 } else { 12 },
             group_id: 0,
             quest_only: true,
+            min_count: 0,
         });
     }
     let gameobject_loot = ctx.db.game_gameobject_loot();
@@ -1455,6 +1456,7 @@ pub fn playerbots_quest_fixture_stage(
         count: 8,
         group_id: 0,
         quest_only: true,
+        min_count: 0,
     });
     quest_catalog::refresh_catalog(ctx, "unknown");
     Ok(())
