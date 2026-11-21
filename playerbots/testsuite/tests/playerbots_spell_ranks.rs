@@ -63,7 +63,7 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
             insert_row(&node, "game_spell_effect", effect);
         }
         node.assert_sql(&format!("INSERT INTO game_spell_chain (spell_id,prev_spell,first_spell,rank,req_spell) VALUES ({spell},{previous},{first},{rank},0)"));
-        node.assert_sql(&format!("INSERT INTO game_trainer_spell (id,trainer_entry,spell_id,cost,required_level,learn_skill_line,learn_skill_cap) VALUES ({spell},51001,{spell},100,{level},0,75)"));
+        node.assert_sql(&format!("INSERT INTO game_trainer_spell (id,trainer_entry,spell_id,cost,required_level,learn_skill_line,learn_skill_cap,required_skill,required_skill_value) VALUES ({spell},51001,{spell},100,{level},0,75,0,0)"));
     }
     node.assert_sql(&format!("UPDATE game_creature_template SET trainer_type = 0, trainer_class = {class} WHERE entry = 51001"));
     node.assert_call("playerbots_fixture_provision_reset", &[guid]);
