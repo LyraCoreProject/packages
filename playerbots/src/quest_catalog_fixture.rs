@@ -2871,6 +2871,7 @@ pub fn playerbots_quest_loop_fixture_make_target_friendly(
             friend_1: 0,
             friend_2: 0,
             friend_3: 0,
+            flags: 0,
         });
     }
     let rows = ctx.db.game_world_entity();
