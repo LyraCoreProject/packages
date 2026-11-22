@@ -1148,6 +1148,8 @@ fn insert_gameobject(
             gather_gray: 0,
             lock_id: 0,
             size: 1.0,
+            money_min: 0,
+            money_max: 0,
         });
     let guid = gameobject_guid(entry);
     crate::tables::GameObject {

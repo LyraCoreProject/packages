@@ -195,6 +195,8 @@ fn seed_gameobject(
             gather_gray: 0,
             lock_id: 0,
             size: 0.0,
+            money_min: 0,
+            money_max: 0,
         });
     }
     let guid = GO_FIXTURE_BAND | u64::from(entry);
