@@ -337,7 +337,7 @@ fn playerbots_priest_heals_at_the_quest_safe_position_before_resuming_travel() {
     ));
     node.assert_call("playerbots_fixture_companion_health", &[&guid, "10"]);
     node.assert_sql(&format!(
-        "DELETE FROM game_spell_cooldown WHERE caster_guid = {guid}"
+        "DELETE FROM game_global_cooldown WHERE caster_guid = {guid}"
     ));
     let health_query = format!("SELECT health FROM game_world_entity WHERE guid = {guid}");
     let before = node.query_rows(&health_query)[0]["health"]

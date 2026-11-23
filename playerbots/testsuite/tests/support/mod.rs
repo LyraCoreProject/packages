@@ -47,12 +47,12 @@ pub fn stage_playerbot_buff(node: &Standalone, guid: &str) {
         "UPDATE game_spell SET duration_ms = 3600000 WHERE spell_id = {spell}"
     ));
     node.assert_sql(&format!(
-        "DELETE FROM game_spell_cooldown WHERE caster_guid = {guid}"
+        "DELETE FROM game_global_cooldown WHERE caster_guid = {guid}"
     ));
     node.assert_call("debug_force_cast", &[guid, spell]);
     node.assert_call("debug_set_power", &[guid, &power]);
     node.assert_sql(&format!(
-        "DELETE FROM game_spell_cooldown WHERE caster_guid = {guid}"
+        "DELETE FROM game_global_cooldown WHERE caster_guid = {guid}"
     ));
     assert!(!node
         .query_rows(&format!(

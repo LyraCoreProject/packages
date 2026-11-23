@@ -16,7 +16,7 @@ use crate::tables::{
     game_group_member, game_quest_objective, game_quest_template,
 };
 use crate::tables::{
-    game_aura, game_creature_spline, game_melee_attack, game_spell, game_spell_cooldown,
+    game_aura, game_creature_spline, game_global_cooldown, game_melee_attack, game_spell,
     game_spell_effect, game_threat, game_world_entity,
 };
 use crate::tables::{game_group_member_partition, game_group_roster_revision};
@@ -2525,9 +2525,10 @@ pub fn playerbots_fixture_runner_cooldown_and_pass_once(
     let now = ctx.timestamp.to_micros_since_unix_epoch();
     let cooldown = ctx
         .db
-        .game_spell_cooldown()
-        .caster_guid()
-        .find(guid)
+        .game_global_cooldown()
+        .by_caster_category()
+        .filter((guid, fortitude.gcd_category))
+        .next()
         .ok_or("Core cast cooldown is missing")?;
     if cooldown.ready_at.to_micros_since_unix_epoch() <= now {
         return Err("Core cast cooldown is not active".to_string());
@@ -2543,9 +2544,10 @@ pub fn playerbots_fixture_runner_cooldown_and_pass_once(
         || u64::from(body.health) * 2 >= u64::from(body.max_health)
         || ctx
             .db
-            .game_spell_cooldown()
-            .caster_guid()
-            .find(guid)
+            .game_global_cooldown()
+            .by_caster_category()
+            .filter((guid, fortitude.gcd_category))
+            .next()
             .is_none_or(|cooldown| cooldown.ready_at != expected_cooldown)
         || actions::observation(ctx, guid, ActionKind::Cast)
             .is_some_and(|action| action.spell_id == 2050)
@@ -2637,18 +2639,26 @@ pub fn playerbots_fixture_runner_pending_defense_then_recovery(
         return Err("Defense cast action is not the exact pending Smite".to_string());
     }
     let expected_foreground = foreground.clone();
+    let smite_category = ctx
+        .db
+        .game_spell()
+        .spell_id()
+        .find(585)
+        .ok_or("source-derived Smite 585 is missing")?
+        .gcd_category;
     let mut cooldown = ctx
         .db
-        .game_spell_cooldown()
-        .caster_guid()
-        .find(guid)
+        .game_global_cooldown()
+        .by_caster_category()
+        .filter((guid, smite_category))
+        .next()
         .ok_or("Defense Smite did not start its cooldown")?;
     if cooldown.ready_at <= ctx.timestamp {
         return Err("Defense Smite cooldown is not active".to_string());
     }
     // Isolate power readiness while keeping the exact pending Defense cast.
     cooldown.ready_at = ctx.timestamp;
-    ctx.db.game_spell_cooldown().caster_guid().update(cooldown);
+    ctx.db.game_global_cooldown().id().update(cooldown);
 
     playerbots_fixture_companion_health(ctx, guid, 25)?;
     set_fixture_priest_power(ctx, guid, 25)?;
