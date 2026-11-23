@@ -978,7 +978,7 @@ fn playerbots_core_cast_replacement_finishes_the_original_handle() {
         node.query_rows("SELECT scheduled_id FROM game_pending_cast")[0]["scheduled_id"].clone();
     // Permit a replacement while the original five-second cast is still pending.
     node.assert_sql(&format!(
-        "DELETE FROM game_spell_cooldown WHERE caster_guid = {bot}"
+        "DELETE FROM game_global_cooldown WHERE caster_guid = {bot}"
     ));
     assert_eq!(
         node.query_rows("SELECT scheduled_id FROM game_pending_cast")[0]["scheduled_id"],

@@ -193,6 +193,10 @@ fn active_auras(node: &Standalone, guid: &str, spell: u32) -> Vec<BTreeMap<Strin
 }
 
 fn node_evidence(node: &Standalone, case: &str) {
+    node_evidence_with_cooldowns(node, case, "game_global_cooldown");
+}
+
+fn node_evidence_with_cooldowns(node: &Standalone, case: &str, cooldown_table: &str) {
     let core = support::core_root();
     let package = core.join("packages/playerbots");
     let mut package_digest = blake3::Hasher::new();
@@ -232,7 +236,7 @@ fn node_evidence(node: &Standalone, case: &str) {
         "entities": node.query_rows("SELECT guid, entry, level, x, y, z, health, max_health, power, max_power, dead, target_guid FROM game_world_entity"),
         "spells": node.query_rows("SELECT character_guid, spell_id FROM game_player_spell"),
         "spell_headers": node.query_rows("SELECT spell_id, cost, cast_time_ms, spell_level, range_yd FROM game_spell WHERE spell_id = 133 OR spell_id = 139 OR spell_id = 168 OR spell_id = 355 OR spell_id = 585 OR spell_id = 1243 OR spell_id = 2050 OR spell_id = 6673 OR spell_id = 7386"),
-        "cooldowns": node.query_rows("SELECT * FROM game_spell_cooldown"),
+        "cooldowns": node.query_rows(&format!("SELECT * FROM {cooldown_table}")),
         "provisioning": node.query_rows("SELECT * FROM pkg_playerbots_provisioning"),
         "auras": node.query_rows("SELECT id, target_guid, caster_guid, spell_id, eff_kind, eff_p0 FROM game_aura"),
         "casts": node.query_rows("SELECT * FROM game_spell_cast_event"),
@@ -247,7 +251,8 @@ fn node_evidence(node: &Standalone, case: &str) {
 }
 
 fn preceding_node_evidence(node: &Standalone, case: &str, preceding: &PrecedingRoles) {
-    node_evidence(node, case);
+    // The PB-006 Wasm predates LyraCore#1055, which moved cooldowns to game_global_cooldown.
+    node_evidence_with_cooldowns(node, case, "game_spell_cooldown");
     let path = support::log_dir().join(format!("{}-{case}.json", node.shard_name()));
     let mut record: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
@@ -674,7 +679,7 @@ fn playerbots_active_renew_keeps_its_tick_and_allows_another_heal() {
         .clone();
 
     node.assert_sql(&format!(
-        "DELETE FROM game_spell_cooldown WHERE caster_guid = {}",
+        "DELETE FROM game_global_cooldown WHERE caster_guid = {}",
         fixture.priest
     ));
     pass(node, &fixture.priest);

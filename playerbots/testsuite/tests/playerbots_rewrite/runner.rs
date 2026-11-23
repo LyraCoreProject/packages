@@ -1730,7 +1730,7 @@ fn playerbots_recovery_waits_for_self_heal_readiness_without_interrupting_useful
             )),
             "cast_events": casts.rows(node),
             "cooldown": node.query_rows(&format!(
-                "SELECT caster_guid, ready_at FROM game_spell_cooldown WHERE caster_guid = {bot}"
+                "SELECT caster_guid, ready_at FROM game_global_cooldown WHERE caster_guid = {bot}"
             )),
             "entity": node.query_rows(&format!(
                 "SELECT guid, health, max_health, power, max_power, x, y, z FROM game_world_entity WHERE guid = {bot} OR guid = {target}"

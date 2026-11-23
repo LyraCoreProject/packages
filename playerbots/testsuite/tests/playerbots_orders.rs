@@ -692,16 +692,29 @@ fn playerbots_stay_blocks_heal_positioning_but_allows_in_range_healing_and_survi
         "playerbots_fixture_companion_health",
         &[&fixture.leader, "25"],
     );
+    node.assert_call("playerbots_fixture_roles_priest_mana", &[&fixture.priest]);
     let before = entity(node, &fixture.leader)["health"]
         .parse::<u32>()
         .unwrap();
-    pass(node, &fixture.priest);
-    assert!(poll_until(POLL_TIMEOUT, || entity(node, &fixture.leader)
-        ["health"]
-        .parse::<u32>()
-        .unwrap()
-        > before));
+    let healed = poll_until(POLL_TIMEOUT, || {
+        pass(node, &fixture.priest);
+        entity(node, &fixture.leader)["health"]
+            .parse::<u32>()
+            .unwrap()
+            > before
+    });
     evidence(&fixture, "stay-in-range-heal");
+    assert!(healed, "{:?}", runner(node, &fixture.priest));
+    let actions = node.query_rows(&format!(
+        "SELECT kind, spell_id, target_guid FROM pkg_playerbots_action WHERE character_guid = {}",
+        fixture.priest
+    ));
+    assert!(
+        actions.iter().any(|action| action["kind"].contains("cast")
+            && action["spell_id"] == "2050"
+            && action["target_guid"] == fixture.leader),
+        "{actions:?}"
+    );
     assert_eq!(entity(node, &fixture.priest)["x"], held["x"]);
 
     node.assert_call(

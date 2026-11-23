@@ -1052,21 +1052,21 @@ fn playerbots_triggered_player_cast_bypasses_targeted_los() {
 
 #[test]
 #[ignore = "requires SpacetimeDB, Wasm, and the playerbots Package"]
-fn playerbots_creature_cast_bypasses_targeted_los_and_completes() {
+fn playerbots_creature_cast_is_refused_by_targeted_los() {
     let (node, bots) = fixture("playerbots-companion-creature-cast");
     let (priest, ally) = (&bots[0], &bots[2]);
     node.assert_call("debug_set_nav_enabled", &["true"]);
     node.assert_call("playerbots_fixture_companion_wall", &[priest, ally]);
     let before = health(&node, ally);
-    node.assert_call("playerbots_fixture_companion_creature_cast", &[ally]);
-    let creature = ((0xF130u64 << 48) | (5_090_301u64 << 24) | 1).to_string();
-    assert!(poll_until(POLL_TIMEOUT, || node
-        .query_rows(&format!(
-            "SELECT scheduled_id FROM game_pending_cast WHERE caster_guid = {creature}"
-        ))
-        .is_empty()));
-    assert!(health(&node, ally) > before);
-    evidence(&node, "creature-los-exemption");
+    let refused = node.call("playerbots_fixture_companion_creature_cast", &[ally]);
+    let stderr = String::from_utf8_lossy(&refused.stderr);
+    assert!(!refused.status.success());
+    assert!(
+        stderr.contains(&format!("target {ally} is not in line of sight")),
+        "{stderr}"
+    );
+    assert_eq!(health(&node, ally), before);
+    evidence(&node, "creature-los-refusal");
 }
 
 #[test]
