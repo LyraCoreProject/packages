@@ -183,8 +183,12 @@ fn playerbots_warrior_uses_the_shared_rotation_for_autonomous_grinding() {
         "SELECT * FROM pkg_playerbots_runner WHERE character_guid = {guid}"
     ))[0];
     let chosen = &runner["chosen"];
+    // The bot's own scheduled pass can queue the strike during the sleep; the reply then turns the
+    // next pass into Defense.
+    let grind_strike = "spell = 78)), reason = (grind = ())";
     assert!(
-        chosen.contains("grind =") && chosen.contains("spell = 78"),
+        runner["history"].contains(grind_strike)
+            || (chosen.contains("grind =") && chosen.contains("spell = 78")),
         "expected a grinding Heroic Strike: {chosen}\nrunner: {runner:?}\nbot: {:?}\nmelee: {:?}\nthreat: {:?}\nactions: {:?}",
         node.query_rows(&format!(
             "SELECT power, next_swing_spell, combat_until_ms, health FROM game_world_entity WHERE guid = {guid}"
