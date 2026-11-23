@@ -75,6 +75,8 @@ fn quest_template(entry: u32, prerequisite: u32) -> crate::tables::QuestTemplate
         rew_rep_value_4: 0,
         rew_rep_faction_5: 0,
         rew_rep_value_5: 0,
+        reward_spell: 0,
+        reward_spell_cast: 0,
     }
 }
 
