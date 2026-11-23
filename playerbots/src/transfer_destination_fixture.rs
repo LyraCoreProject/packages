@@ -68,6 +68,13 @@ fn quest_template(entry: u32, prerequisite: u32) -> crate::tables::QuestTemplate
         required_min_rep_value: 0,
         required_max_rep_faction: 0,
         required_max_rep_value: 0,
+        required_money: 0,
+        rew_rep_faction_3: 0,
+        rew_rep_value_3: 0,
+        rew_rep_faction_4: 0,
+        rew_rep_value_4: 0,
+        rew_rep_faction_5: 0,
+        rew_rep_value_5: 0,
     }
 }
 
