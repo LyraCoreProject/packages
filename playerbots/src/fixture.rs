@@ -4041,7 +4041,12 @@ pub fn playerbots_fixture_provision_trainer_catalog(
     }
     provision_trainer(ctx, PROVISION_WARRIOR_TRAINER, super::class::WARRIOR)?;
     provision_trainer(ctx, PROVISION_OTHER_TRAINER, super::class::PALADIN)?;
-    provision_wrapper(ctx, PROVISION_LEARN_WRAPPER, 2050, crate::actor::E_SCRIPTED)?;
+    provision_wrapper(
+        ctx,
+        PROVISION_LEARN_WRAPPER,
+        2050,
+        lyracore_shared::spell::taxonomy::E_LEARN_SPELL,
+    )?;
     provision_wrapper(
         ctx,
         PROVISION_CHANNEL_WRAPPER,
@@ -4058,7 +4063,7 @@ pub fn playerbots_fixture_provision_trainer_catalog(
         ctx,
         PROVISION_WRONG_WRAPPER,
         PROVISION_WRONG_WRAPPER_PAYLOAD,
-        crate::actor::E_SCRIPTED,
+        lyracore_shared::spell::taxonomy::E_LEARN_SPELL,
     )?;
 
     for ordinal in 0..40u64 {
