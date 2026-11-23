@@ -1278,9 +1278,10 @@ fn engaged_enemies(
 /// same question — literally the same function — and `crate::actor::accept_quest` stays the
 /// authority that answers it for real. This only decides whether the walk is worth taking.
 ///
-/// `crate::actor::quest_acceptance` IS the core's Gate: level, race, class, the previous step in the
-/// chain, and whether the bot already holds the quest, in the order `apply_accept_quest` applies
-/// them. Nothing on this side re-states any of it, so there is nothing left to drift.
+/// `crate::actor::quest_acceptance` IS the core's Gate: level, race, class, skill, reputation, the
+/// previous step in the chain, and whether the bot already holds the quest, in the order
+/// `apply_accept_quest` applies them. Nothing on this side re-states any of it, so there is nothing
+/// left to drift.
 ///
 /// Bag room is the one accept Gate `accept_gates` deliberately leaves out, because the core reaches
 /// it last: `apply_accept_effects` grants the quest's `src_item` after every Gate has passed, and

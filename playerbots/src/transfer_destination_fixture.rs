@@ -62,6 +62,12 @@ fn quest_template(entry: u32, prerequisite: u32) -> crate::tables::QuestTemplate
         limit_time: 0,
         reward_money_max_level: 0,
         quest_type: 0,
+        required_skill: 0,
+        required_skill_value: 0,
+        required_min_rep_faction: 0,
+        required_min_rep_value: 0,
+        required_max_rep_faction: 0,
+        required_max_rep_value: 0,
     }
 }
 
