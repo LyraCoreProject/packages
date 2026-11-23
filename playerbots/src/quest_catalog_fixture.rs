@@ -767,6 +767,8 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
             rew_rep_value_4: 0,
             rew_rep_faction_5: 0,
             rew_rep_value_5: 0,
+            reward_spell: 0,
+            reward_spell_cast: 0,
         });
     for (id, role) in [
         (SEEDED_USE_RELATION_START, crate::actor::quest_role::START),
@@ -1248,6 +1250,8 @@ fn insert_quest(
             rew_rep_value_4: 0,
             rew_rep_faction_5: 0,
             rew_rep_value_5: 0,
+            reward_spell: 0,
+            reward_spell_cast: 0,
         });
     let start_kind = if matches!(start, 55 | 56) {
         CatalogEntityKind::GameObject
