@@ -179,12 +179,25 @@ fn playerbots_warrior_uses_the_shared_rotation_for_autonomous_grinding() {
     pass(&node, &guid);
     std::thread::sleep(Duration::from_millis(1600));
     pass(&node, &guid);
-    let chosen = &node.query_rows(&format!(
-        "SELECT chosen FROM pkg_playerbots_runner WHERE character_guid = {guid}"
-    ))[0]["chosen"];
+    let runner = &node.query_rows(&format!(
+        "SELECT * FROM pkg_playerbots_runner WHERE character_guid = {guid}"
+    ))[0];
+    let chosen = &runner["chosen"];
+    // The bot's own scheduled pass can queue the strike during the sleep; the reply then turns the
+    // next pass into Defense.
+    let grind_strike = "spell = 78)), reason = (grind = ())";
     assert!(
-        chosen.contains("grind =") && chosen.contains("spell = 78"),
-        "expected a grinding Heroic Strike: {chosen}"
+        runner["history"].contains(grind_strike)
+            || (chosen.contains("grind =") && chosen.contains("spell = 78")),
+        "expected a grinding Heroic Strike: {chosen}\nrunner: {runner:?}\nbot: {:?}\nmelee: {:?}\nthreat: {:?}\nactions: {:?}",
+        node.query_rows(&format!(
+            "SELECT power, next_swing_spell, combat_until_ms, health FROM game_world_entity WHERE guid = {guid}"
+        )),
+        node.query_rows("SELECT * FROM game_melee_attack"),
+        node.query_rows("SELECT * FROM game_threat"),
+        node.query_rows(&format!(
+            "SELECT * FROM pkg_playerbots_action WHERE character_guid = {guid}"
+        )),
     );
 }
 
@@ -328,7 +341,7 @@ fn playerbots_priest_heals_at_the_quest_safe_position_before_resuming_travel() {
     ));
     node.assert_call("playerbots_fixture_companion_health", &[&guid, "10"]);
     node.assert_sql(&format!(
-        "DELETE FROM game_spell_cooldown WHERE caster_guid = {guid}"
+        "DELETE FROM game_global_cooldown WHERE caster_guid = {guid}"
     ));
     let health_query = format!("SELECT health FROM game_world_entity WHERE guid = {guid}");
     let before = node.query_rows(&health_query)[0]["health"]

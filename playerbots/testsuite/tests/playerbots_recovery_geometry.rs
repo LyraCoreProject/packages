@@ -297,7 +297,7 @@ fn playerbots_recovery_classifies_a_verified_blocked_route_without_missing_cover
     let deferred = defer_fight(
         &node,
         &guid,
-        &format!("coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 2))"),
+        &format!("coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 4))"),
     );
     let path =
         support::log_dir().join(format!("{}-verified-blocked-route.json", node.shard_name()));
@@ -335,7 +335,7 @@ fn playerbots_recovery_retries_exact_work_after_active_coverage_grows() {
     let before = defer_fight(
         &node,
         &guid,
-        &format!("coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 2))"),
+        &format!("coverage = (verifiedCells = (generation_id = {GENERATION}, checked_cells = 4))"),
     );
     let retrofit = serde_json::json!([{
         "cell_x": coverage.retrofit_cell.0,
