@@ -1944,6 +1944,8 @@ pub fn playerbots_fixture_blocked_quest(ctx: &ReducerContext, guid: u64) -> Resu
             rew_rep_value_4: 0,
             rew_rep_faction_5: 0,
             rew_rep_value_5: 0,
+            reward_spell: 0,
+            reward_spell_cast: 0,
         });
     ctx.db.game_quest_objective().id().delete(5_090_101);
     ctx.db
