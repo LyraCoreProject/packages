@@ -414,12 +414,13 @@ fn playerbots_transfer_upgrades_populated_predecessor_without_a_checkpoint() {
         }
     }
     assert_eq!(expected_characters, after["character"], "character");
-    // Its casts lack Item targets and Item cooldown overrides.
+    // Its casts lack Item targets, Item cooldown overrides and cast Items.
     let mut expected_casts = before["pending_cast"].clone();
     for cast in expected_casts.as_array_mut().unwrap() {
         for (field, default) in [
             ("item_target_guid", "0"),
             ("cooldown_category", "(none = ())"),
+            ("cast_item_guid", "0"),
         ] {
             assert!(cast
                 .as_object_mut()

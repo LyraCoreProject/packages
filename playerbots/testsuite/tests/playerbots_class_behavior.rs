@@ -179,12 +179,21 @@ fn playerbots_warrior_uses_the_shared_rotation_for_autonomous_grinding() {
     pass(&node, &guid);
     std::thread::sleep(Duration::from_millis(1600));
     pass(&node, &guid);
-    let chosen = &node.query_rows(&format!(
-        "SELECT chosen FROM pkg_playerbots_runner WHERE character_guid = {guid}"
-    ))[0]["chosen"];
+    let runner = &node.query_rows(&format!(
+        "SELECT * FROM pkg_playerbots_runner WHERE character_guid = {guid}"
+    ))[0];
+    let chosen = &runner["chosen"];
     assert!(
         chosen.contains("grind =") && chosen.contains("spell = 78"),
-        "expected a grinding Heroic Strike: {chosen}"
+        "expected a grinding Heroic Strike: {chosen}\nrunner: {runner:?}\nbot: {:?}\nmelee: {:?}\nthreat: {:?}\nactions: {:?}",
+        node.query_rows(&format!(
+            "SELECT power, next_swing_spell, combat_until_ms, health FROM game_world_entity WHERE guid = {guid}"
+        )),
+        node.query_rows("SELECT * FROM game_melee_attack"),
+        node.query_rows("SELECT * FROM game_threat"),
+        node.query_rows(&format!(
+            "SELECT * FROM pkg_playerbots_action WHERE character_guid = {guid}"
+        )),
     );
 }
 

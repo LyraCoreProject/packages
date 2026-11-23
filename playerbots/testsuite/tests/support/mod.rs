@@ -19,6 +19,7 @@ pub fn upgraded_pending_cast(
     for (field, default) in [
         ("item_target_guid", "0"),
         ("cooldown_category", "(none = ())"),
+        ("cast_item_guid", "0"),
     ] {
         row.entry(field.into()).or_insert_with(|| default.into());
     }
