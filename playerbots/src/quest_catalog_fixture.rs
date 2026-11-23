@@ -754,6 +754,12 @@ pub fn playerbots_quest_loop_fixture_stage_simple_gameobject(
             limit_time: 0,
             reward_money_max_level: 0,
             quest_type: 0,
+            required_skill: 0,
+            required_skill_value: 0,
+            required_min_rep_faction: 0,
+            required_min_rep_value: 0,
+            required_max_rep_faction: 0,
+            required_max_rep_value: 0,
         });
     for (id, role) in [
         (SEEDED_USE_RELATION_START, crate::actor::quest_role::START),
@@ -1222,6 +1228,12 @@ fn insert_quest(
             limit_time: 0,
             reward_money_max_level: 0,
             quest_type: 0,
+            required_skill: 0,
+            required_skill_value: 0,
+            required_min_rep_faction: 0,
+            required_min_rep_value: 0,
+            required_max_rep_faction: 0,
+            required_max_rep_value: 0,
         });
     let start_kind = if matches!(start, 55 | 56) {
         CatalogEntityKind::GameObject
