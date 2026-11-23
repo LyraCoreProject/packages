@@ -481,8 +481,12 @@ fn playerbots_companions_receive_turns_without_starving_older_background_work() 
                 "late companion turn for {guid}: {pair:?}"
             );
         }
+        // Following has to start within the cadence window above. The 40 yards it covers are
+        // given the poll timeout, because a loaded runner can slow a 1000 bot Shard past 10 s.
         assert!(
-            entity(node, guid)["x"].parse::<f32>().unwrap() > 1240.0,
+            poll_until(POLL_TIMEOUT, || {
+                entity(node, guid)["x"].parse::<f32>().unwrap() > 1240.0
+            }),
             "companion {guid} did not follow the moving leader"
         );
     }

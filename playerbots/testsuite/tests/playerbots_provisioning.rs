@@ -461,10 +461,19 @@ fn playerbots_provisioning_bounds_imported_style_trainer_facts() {
 fn playerbots_provisioning_yields_to_recovery_then_supplies_missing_recovery() {
     let (node, guid) = fixture("playerbots-provisioning-priority", "5", "1");
     node.assert_call("playerbots_fixture_provision_catalog", &[]);
+    // Priest kit spell 1243 takes one 17029 per cast in this fixture. No other kit spell takes a
+    // reagent, so the profile stocks nothing else.
+    node.assert_sql("DELETE FROM game_spell_reagent WHERE id = 9944");
+    node.assert_sql(
+        "INSERT INTO game_spell_reagent (id,spell_id,item_entry,count) VALUES (9944,1243,17029,1)",
+    );
     select(&node, &guid, "cohort");
     node.assert_call("playerbots_fixture_provision_steps", &[&guid, "64"]);
     assert_eq!(item_count(&node, &guid, 159), 10);
     assert_eq!(item_count(&node, &guid, 17029), 5);
+    assert_eq!(item_count(&node, &guid, 17033), 0);
+    assert_eq!(item_count(&node, &guid, 17056), 0);
+    node.assert_sql("DELETE FROM game_spell_reagent WHERE id = 9944");
     node.assert_call("playerbots_fixture_provision_reset", &[&guid]);
     node.assert_call("playerbots_fixture_prepare", &[]);
     node.assert_call("playerbots_fixture_runner_stage", &[&guid, "true"]);

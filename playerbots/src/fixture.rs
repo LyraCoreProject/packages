@@ -3768,13 +3768,7 @@ pub fn playerbots_fixture_provision_catalog(ctx: &ReducerContext) -> Result<(), 
     ensure_profile_item(ctx, 118, "Provisioning Potion", 5, 0, 0, 50110, false)?;
     ensure_profile_item(ctx, 1251, "Provisioning Bandage", 20, 0, 0, 50111, false)?;
     ensure_profile_item(ctx, 2512, "Provisioning Ammo", 200, 0, 0, 0, false)?;
-    for (entry, name) in [
-        (17033, "Paladin Reagent"),
-        (17029, "Priest Reagent"),
-        (17056, "Mage Reagent"),
-    ] {
-        ensure_profile_item(ctx, entry, name, 20, 0, 0, 0, false)?;
-    }
+    ensure_profile_item(ctx, 17029, "Provisioning Reagent", 20, 0, 0, 0, false)?;
     Ok(())
 }
 
