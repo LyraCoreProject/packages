@@ -4,7 +4,7 @@
 use super::{
     class, pkg_playerbots_bot, pkg_playerbots_kit, Controller, PlayerbotsBot, ROLE_DPS, ROLE_HEALER,
 };
-use crate::tables::{game_item_instance, game_spell, game_world_entity};
+use crate::tables::{game_item_instance, game_spell, game_spell_reagent, game_world_entity};
 use spacetimedb::{table, ReducerContext, Table};
 
 const PROFILE_REVISION: u32 = 3;
@@ -23,9 +23,11 @@ const POTION: u32 = 118;
 const BANDAGE: u32 = 1251;
 const AMMO: u32 = 2512;
 const HEARTHSTONE: u32 = 6948;
-const PALADIN_REAGENT: u32 = 17033;
-const PRIEST_REAGENT: u32 = 17029;
-const MAGE_REAGENT: u32 = 17056;
+/// Casts of a reagent spell a bot carries reagents for. The periodic reconcile tops each stack back
+/// up to this many casts, which is the restock.
+const REAGENT_CASTS: u32 = 5;
+/// Core admits no profile item target above this.
+const ITEM_TARGET_LIMIT: u32 = 200;
 
 #[derive(spacetimedb::SpacetimeType, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProvisionCause {
@@ -328,7 +330,9 @@ pub(super) fn profile_actions(
         .guid()
         .find(bot.character_guid)
         .map_or(0, |entity| entity.level);
+    let mut reagents: Vec<(u32, u32)> = vec![];
     for spell in spells {
+        let mut highest = spell;
         for rank in super::spell_ranks::family(ctx, spell).map_err(profile_limit)? {
             if rank == spell
                 || ctx
@@ -339,6 +343,21 @@ pub(super) fn profile_actions(
                     .is_none_or(|row| u32::from(row.spell_level) <= level)
             {
                 actions.push(ProvisionAction::Spell(rank));
+                highest = rank;
+            }
+        }
+        // A bot casts its highest rank, so only that rank's reagents are stocked.
+        for row in ctx.db.game_spell_reagent().by_spell().filter(&highest) {
+            let target = row
+                .count
+                .saturating_mul(REAGENT_CASTS)
+                .clamp(1, ITEM_TARGET_LIMIT);
+            match reagents
+                .iter_mut()
+                .find(|(entry, _)| *entry == row.item_entry)
+            {
+                Some((_, stocked)) => *stocked = (*stocked).max(target),
+                None => reagents.push((row.item_entry, target)),
             }
         }
     }
@@ -377,19 +396,10 @@ pub(super) fn profile_actions(
             200,
         )));
     }
-    let reagent = match bot.class {
-        class::PALADIN => Some(PALADIN_REAGENT),
-        class::PRIEST => Some(PRIEST_REAGENT),
-        class::MAGE => Some(MAGE_REAGENT),
-        _ => None,
-    };
-    if let Some(entry) = reagent {
-        actions.push(ProvisionAction::Item(item(
-            ProvisionItemKind::Reagent,
-            entry,
-            5,
-        )));
-    }
+    reagents.sort_unstable();
+    actions.extend(reagents.into_iter().map(|(entry, target)| {
+        ProvisionAction::Item(item(ProvisionItemKind::Reagent, entry, target))
+    }));
     actions.extend([
         ProvisionAction::Item(item(ProvisionItemKind::Supply, BANDAGE, 5)),
         ProvisionAction::Item(item(ProvisionItemKind::Supply, HEARTHSTONE, 1)),

@@ -97,8 +97,9 @@ recovery, and defense keep their higher priority. `Legacy`, `RecordOnly`, `Froze
 owner, and a current World Session block every provisioning gameplay write.
 
 Profiles make training and their bounded item grants free. They cover the configured kit, one class
-weapon skill, vanilla talents, gear, four bags, food, drink, potions, ammunition or class reagents,
-bandages, and a Hearthstone. Reconciliation only adds profile entries. It never raises level, awards
+weapon skill, vanilla talents, gear, four bags, food, drink, potions, ammunition, the reagents
+the highest rank of each kit spell takes (read from the imported reagent rows, topped up to five
+casts each reconcile, so a kit with no reagent spell stocks none), bandages, and a Hearthstone. Reconciliation only adds profile entries. It never raises level, awards
 experience or quest credit, removes quest items, or replaces equal or stronger equipped gear.
 Kit and rotation spell IDs name rank families. Provisioning trains the family's ranks in order,
 up to the Character's level, through the ordinary trainer Gates. Combat, buffs, healing, and solo
