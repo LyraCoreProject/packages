@@ -64,14 +64,12 @@ fn playerbots_starter_casters_apply_and_retain_their_buffs_solo_and_grouped() {
         for grouped in [false, true] {
             let (node, guid) = fixture(class, role, grouped, false);
             pass(&node, &guid);
+            // The next pass may add another buff; only this one must stay untouched.
             let query = format!(
-                "SELECT id, spell_id, applied_at FROM game_aura WHERE target_guid = {guid}"
+                "SELECT id, spell_id, applied_at FROM game_aura WHERE target_guid = {guid} AND spell_id = {spell}"
             );
             let before = node.query_rows(&query);
-            assert!(
-                before.iter().any(|aura| aura["spell_id"] == spell),
-                "class {class} did not self-buff"
-            );
+            assert!(!before.is_empty(), "class {class} did not self-buff");
             pass(&node, &guid);
             assert_eq!(
                 node.query_rows(&query),
