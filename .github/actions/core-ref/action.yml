@@ -3,7 +3,7 @@ description: Keep the required Core revision for main; pair other branches with 
 inputs:
   fallback:
     description: Core revision required by this collection.
-    default: f99cd36e1a85f16cb289bd7edf90061018a9b7c3
+    default: b76a97f8de349e32e2216ec91673cabbff2ef29b
 outputs:
   ref:
     description: Exact paired commit or required Core revision.
