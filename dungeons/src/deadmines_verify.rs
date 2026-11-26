@@ -383,6 +383,7 @@ fn install_instance(ctx: &ReducerContext, map_id: u32, instance_id: u64) -> Resu
                 created_at: ctx.timestamp,
                 last_empty_at_micros: 0,
                 reset_requested: false,
+                holder_guid: 0,
             });
             Ok(())
         }
