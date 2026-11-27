@@ -6,7 +6,7 @@ pub mod pb002;
 #[allow(dead_code)]
 mod events;
 #[allow(unused_imports)]
-pub use events::LiveEvents;
+pub use events::{LiveEvents, SpellDamage};
 
 pub use lyracore_test_support::*;
 

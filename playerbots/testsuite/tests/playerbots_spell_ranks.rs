@@ -93,12 +93,7 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
     ));
     let enemy =
         &node.query_rows("SELECT guid FROM game_creature_spawn WHERE entry = 5098090")[0]["guid"];
-    let table = if class == "1" {
-        "game_spell_cast_event_live"
-    } else {
-        "game_spell_impact_event_live"
-    };
-    let events = support::LiveEvents::subscribe(&node, table, &format!("caster_guid = {guid}"));
+    let damage = support::SpellDamage::subscribe(&node, guid);
     node.assert_call(
         "playerbots_fixture_runner_damage_and_park",
         &[guid, enemy, "1"],
@@ -120,14 +115,12 @@ fn verify_ranks(class: &str, role: &str, ranks: &[(u32, u32, u8, u8)], expected:
     assert!(
         support::poll_until(Duration::from_secs(20), || {
             node.assert_call("playerbots_fixture_runner_pass_once", &[guid]);
-            events.rows(&node)
-            .iter().any(|row| row["spell_id"] == expected.to_string()
-                && row["damage"].parse::<u32>().unwrap() > 0)
+            damage.dealt(&node, &expected.to_string())
         }),
         "learned rank {expected} was selected but dealt no damage: runner={:?}; actions={:?}; casts={:?}",
         node.query_rows(&format!("SELECT chosen, last_outcome, foreground FROM pkg_playerbots_runner WHERE character_guid = {guid}")),
         node.query_rows(&format!("SELECT spell_id, outcome FROM pkg_playerbots_action WHERE character_guid = {guid}")),
-        events.rows(&node),
+        damage.rows(&node),
     );
 }
 
