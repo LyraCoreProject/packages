@@ -64,3 +64,32 @@ impl LiveEvents {
             .collect()
     }
 }
+
+/// A caster's spell damage: the cast's GO carries it for a spell without a speed, the impact
+/// event for a travelling one.
+pub struct SpellDamage {
+    casts: LiveEvents,
+    impacts: LiveEvents,
+}
+
+impl SpellDamage {
+    pub fn subscribe(node: &Standalone, caster_guid: &str) -> Self {
+        let filter = format!("caster_guid = {caster_guid}");
+        Self {
+            casts: LiveEvents::subscribe(node, "game_spell_cast_event_live", &filter),
+            impacts: LiveEvents::subscribe(node, "game_spell_impact_event_live", &filter),
+        }
+    }
+
+    pub fn rows(&self, node: &Standalone) -> Vec<BTreeMap<String, String>> {
+        let mut rows = self.casts.rows(node);
+        rows.extend(self.impacts.rows(node));
+        rows
+    }
+
+    pub fn dealt(&self, node: &Standalone, spell_id: &str) -> bool {
+        self.rows(node).iter().any(|row| {
+            row["spell_id"] == spell_id && row["damage"].parse::<u32>().is_ok_and(|n| n > 0)
+        })
+    }
+}

@@ -256,17 +256,12 @@ fn playerbots_starter_casters_finish_attacks_solo_and_in_parties() {
     for (class, role, spell) in [("5", "1", "585"), ("8", "2", "133")] {
         for grouped in [false, true] {
             let (node, guid) = fixture(class, role, grouped, true);
-            let impacts = support::LiveEvents::subscribe(
-                &node,
-                "game_spell_impact_event_live",
-                &format!("caster_guid = {guid}"),
-            );
+            let damage = support::SpellDamage::subscribe(&node, &guid);
             pass(&node, &guid);
             assert!(
                 support::poll_until(Duration::from_secs(20), || {
                     pass(&node, &guid);
-                    impacts.rows(&node)
-                    .iter().any(|event| event["spell_id"] == spell && event["damage"].parse::<u32>().unwrap() > 0)
+                    damage.dealt(&node, spell)
                 }),
                 "class {class} did not deal spell damage, grouped={grouped}; runner={:?}; actions={:?}; entity={:?}",
                 node.query_rows(&format!("SELECT chosen, last_outcome, foreground, failures FROM pkg_playerbots_runner WHERE character_guid = {guid}")),
