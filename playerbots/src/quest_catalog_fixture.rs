@@ -1484,6 +1484,7 @@ pub fn playerbots_quest_fixture_stage(
             min_count: 0,
             event_entry: 0,
             event_reversed: false,
+            equal_chance: false,
         });
     }
     let gameobject_loot = ctx.db.game_gameobject_loot();
