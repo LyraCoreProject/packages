@@ -1482,6 +1482,9 @@ pub fn playerbots_quest_fixture_stage(
             group_id: 0,
             quest_only: true,
             min_count: 0,
+            event_entry: 0,
+            event_reversed: false,
+            equal_chance: false,
         });
     }
     let gameobject_loot = ctx.db.game_gameobject_loot();
